@@ -1,0 +1,232 @@
+%% explanation.tex — v3 ATCO advisory environment, current specification.
+
+\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+\geometry{margin=2.5cm}
+
+\title{\textbf{v3 Environment: Technical Specification}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The environment simulates a single upper-airspace sector of approximately
+80\,000\,km$^2$, populated by $N \approx 10$ A320 aircraft at FL350 and
+450\,kts, where $N$ is determined by a traffic density of 8\,000\,km$^2$
+per aircraft.
+A single agent represents the ATCO: it selects one aircraft per step (the
+\textit{focus aircraft}, chosen by maximum urgency) and issues it a heading
+instruction.
+Each RL step corresponds to 10\,s of simulated flight time (20 BlueSky
+sub-steps of 0.5\,s each).
+At the standard turn rate of 3$^\circ$/s, a 30$^\circ$ heading change
+therefore completes within a single step, so issued actions take full effect
+before the next observation arrives.
+
+The two ATCO objectives are:
+\begin{enumerate}
+    \item \textbf{Safety} — maintain at least 5\,NM horizontal separation.
+    \item \textbf{Efficiency} — keep aircraft on their direct-to-destination headings.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Urgency Matrix}
+% ─────────────────────────────────────────────────────────────────────────────
+
+A symmetric urgency matrix $\mathbf{U} \in \mathbb{R}^{N\times N}$ is rebuilt
+from the aircraft's \textit{current} positions and headings at every step.
+The entry $u_{ij}$ quantifies conflict severity:
+\begin{equation}
+    u_{ij} =
+    \begin{cases}
+        1 + 9\!\left(1 - \dfrac{d_{ij}}{d_\text{sep}}\right)
+            & d_{ij} < d_\text{sep} \quad\text{(active LoS)} \\[6pt]
+        \dfrac{1}{\max(t_\text{CPA}^{ij},\,1)}
+            & d_\text{CPA}^{ij} < d_\text{sep},\;0 \leq t_\text{CPA}^{ij} \leq H \\[6pt]
+        0   & \text{otherwise}
+    \end{cases}
+    \label{eq:urgency}
+\end{equation}
+where $d_\text{sep}=5\,\text{NM}$ and $H=600\,\text{s}$.
+The formula is continuous at the LoS boundary (both branches equal~1 when
+$d_{ij}=d_\text{sep}$).
+
+The focus aircraft is $f = \arg\max_i \max_{j\neq i}\,u_{ij}$.
+When $\mathbf{U}=\mathbf{0}$, focus falls back to the aircraft with the
+greatest commanded-heading deviation from its destination bearing.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Action Space}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Six discrete actions set the commanded heading as an absolute offset from
+the direct-to-destination bearing:
+\begin{equation}
+    \psi_\text{cmd} = \psi_\text{dest} + \delta, \qquad
+    \delta \in \{-30^\circ,\,-15^\circ,\,0^\circ,\,+15^\circ,\,+30^\circ,\,\varnothing\}.
+\end{equation}
+The direct action ($\delta=0$) and hold action ($\varnothing$) are free;
+resolution turns carry a small penalty $w_\text{act}=-0.1$.
+Absolute offsets prevent unbounded accumulation and make action semantics
+interpretable independent of history.
+
+The hold action explicitly re-issues the current commanded heading to the
+simulator every step, ensuring heading continuity regardless of BlueSky
+internal state.
+A mid-turn guard prevents \textit{direct} from overriding an in-progress
+resolution turn (suppressed when $|\psi_\text{actual}-\psi_\text{cmd}|>5^\circ$).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Observation Space ($\mathbb{R}^{16}$)}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+\centering
+\caption{Observation features. All values are dimensionless and bounded.}
+\label{tab:obs}
+\smallskip
+\begin{tabular}{clll}
+\toprule
+\textbf{Index} & \textbf{Feature} & \textbf{Definition} & \textbf{Range} \\
+\midrule
+0 & Heading error    & $\Delta\psi/180$,\quad
+                       $\Delta\psi = \psi_\text{dest} - \psi_\text{cmd}$
+                     & $[-1,1]$ \\[2pt]
+1 & Deviation mag.   & $\min(|\Delta\psi|/30,\;1)$
+                     & $[0,1]$ \\[2pt]
+2 & Clearance timer  & $\min(t_\text{clear}/30,\;1)$,\quad
+                       $t_\text{clear}$ = steps since last $u>0$
+                     & $[0,1]$ \\[4pt]
+\multicolumn{4}{l}{\textit{3 nearest intruders} $\times$ \textit{4 features each:}} \\[2pt]
+$+0$ & Distance       & $\min(d\,/\,3d_\text{sep},\;1)$
+                     & $[0,1]$ \\[2pt]
+$+1$ & Bearing (now)  & $\sin(\beta - \psi)$,\quad
+                       $\beta$ = bearing to intruder;\quad
+                       $+$: right, $-$: left
+                     & $[-1,1]$ \\[2pt]
+$+2$ & CPA side       & $\text{clip}(r^\text{right}_\text{CPA}\,/\,d_\text{sep},\,-1,1)$;\quad
+                       $+$: passes right $\Rightarrow$ turn left
+                     & $[-1,1]$ \\[2pt]
+$+3$ & Pair urgency   & $\min(u_{fk}/10,\;1)$
+                     & $[0,1]$ \\[4pt]
+15  & Urgency density & $\min(\Sigma/10,\;1)$,\quad
+                       $\Sigma = \sum_{i<j}u_{ij}$
+                     & $[0,1]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Heading error (index 0).}
+The signed normalised angle $\Delta\psi/180$ replaces the conventional
+$(\cos\Delta\psi,\sin\Delta\psi)$ two-feature encoding.
+Because $\Delta\psi$ is already constrained to $[-180^\circ,180^\circ]$ by
+the wrap operation, there is no discontinuity to protect against, and the
+sign directly encodes the required turn direction.
+
+\paragraph{Deviation magnitude (index 1).}
+A separate magnitude feature $|\Delta\psi|/30$ informs the agent how far
+the aircraft is currently off its direct track, normalised to the maximum
+action offset of $30^\circ$.
+
+\paragraph{Clearance timer (index 2).}
+This feature encodes how many steps have elapsed since the focus aircraft
+last had urgency greater than zero.
+A value near zero means a conflict resolved very recently; resuming direct
+routing may recreate it.
+A value near one means the aircraft has been clear for at least 30 steps
+($\approx 5\,\text{min}$) and direct routing is safe.
+
+\paragraph{CPA side (intruder index $+2$).}
+The lateral offset of the intruder relative to the ownship at the closest
+point of approach is
+\begin{equation}
+    r^\text{right}_\text{CPA}
+        = \bigl(\Delta x_\text{CPA}\cos\psi - \Delta y_\text{CPA}\sin\psi\bigr),
+    \qquad
+    \begin{pmatrix}\Delta x_\text{CPA}\\\Delta y_\text{CPA}\end{pmatrix}
+        = \begin{pmatrix}\Delta x\\\Delta y\end{pmatrix}
+        + t_\text{CPA}\begin{pmatrix}\Delta v_e\\\Delta v_n\end{pmatrix}.
+    \label{eq:cpa}
+\end{equation}
+A positive value indicates that the intruder passes to the right of the
+ownship at CPA, meaning a left turn ($\delta < 0$) increases separation;
+a negative value implies the opposite.
+This feature directly encodes the required turn direction, removing the need
+for the agent to infer geometry from Cartesian coordinates.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Reward Function}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The reward is a pure-penalty formulation:
+\begin{equation}
+    r_t = \underbrace{w_u\,\Sigma_t}_{\text{safety}}
+        + \underbrace{w_d\cdot\frac{1-\cos\Delta\psi_f}{2}}_{\text{efficiency}}
+        + r^\text{act}_t + r^\text{exit}_t,
+    \label{eq:reward}
+\end{equation}
+where $\Sigma_t = \frac{1}{2}\sum_{i\neq j}u_{ij}$ is the total urgency sum
+and $\Delta\psi_f$ is the heading offset of the focus aircraft from its
+destination bearing.
+All terms are non-positive.
+
+\begin{table}[h]
+\centering
+\caption{Reward weights.}
+\label{tab:weights}
+\smallskip
+\begin{tabular}{llr}
+\toprule
+$w_u$           & Safety: total urgency sum      & $-3$   \\
+$w_d$           & Efficiency: heading drift      & $-1$   \\
+$w_\text{act}$  & Workload: resolution turn      & $-0.1$ \\
+$w_\text{exit}$ & Wrong-direction sector exit    & $-20$  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The urgency sum $\Sigma_t$ scales automatically with conflict severity:
+a pair at active LoS contributes $-3 \times 5 = -15$ per step,
+while a pair predicted to conflict in 60\,s contributes approximately
+$-3/60 \approx -0.05$ per step.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Training}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The policy is trained with PPO.
+Observations and rewards are normalised online by a \texttt{VecNormalize}
+wrapper (clip $\pm10$).
+
+\begin{table}[h]
+\centering
+\caption{PPO hyperparameters.}
+\label{tab:hp}
+\smallskip
+\begin{tabular}{llr}
+\toprule
+$\gamma$               & Discount factor          & $0.99$ \\
+$\lambda$              & GAE parameter            & $0.95$ \\
+$T$                    & Steps per env per update & $512$  \\
+$N_\text{envs}$        & Parallel environments    & $4$    \\
+$B$                    & Mini-batch size          & $64$   \\
+$K$                    & Epochs per update        & $10$   \\
+$\epsilon_\text{clip}$ & PPO clip range           & $0.2$  \\
+$\beta_H$              & Entropy coefficient      & $0.0$  \\
+$\alpha_\text{LR}$     & Learning rate            & $3\times10^{-4}$ \\
+\texttt{net\_arch}     & MLP hidden layers        & $[64,64]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
