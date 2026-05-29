@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/bs/delay/simple/airspace_env_v2.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/bs/delay/simple/env.py')",
+      "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/bs/delay/complex/airspace_env_v3.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/bs/delay/complex/env.py')",
+      "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/quick_tests/scenario_generation.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Environments/quick_tests/scenario_test.py')",
+      "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_ppo_v2.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_simple.py')",
+      "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_ppo_v3.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_complex.py')",
+      "Bash(rm '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_simple.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_complex.py')",
+      "Bash(rm '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Visualisation/visualise_bs_delay_simple.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Visualisation/visualise_bs_delay_complex.py')",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}
