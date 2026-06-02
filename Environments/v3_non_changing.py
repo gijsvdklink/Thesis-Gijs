@@ -72,8 +72,7 @@ CONFIG = {
     'spawn_delay_s':         (0, 0),
     'n_neighbours':          4,
     'w_safe':                1.00,
-    'w_exit':                0.50,
-    'w_eff':                 0.20,
+    'w_nav':                 0.20,
     'w_work':                0.05,
     'seed':                  None,
 }
@@ -294,7 +293,7 @@ class AirspaceEnv(gym.Env):
             bs.sim.step()
         self._step_count += 1
 
-        exit_r = self._process_exits()
+        terminated = self._process_exits()
 
         # Update ownship callsign in case it exited and was replaced
         if self._slots[OWNSHIP_SLOT] is not None:
@@ -302,7 +301,7 @@ class AirspaceEnv(gym.Env):
         self._focus_cs = self._ownship_cs
 
         self._update_urgency_matrix()
-        reward = self._compute_reward(self._ownship_cs, int(action)) + exit_r
+        reward = self._compute_reward(self._ownship_cs, int(action))
 
         U     = self._urgency_matrix
         n_los = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
@@ -313,9 +312,10 @@ class AirspaceEnv(gym.Env):
             self._ep_stats['los'] += 1
 
         truncated = self._step_count >= self._max_steps
+        done      = terminated or truncated
         info = {'los_pairs': n_los, 'focus_cs': self._focus_cs,
                 'n_aircraft': self.n_aircraft}
-        if truncated:
+        if done:
             s = max(self._ep_stats['steps'], 1)
             info.update({
                 'mean_episode_reward': self._ep_stats['reward'] / s,
@@ -324,7 +324,7 @@ class AirspaceEnv(gym.Env):
                 'action_distribution': np.bincount(
                     self._ep_stats['actions'], minlength=9).tolist(),
             })
-        return self._get_observation(), reward, False, truncated, info
+        return self._get_observation(), reward, terminated, truncated, info
 
     # ── Urgency matrix (visualisation only — not used for control) ────────────
 
@@ -347,34 +347,39 @@ class AirspaceEnv(gym.Env):
     # ── Reward ────────────────────────────────────────────────────────────────
 
     def _compute_reward(self, acting_cs, action_idx):
-        cpa_min = self._min_cpa_dist(acting_cs)
-        r_safe  = -CONFIG['w_safe'] * math.exp(-cpa_min / CONFIG['sep_nm'])
+        # Safety: sum of exp(-cpa_i/sep) over all intruders — every developing conflict
+        # contributes independently; resolving one reduces the total even if others remain.
+        r_safe = -CONFIG['w_safe'] * self._cpa_penalty(acting_cs)
 
-        drift_a = 0.0
+        r_nav = 0.0
         if acting_cs and acting_cs in self._destination_ll:
             idx = bs.traf.id2idx(acting_cs)
             if idx >= 0:
                 bearing, _ = geo.kwikqdrdist(
                     bs.traf.lat[idx], bs.traf.lon[idx],
                     *[float(v) for v in self._destination_ll[acting_cs]])
-                diff    = wrap_to_180(
-                    bearing - self._commanded_heading.get(acting_cs, bs.traf.hdg[idx]))
-                drift_a = (1.0 - math.cos(math.radians(diff))) / 2.0
+                diff_actual = wrap_to_180(bearing - bs.traf.hdg[idx])
+                speed_ratio = (self._commanded_speed.get(acting_cs, CONFIG['ac_mach'])
+                               / CONFIG['ac_mach'])
+                r_nav = CONFIG['w_nav'] * math.cos(math.radians(diff_actual)) * speed_ratio
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
-        return float(r_safe - CONFIG['w_eff'] * drift_a + r_work)
+        return float(r_safe + r_nav + r_work)
 
-    def _min_cpa_dist(self, cs):
+    def _cpa_penalty(self, cs):
+        """Sum of exp(-cpa_i/sep_nm) over all intruders of the focus aircraft."""
         if cs is None:
-            return float('inf')
+            return 0.0
         idx = bs.traf.id2idx(cs)
         if idx < 0:
-            return float('inf')
+            return 0.0
         nm1  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
         spd1 = _spd_nms(idx)
         vn1  = spd1 * math.cos(math.radians(bs.traf.hdg[idx]))
         ve1  = spd1 * math.sin(math.radians(bs.traf.hdg[idx]))
-        min_d = float('inf')
+        sep   = CONFIG['sep_nm']
+        total = 0.0
+        n_int = 0
         for other in self._active_callsigns:
             oi = bs.traf.id2idx(other)
             if other == cs or oi < 0:
@@ -398,8 +403,9 @@ class AirspaceEnv(gym.Env):
                     dx_c  = dx + tcpa * dve
                     dy_c  = dy + tcpa * dvn
                     cpa_d = math.sqrt(dx_c*dx_c + dy_c*dy_c)
-            min_d = min(min_d, cpa_d)
-        return min_d
+            total += math.exp(-cpa_d / sep)
+            n_int += 1
+        return total / n_int if n_int > 0 else 0.0
 
     # ── Action (applied to ownship only) ──────────────────────────────────────
 
@@ -525,12 +531,11 @@ class AirspaceEnv(gym.Env):
     # ── Exits ─────────────────────────────────────────────────────────────────
 
     def _process_exits(self):
-        r = 0.0
+        terminated = False
         for cs in self._find_exited():
             slot = self._slots.index(cs)
-            # Exit penalty only for the ownship
             if slot == OWNSHIP_SLOT:
-                r += self._exit_penalty(cs)
+                terminated = True
             bs.traf.delete(bs.traf.id2idx(cs))
             self._active_callsigns.discard(cs)
             self._slots[slot] = None
@@ -540,7 +545,7 @@ class AirspaceEnv(gym.Env):
             if slot not in self._pending_spawns:
                 delay = random.randint(*self._spawn_delay_range)
                 self._pending_spawns[slot] = delay
-        return r
+        return terminated
 
     def _find_exited(self):
         out = []
@@ -558,15 +563,6 @@ class AirspaceEnv(gym.Env):
                 out.append(cs)
         return out
 
-    def _exit_penalty(self, cs):
-        idx = bs.traf.id2idx(cs)
-        if idx < 0:
-            return 0.0
-        bearing, _ = geo.kwikqdrdist(
-            bs.traf.lat[idx], bs.traf.lon[idx],
-            *[float(v) for v in self._destination_ll[cs]])
-        return -CONFIG['w_exit'] \
-               if abs(wrap_to_180(bearing - bs.traf.hdg[idx])) > 90 else 0.0
 
     # ── Spawning ──────────────────────────────────────────────────────────────
 

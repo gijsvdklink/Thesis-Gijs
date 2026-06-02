@@ -96,8 +96,9 @@ clean single-aircraft MDP.
     \State Schedule replacement
 \EndFor
 \State Update ownship callsign if slot~0 was replaced
-\State $r \leftarrow r_\text{safe} - w_\text{eff}\cdot\text{drift} - w_\text{work}\cdot c + r_\text{exit}$
+\State $r \leftarrow r_\text{safe} + r_\text{nav} - w_\text{work}\cdot c$
 \State \Return $\mathbf{o}(\text{ownship}),\; r,\;
+               \text{terminated}=(\text{ownship exited}),\;
                \text{truncated}=(\text{step\_count} \geq T_\text{max})$
 \end{algorithmic}
 \end{algorithm}
@@ -161,40 +162,45 @@ $+3$ & CPA side  & $\operatorname{clip}(r^\text{right}_\text{CPA}/d_\text{sep},\
 \section{Reward Function}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The reward formula is identical to v3\_improved but evaluated for the ownship
-only.
+The reward formula is identical to v3\_improved, evaluated for the ownship only.
 Traffic-vs-traffic conflicts carry no penalty.
 \begin{equation}
-    r_t = r_\text{safe}
-        - w_\text{eff}\cdot\frac{1-\cos\Delta\psi_\text{own}}{2}
-        - w_\text{work}\cdot c
-        + r_\text{exit},
+    r_t = r_\text{safe} + r_\text{nav} - w_\text{work}\cdot c.
 \end{equation}
+
+\paragraph{Safety term.}
+Every traffic aircraft contributes an exponential proximity cost, normalised by
+the number of traffic aircraft $N_\text{int}$ to keep the signal scale-invariant:
 \begin{equation}
     r_\text{safe}
-        = -w_\text{safe}\cdot
-          \max\!\left(0,\;1 - \frac{d_\text{CPA}^\text{min}}{2\,d_\text{sep}}\right),
+        = -\frac{w_\text{safe}}{N_\text{int}}
+          \sum_{k=1}^{N_\text{int}}
+          \exp\!\!\left(-\frac{d_\text{CPA}^{(k)}}{d_\text{sep}}\right),
 \end{equation}
-where $d_\text{CPA}^\text{min}$ is the minimum predicted separation between
-the ownship and any traffic aircraft.
-The exit penalty $r_\text{exit} = -w_\text{exit}$ applies only when the
-ownship exits in the wrong direction.
+where $d_\text{CPA}^{(k)}$ is the predicted closest-point-of-approach distance
+to traffic aircraft $k$ within $T_\text{look} = 900$\,s.
+Each term lies in $(0,1]$, so $r_\text{safe} \in [-w_\text{safe}, 0)$ regardless
+of how many traffic aircraft are present.
 
-\paragraph{Step-resolution limitation.}
-With a 30\,s decision cycle, a fast head-on geometry (closure $\approx 900$\,kts)
-can in principle produce a loss of separation that starts and fully resolves
-within a single step.
-In that case the reward is evaluated after the aircraft have already diverged,
-so the worst-case separation is not directly penalised.
-This is partially mitigated by the predictive $d_\text{CPA}^\text{min}$: once
-past closest approach the code substitutes the current distance, which remains
-small immediately after a breach.
-The exponential reward shaping further reduces the impact by providing a
-non-zero gradient in the steps preceding the conflict, so the policy is
-penalised for converging geometry before any separation violation occurs.
-The 30\,s step is retained because a shorter cycle reintroduces turn-aliasing,
-making it impossible for the policy to observe the full geometric consequence
-of a heading command.
+\paragraph{Navigation term.}
+\begin{equation}
+    r_\text{nav}
+        = w_\text{nav}\cdot\cos\!\Delta\psi_\text{actual}
+          \cdot\frac{M_\text{cmd}}{M_\text{nom}},
+\end{equation}
+where $\Delta\psi_\text{actual} = \psi_\text{dest} - \psi_\text{actual}$.
+This term is positive when the ownship is heading toward its destination at
+cruise speed, negative when heading away, and is always nonzero.
+The net reward $r_\text{safe} + r_\text{nav}$ is positive only when the ownship
+is simultaneously on track and well separated from all traffic
+($d_\text{CPA} \gtrsim 8$\,NM on average when perfectly aligned).
+
+\paragraph{Episode termination.}
+The episode terminates ({\tt terminated = True}) as soon as the ownship exits
+the sector, in addition to the standard step-count truncation.
+No sparse exit reward is applied: the navigation term provides a continuous
+incentive for efficient transit, and a terminal reward would introduce credit
+assignment ambiguity.
 
 \begin{table}[h]
 \centering
@@ -202,10 +208,9 @@ of a heading command.
 \smallskip
 \begin{tabular}{llr}
 \toprule
-$w_\text{safe}$  & Safety: CPA-margin penalty    & $1.00$ \\
-$w_\text{exit}$  & Wrong-direction exit (sparse) & $0.50$ \\
-$w_\text{eff}$   & Efficiency: heading drift     & $0.20$ \\
-$w_\text{work}$  & Workload: instruction cost    & $0.05$ \\
+$w_\text{safe}$  & Safety: mean exponential CPA penalty       & $1.00$ \\
+$w_\text{nav}$   & Navigation: heading alignment $\times$ speed & $0.20$ \\
+$w_\text{work}$  & Workload: instruction cost                 & $0.05$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -222,14 +227,15 @@ $w_\text{work}$  & Workload: instruction cost    & $0.05$ \\
 \toprule
 & \textbf{v3\_improved} & \textbf{v3\_non\_changing} \\
 \midrule
-Aircraft controlled & All $N$ (urgency-driven)  & Ownship only (slot~0) \\
-Traffic instructions & Heading/speed as needed  & None \\
-Focus selection      & Commitment rule          & Not applicable \\
-Reward scope         & Focus aircraft per step  & Ownship always \\
-Exit penalty         & Any aircraft             & Ownship only \\
-Observation          & From most urgent aircraft & Always from ownship \\
-Action space         & Discrete(9)              & Discrete(9) \\
-Observation dim      & 21                       & 21 \\
+Aircraft controlled  & All $N$ (urgency-driven)       & Ownship only (slot~0) \\
+Traffic instructions & Heading/speed as needed        & None \\
+Focus selection      & Commitment rule                & Not applicable \\
+Reward scope         & Focus aircraft per step        & Ownship always \\
+Episode termination  & Step-count truncation only     & Ownship exit or truncation \\
+Observation          & From most urgent aircraft      & Always from ownship \\
+Action space         & Discrete(9)                    & Discrete(9) \\
+Observation dim      & 21                             & 21 \\
+Reward formula       & $r_\text{safe}+r_\text{nav}-w_\text{work}c$ & identical \\
 \bottomrule
 \end{tabular}
 \end{table}

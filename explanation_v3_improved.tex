@@ -291,66 +291,91 @@ This encodes the geometrically correct evasion direction directly.
 \section{Reward Function}
 % ─────────────────────────────────────────────────────────────────────────────
 
-All components are attributed solely to the focus aircraft.
-The reward is purely non-positive:
+All reward components are attributed to the focus aircraft at the moment the
+action is taken.
+The reward decomposes into a safety term and a navigation term:
 \begin{equation}
-    r_t = r_\text{safe}
-        - w_\text{eff}\cdot\frac{1-\cos\Delta\psi_f}{2}
-        - w_\text{work}\cdot c_f
-        + r_\text{exit}.
+    r_t = r_\text{safe} + r_\text{nav} - w_\text{work}\cdot c_f.
     \label{eq:reward}
 \end{equation}
 
-\paragraph{Safety: CPA-margin penalty.}
+\paragraph{Safety term.}
+Rather than penalising only the single nearest predicted conflict, every
+intruder contributes an exponential proximity cost, and the sum is normalised
+by the number of intruders $N_\text{int}$ to keep the signal scale-invariant
+across traffic densities:
 \begin{equation}
     r_\text{safe}
-        = -w_\text{safe}\cdot
-          \max\!\left(0,\;1 - \frac{d_\text{CPA}^\text{min}}{2\,d_\text{sep}}\right),
+        = -\frac{w_\text{safe}}{N_\text{int}}
+          \sum_{k=1}^{N_\text{int}}
+          \exp\!\!\left(-\frac{d_\text{CPA}^{(k)}}{d_\text{sep}}\right),
     \label{eq:rsafe}
 \end{equation}
-where $d_\text{CPA}^\text{min}$ is the minimum predicted separation across all
-focus-intruder pairs within the lookahead horizon.
-The penalty is zero beyond 10\,NM predicted separation, grows linearly below
-that, and reaches $-w_\text{safe}$ at zero separation.
-Because this term activates as soon as urgency is nonzero (at $T_\text{warn}
-= 600$\,s), the reward signal is present well before any violation occurs.
+where $d_\text{CPA}^{(k)}$ is the predicted closest-point-of-approach distance
+to intruder $k$ within the lookahead horizon ($T_\text{look} = 900$\,s), and
+$d_\text{sep} = 5$\,NM.
+Each term lies in $(0,1]$, so $r_\text{safe} \in [-w_\text{safe}, 0)$ regardless
+of traffic density.
+The exponential is always nonzero, providing a continuous safety gradient even
+in sparse traffic; the gradient steepens rapidly as any intruder closes toward
+$d_\text{sep}$.
+Resolving one conflict reduces $r_\text{safe}$ even when other conflicts remain
+active, which was not the case when only the minimum CPA was used.
+
+\paragraph{Navigation term.}
+\begin{equation}
+    r_\text{nav}
+        = w_\text{nav}\cdot\cos\!\Delta\psi_\text{actual}
+          \cdot\frac{M_\text{cmd}}{M_\text{nom}},
+    \label{eq:rnav}
+\end{equation}
+where $\Delta\psi_\text{actual} = \psi_\text{dest} - \psi_\text{actual}$ is the
+angular error between the current actual heading and the bearing to destination,
+and $M_\text{nom} = 0.78$.
+This term is positive when the focus aircraft is heading toward its destination
+at cruise speed and negative when heading away, providing a dense, always-nonzero
+routing signal regardless of whether conflicts are active.
+Scaling by the speed ratio rewards maintaining cruise efficiency.
+
+\paragraph{Net reward sign.}
+The sum $r_\text{safe} + r_\text{nav}$ is positive only when the focus aircraft
+is simultaneously well-separated from all traffic and heading toward its
+destination.
+With the chosen weights, the breakeven condition requires all predicted CPAs to
+satisfy on average $d_\text{CPA} \gtrsim d_\text{sep}\ln(w_\text{safe}/w_\text{nav})
+\approx 1.6\,d_\text{sep} = 8$\,NM when the aircraft is perfectly on track at
+full speed.
+This encodes the ATCO objective directly: safe routing is rewarded, unsafe or
+off-route flight is penalised.
+
+\paragraph{Workload.}
+The workload cost $c_f = 1.0$ for heading turns, $c_f = 0.5$ for speed
+adjustments, and $c_f = 0$ for direct and hold.
+No exit reward or alive penalty is used: the navigation term already provides
+a continuous routing incentive, and credit assignment for terminal events is
+ambiguous when the focus aircraft changes step to step.
 
 \paragraph{Step-resolution limitation.}
 With a 30\,s decision cycle, a fast head-on geometry (closure $\approx 900$\,kts)
 can in principle produce a loss of separation that starts and fully resolves
-within a single step.
-In that case the reward is evaluated after the aircraft have already diverged,
-so the worst-case separation is not directly observed by the policy.
-This effect is partially mitigated by the predictive nature of $d_\text{CPA}^\text{min}$:
-when two aircraft are past their closest point of approach the code substitutes
-the current distance, which remains small if the separation was recently breached.
-More importantly, the exponential shaping of $r_\text{safe}$ ensures a non-zero
-gradient in the steps \emph{preceding} the conflict window, so the policy is
-penalised for converging geometry before any violation occurs.
-The 30\,s step length is nevertheless retained because reverting to a shorter
-cycle reintroduces turn-aliasing: a half-finished turn and a completed one produce
-nearly identical observations, which prevents the policy from learning the
-geometric consequence of its actions.
-
-\paragraph{Efficiency, workload, and exit.}
-The drift penalty $(1-\cos\Delta\psi_f)/2$ is evaluated against the commanded
-heading so that the cost is felt immediately on the step the action is issued.
-The workload cost is $c_f = 1.0$ for heading turns, $c_f = 0.5$ for speed
-adjustments, and $c_f = 0$ for direct and hold.
-A sparse penalty $r_\text{exit} = -w_\text{exit}$ fires when any aircraft
-exits the sector heading more than $90^\circ$ away from its destination.
+within a single step, so the worst-case separation is not directly observed by
+the policy.
+The predictive CPA evaluation mitigates this: converging geometry is penalised
+from the moment it falls within the lookahead horizon, well before any violation
+occurs.
+The 30\,s step is retained because shorter cycles introduce turn-aliasing, which
+prevents the policy from observing the geometric consequence of a heading command.
 
 \begin{table}[h]
 \centering
-\caption{Reward weights in descending order of magnitude.}
+\caption{Reward weights.}
 \label{tab:weights}
 \smallskip
 \begin{tabular}{llr}
 \toprule
-$w_\text{safe}$  & Safety: CPA-margin penalty    & $1.00$ \\
-$w_\text{exit}$  & Wrong-direction exit (sparse) & $0.50$ \\
-$w_\text{eff}$   & Efficiency: heading drift     & $0.20$ \\
-$w_\text{work}$  & Workload: instruction cost    & $0.05$ \\
+$w_\text{safe}$  & Safety: mean exponential CPA penalty  & $1.00$ \\
+$w_\text{nav}$   & Navigation: heading alignment $\times$ speed & $0.20$ \\
+$w_\text{work}$  & Workload: instruction cost             & $0.05$ \\
 \bottomrule
 \end{tabular}
 \end{table}
