@@ -18,6 +18,7 @@ Output: v3_no_policy.gif
 Run:    python make_gifs.py
 """
 
+import argparse
 import math
 import os
 import sys
@@ -32,20 +33,18 @@ import pygame
 from PIL import Image
 
 import bluesky as bs
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from Environments.v3_simple_env import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
-OUTPUT      = os.path.join(HERE, 'v3_no_policy.gif')
+OUTPUT_NO_POLICY = os.path.join(HERE, 'v3_no_policy.gif')
+OUTPUT_POLICY    = os.path.join(HERE, 'v3_policy.gif')
 WINDOW_SIZE = 750
 FRAME_MS    = 120                # ms per GIF frame
-MAX_FRAMES  = 1200               # 1200 × 120 ms ≈ 2.4 min of GIF
-
-# Override density/capacity for a richer, more interesting visualisation
-CONFIG['density_km2']           = lambda: 4_000.0
-CONFIG['max_agents']            = 20
-CONFIG['crossings_per_episode'] = 8
+MAX_FRAMES  = 400               # 400 × 120 ms = 48 s of GIF
 
 SEP_NM = float(CONFIG['sep_nm'])
 
@@ -252,6 +251,28 @@ def capture(surface):
 
 def main():
     pygame.init()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', default=None, help='Path to model .zip')
+    args = parser.parse_args()
+
+    # ── Load policy if provided ────────────────────────────────────────────────
+    model   = None
+    vecnorm = None
+    OUTPUT  = OUTPUT_NO_POLICY
+
+    if args.model:
+        model_path = args.model
+        vecnorm_path = model_path.replace('.zip', '_vecnorm.pkl')
+        print(f'Loading model   : {model_path}')
+        model = PPO.load(model_path)
+        if os.path.exists(vecnorm_path):
+            print(f'Loading vecnorm : {vecnorm_path}')
+            dummy = DummyVecEnv([AirspaceEnv])
+            vecnorm = VecNormalize.load(vecnorm_path, dummy)
+            vecnorm.training    = False
+            vecnorm.norm_reward = False
+        OUTPUT = OUTPUT_POLICY
+
     screen  = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
     font    = pygame.font.SysFont('monospace', 11)
     font_sm = pygame.font.SysFont('monospace', 10)
@@ -265,18 +286,22 @@ def main():
     frames    = []
     los_steps = 0
 
+    mode_str = f'policy: {os.path.basename(args.model)}' if model else 'no policy'
     print(f'Recording up to {MAX_FRAMES} frames  '
           f'(n_aircraft={env.n_aircraft}, max_steps={env._max_steps})')
-    print(f'Action: 2 = direct to destination (no policy intervention)\n')
+    print(f'Mode: {mode_str}\n')
 
     while len(frames) < MAX_FRAMES:
-        # No policy: always issue "direct to destination" (action 2 = 0° offset)
-        _, _, terminated, truncated, info = env.step(2)
+        if model is not None:
+            norm_obs = vecnorm.normalize_obs(obs[None])[0] if vecnorm else obs
+            action, _ = model.predict(norm_obs, deterministic=True)
+            obs, _, terminated, truncated, info = env.step(int(action))
+        else:
+            obs, _, terminated, truncated, info = env.step(2)
 
         if info.get('los_pairs'):
             los_steps += 1
 
-        # Register newly spawned aircraft
         for cs in env._active_callsigns:
             if cs not in dest_px and cs in env._destination_ll:
                 dest_px[cs] = view.ll_to_px(*env._destination_ll[cs])
@@ -286,22 +311,22 @@ def main():
 
         n = len(frames)
         if n % 100 == 0:
-            U       = env._urgency_matrix
-            n_los   = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
-            n_conf  = int((U > 0).sum())   // 2 if U.size > 0 else 0
+            U      = env._urgency_matrix
+            n_los  = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
+            n_conf = int((U > 0).sum())   // 2 if U.size > 0 else 0
             print(f'  frame {n:4d}/{MAX_FRAMES}  T={bs.sim.simt:.0f}s  '
                   f'active={len(env._active_callsigns)}  '
                   f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}')
 
         if terminated or truncated:
-            print('  Episode ended — resetting')
+            print('  Episode ended -- resetting')
             obs, _ = env.reset()
             view    = _View(env.polygon, WINDOW_SIZE, WINDOW_SIZE)
             dest_px = {cs: view.ll_to_px(*env._destination_ll[cs])
                        for cs in env._active_callsigns}
             los_steps = 0
 
-    print(f'\nSaving {len(frames)} frames → {OUTPUT}')
+    print(f'\nSaving {len(frames)} frames -> {OUTPUT}')
     frames[0].save(OUTPUT, save_all=True, append_images=frames[1:],
                    duration=FRAME_MS, loop=0, optimize=False)
     print(f'Done  ({os.path.getsize(OUTPUT)/1e6:.1f} MB)')

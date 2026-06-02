@@ -33,13 +33,13 @@ RUNS_ROOT = os.path.abspath(
 
 PPO_KWARGS = dict(
     learning_rate = 3e-4,
-    n_steps       = 512,
+    n_steps       = 1024,
     batch_size    = 64,
     n_epochs      = 10,
     gamma         = 0.99,
     gae_lambda    = 0.95,
     clip_range    = 0.2,
-    ent_coef      = 0.0,
+    ent_coef      = 0.01,
     vf_coef       = 0.5,
     verbose       = 0,
     policy_kwargs = dict(net_arch=[64, 64]),
@@ -108,7 +108,7 @@ class ProgressCallback(BaseCallback):
 # ── Training run ──────────────────────────────────────────────────────────────
 
 def train(seed):
-    run_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_seed{seed}"
+    run_name = f"ramp180_obs21_sticky3_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
@@ -117,8 +117,8 @@ def train(seed):
 
     venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv)
     env  = VecNormalize(VecMonitor(venv),
-                        norm_obs=True, norm_reward=True,
-                        clip_obs=10.0, clip_reward=10.0, gamma=0.99)
+                        norm_obs=True, norm_reward=False,
+                        clip_obs=10.0, gamma=0.99)
 
     model = PPO('MlpPolicy', env, seed=seed, tensorboard_log=tb_dir, **PPO_KWARGS)
 
