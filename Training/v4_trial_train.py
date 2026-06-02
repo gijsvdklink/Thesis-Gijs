@@ -36,7 +36,7 @@ RUNS_ROOT = os.path.abspath(
 PPO_KWARGS = dict(
     learning_rate = 3e-4,
     n_steps       = 1024,
-    batch_size    = 64,
+    batch_size    = 128,
     n_epochs      = 10,
     gamma         = 0.99,
     gae_lambda    = 0.95,
@@ -44,7 +44,7 @@ PPO_KWARGS = dict(
     ent_coef      = 0.02,
     vf_coef       = 0.5,
     verbose       = 0,
-    policy_kwargs = dict(net_arch=[128, 128]),
+    policy_kwargs = dict(net_arch=[256, 256]),
 )
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────

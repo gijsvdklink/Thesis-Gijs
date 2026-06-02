@@ -295,11 +295,23 @@ observation representation.
 \section{Training}
 % ─────────────────────────────────────────────────────────────────────────────
 
-Training uses PPO with four parallel environments (\texttt{SubprocVecEnv}),
-network $[128,\,128]$, entropy coefficient $\beta_H = 0.02$, and all other
-hyperparameters identical to v3\_non\_changing.
+Training uses PPO with four parallel environments (\texttt{SubprocVecEnv}).
 \texttt{VecFrameStack(4)} is applied after \texttt{VecNormalize}, stacking
 four observation frames before feeding them to the policy.
+Two hyperparameters differ from v3\_non\_changing to account for the larger
+observation:
+\begin{itemize}
+    \item \textbf{Network architecture}: $[256,\,256]$ instead of $[128,\,128]$.
+          The 308-dimensional stacked input requires additional capacity; keeping
+          the first layer at 128 neurons would create a severe information
+          bottleneck.
+    \item \textbf{Batch size}: 128 instead of 64.
+          The larger network has more parameters, making gradient estimates from
+          small batches noisier; doubling the batch size stabilises updates.
+\end{itemize}
+All other hyperparameters ($\eta = 3\times10^{-4}$, $n_\text{steps} = 1024$,
+$n_\text{epochs} = 10$, $\beta_H = 0.02$, \texttt{clip\_range} $= 0.2$)
+are identical to v3\_non\_changing.
 Results are saved to \texttt{Runs\_saved/v4\_trial/}.
 
 \end{document}
