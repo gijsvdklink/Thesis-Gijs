@@ -1,0 +1,280 @@
+%% explanation_v4_trial.tex — LiDAR-observation single-ownship environment.
+% !TEX program = pdflatex
+
+\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\geometry{margin=2.5cm}
+
+\title{\textbf{v4\_trial Environment: Technical Specification}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The v4\_trial environment shares the same scenario setup as v3\_non\_changing:
+a single ownship (slot~0) is controlled by the agent, all surrounding traffic
+is uncontrolled, and the sector polygon, aircraft density, and spawning logic
+are identical.
+The fundamental change is in the \emph{observation representation}: the four
+explicit per-neighbour CPA features of v3\_non\_changing are replaced by a
+16-ray ego-centric LiDAR sensor.
+The action space remains the same nine discrete ATCO-style clearances.
+
+The motivation follows the approach of the \textsc{navigation-mappo-rl}
+reference implementation, in which agents equipped with a LiDAR proximity
+sensor and a navigation-progress reward successfully learned collision
+avoidance in dense multi-agent scenarios.
+Applying that representation to the BlueSky airspace environment allows a
+direct comparison of the two observation designs under otherwise identical
+conditions.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Environment Loop}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{algorithm}[h]
+\caption{\textsc{Reset} — initialise a new episode}
+\begin{algorithmic}[1]
+\State Generate random convex polygon (5--7 vertices)
+\State area $\sim\mathcal{U}(10\,000,\,80\,000)$\,km$^2$,\quad
+       density $\sim\mathcal{U}(5\,000,\,15\,000)$\,km$^2$/aircraft
+\State $N \leftarrow \operatorname{clip}\!\bigl(\lfloor\text{area}/\text{density}\rceil,\;2,\;15\bigr)$
+\State Compute $T_\text{max}$ from sector diameter and cruise speed
+\For{each slot $s = 1,\ldots,N$}
+    \State Spawn aircraft on perimeter arc $s$ with uniform jitter
+\EndFor
+\State Ownship $\leftarrow$ aircraft in slot~0 \quad\textit{(fixed for the episode)}
+\State Compute initial LiDAR reading $\boldsymbol{\ell}_0$ around ownship
+\State \Return observation $\mathbf{o}(\text{ownship})$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[h]
+\caption{\textsc{Step}(action) — advance one RL step (30\,s simulated)}
+\begin{algorithmic}[1]
+\State Spawn any pending replacement aircraft
+\If{action is heading offset $\delta$}
+    \State $\psi_\text{cmd} \leftarrow \psi_\text{dest}(\text{ownship}) + \delta$
+\ElsIf{action is Mach adjustment $\Delta M$}
+    \State $M_\text{cmd} \leftarrow \operatorname{clip}(M_\text{cmd} + \Delta M,\;0.70,\;0.82)$
+\EndIf
+\State \textit{(Traffic aircraft receive no commands)}
+\State Advance BlueSky simulation $60\times0.5$\,s $= 30$\,s
+\For{each aircraft that exited the sector}
+    \If{exiting aircraft is ownship}
+        \State Apply exit penalty if $|\Delta\psi_\text{dest}| > 90^\circ$
+    \EndIf
+    \State Schedule replacement
+\EndFor
+\State Update ownship callsign if slot~0 was replaced
+\State Compute LiDAR reading $\boldsymbol{\ell}$ around updated ownship
+\State $r \leftarrow r_\text{safe} + r_\text{nav} - w_\text{work}\cdot c + r_\text{exit}$
+\State \Return $\mathbf{o}(\text{ownship}),\; r,\;
+               \text{truncated}=(\text{step\_count} \geq T_\text{max})$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Step duration.}
+Each RL step covers $60 \times 0.5\,\text{s} = 30$\,s of simulated time,
+compared to 10\,s in v3\_improved.
+The longer step ensures that a commanded 30° heading change is physically
+complete before the reward is evaluated, so the policy observes the full
+geometric consequence of each instruction.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Action Space}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Identical to v3\_non\_changing.
+Nine discrete actions: six heading offsets and three Mach adjustments, applied
+to the ownship only.
+\begin{equation}
+    \delta \in \{-30^\circ,\,-15^\circ,\,0^\circ,\,+15^\circ,\,+30^\circ,\,\varnothing\},
+    \qquad
+    \Delta M \in \{-0.04,\,-0.02,\,+0.02\}.
+\end{equation}
+Workload costs: 1.0 heading turns, 0.5 speed adjustments, 0 direct and hold.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{LiDAR Sensor}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The LiDAR sensor casts $N_\text{rays} = 16$ rays uniformly around the
+ownship in its ego-centric frame (ray~0 is dead ahead; rays proceed
+clockwise).
+Each ray extends to a maximum range $d_\text{max} = 30$\,NM (six times the
+separation standard).
+
+Each traffic aircraft is modelled as a circle of radius
+$r_\text{det} = 5$\,NM (equal to the separation standard) for
+ray-hit purposes.
+For a ray in direction $(\sin\theta,\cos\theta)$ in the ego frame and an
+intruder at ego-frame position $(p_x, p_y)$, the hit distance is
+\begin{equation}
+    t_\text{hit} = \max\!\bigl(0,\; t - \sqrt{r_\text{det}^2 - p_\perp^2}\bigr),
+    \quad
+    t = p_x\sin\theta + p_y\cos\theta,
+    \quad
+    p_\perp^2 = p_x^2 + p_y^2 - t^2,
+\end{equation}
+whenever $t > 0$ and $p_\perp^2 < r_\text{det}^2$.
+The reading for ray $r$ is $\ell_r = \min_k(t_{\text{hit},k})/d_\text{max}$,
+clamped to $[0,1]$, where the minimum is taken over all traffic aircraft~$k$
+that intersect the ray.
+A reading of 1 indicates no aircraft within range; 0 indicates an aircraft
+whose detection circle reaches the ownship position.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Observation Space ($\mathbb{R}^{21}$)}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The observation has the same dimensionality as v3\_non\_changing (21 floats)
+but a different structure: five ego features followed by 16 LiDAR readings
+(Table~\ref{tab:obs}).
+
+\begin{table}[h]
+\centering
+\caption{Observation vector (21 features).}
+\label{tab:obs}
+\smallskip
+\begin{tabular}{clll}
+\toprule
+\textbf{Index} & \textbf{Feature} & \textbf{Definition} & \textbf{Range} \\
+\midrule
+\multicolumn{4}{l}{\textit{Ownship goal (2)}} \\[2pt]
+0 & $\sin\Delta\psi$ & $\sin(\psi_\text{dest}-\psi_\text{cmd})$ & $[-1,1]$ \\[2pt]
+1 & $\cos\Delta\psi$ & $\cos(\psi_\text{dest}-\psi_\text{cmd})$ & $[-1,1]$ \\[4pt]
+\multicolumn{4}{l}{\textit{Ownship state (3)}} \\[2pt]
+2 & Turn progress
+  & $\operatorname{clip}((\psi_\text{cmd}-\psi_\text{actual})/30^\circ,\,-1,1)$
+  & $[-1,1]$ \\[2pt]
+3 & Time to exit
+  & $\min(d_\text{boundary}/(v\cdot T_\text{look}),\,1)$
+  & $[0,1]$ \\[2pt]
+4 & Speed offset
+  & $(M_\text{cmd}-M_\text{min})/(M_\text{max}-M_\text{min})$
+  & $[0,1]$ \\[4pt]
+\multicolumn{4}{l}{\textit{16 LiDAR rays (ego-centric, ray 0 = dead ahead, clockwise):}} \\[2pt]
+$5\ldots20$ & $\ell_0,\ldots,\ell_{15}$
+  & Normalised distance to nearest intruder per ray
+  & $[0,1]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The LiDAR replaces the four explicit CPA neighbour features of v3\_non\_changing.
+Rather than receiving pre-computed closest-point-of-approach distances and
+lateral offsets for the four nearest aircraft, the agent receives a raw
+geometric proximity snapshot and must learn to infer conflict geometry from the
+spatial pattern of ray readings.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Reward Function}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{equation}
+    r_t = r_\text{safe} + r_\text{nav} - w_\text{work}\cdot c + r_\text{exit},
+\end{equation}
+
+\paragraph{Safety term.}
+The safety penalty is driven by the minimum LiDAR reading across all 16 rays,
+converted back to nautical miles:
+\begin{equation}
+    d_\text{lidar}^\text{min} = \min_r(\ell_r)\cdot d_\text{max},
+    \qquad
+    r_\text{safe} = -w_\text{safe}\cdot
+        \exp\!\left(-\frac{d_\text{lidar}^\text{min}}{d_\text{sep}}\right).
+\end{equation}
+This is the same exponential form as v3\_non\_changing but evaluated on the
+current geometric proximity rather than the predicted CPA distance.
+The penalty is always negative and approaches zero only when all intruders
+are well beyond the detection horizon.
+
+\paragraph{Navigation term.}
+\begin{equation}
+    r_\text{nav} = w_\text{nav}\cdot\cos\Delta\psi_\text{actual},
+    \qquad
+    \Delta\psi_\text{actual} = \psi_\text{dest} - \psi_\text{actual}.
+\end{equation}
+This reward is positive when the ownship is flying toward its destination and
+negative when flying away, providing a continuous navigation signal analogous
+to the progress reward in navigation-mappo-rl.
+
+\paragraph{Workload term.}
+$c$ is the discrete action cost, identical to v3\_non\_changing.
+
+\paragraph{Exit penalty.}
+$r_\text{exit} = -w_\text{exit}$ when the ownship exits the sector in the
+wrong direction ($|\Delta\psi_\text{dest}| > 90^\circ$); zero otherwise.
+
+\begin{table}[h]
+\centering
+\caption{Reward weights.}
+\smallskip
+\begin{tabular}{llr}
+\toprule
+$w_\text{safe}$  & Safety: LiDAR-proximity penalty  & $1.00$ \\
+$w_\text{exit}$  & Wrong-direction exit (sparse)     & $0.50$ \\
+$w_\text{nav}$   & Navigation: heading alignment     & $0.20$ \\
+$w_\text{work}$  & Workload: instruction cost        & $0.05$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Comparison with v3\_non\_changing}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+\centering
+\caption{Key differences between v3\_non\_changing and v4\_trial.}
+\smallskip
+\begin{tabular}{lll}
+\toprule
+& \textbf{v3\_non\_changing} & \textbf{v4\_trial} \\
+\midrule
+Action space      & Discrete(9)                & Discrete(9) \\
+Observation dim   & 21                         & 21 \\
+Obs [0:5]         & 5 ego features             & 5 ego features (identical) \\
+Obs [5:21]        & 4 neighbours $\times$ 4 CPA features  & 16 LiDAR rays \\
+CPA in obs        & Yes (explicit)             & No \\
+CPA in reward     & Yes                        & No \\
+Safety reward     & $-w\cdot\exp(-d_\text{CPA}/d_\text{sep})$ & $-w\cdot\exp(-d_\text{lidar}/d_\text{sep})$ \\
+Navigation reward & $-w_\text{eff}\cdot(1-\cos\Delta\psi_\text{cmd})/2$ & $+w_\text{nav}\cdot\cos\Delta\psi_\text{actual}$ \\
+Urgency matrix    & Yes (visualisation)        & Removed \\
+Step duration     & 30\,s                      & 30\,s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The central research question of v4\_trial is whether a policy can learn
+effective conflict avoidance from a LiDAR proximity snapshot alone, without
+explicit CPA features in either the observation or the reward.
+The agent must learn to infer the trajectory of surrounding traffic from the
+spatial pattern and evolution of ray readings across consecutive steps.
+All other design decisions are held constant to isolate the effect of the
+observation representation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Training}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Training uses the same PPO configuration as v3\_non\_changing: four parallel
+environments (\texttt{SubprocVecEnv}), network $[128,\,128]$, entropy
+coefficient $\beta_H = 0.02$, and all other hyperparameters unchanged.
+Results are saved to \texttt{Runs\_saved/v4\_trial/}.
+
+\end{document}
