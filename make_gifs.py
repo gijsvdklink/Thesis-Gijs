@@ -35,7 +35,7 @@ from PIL import Image
 import bluesky as bs
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from Environments.v3_simple_env import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
+from Environments.v3_improved import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -252,8 +252,14 @@ def capture(surface):
 def main():
     pygame.init()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default=None, help='Path to model .zip')
+    parser.add_argument('--model',  default=None, help='Path to model .zip')
+    parser.add_argument('--frames', type=int, default=MAX_FRAMES,
+                        help='Number of GIF frames (default %(default)s)')
+    parser.add_argument('--fps',    type=int, default=None,
+                        help='Override frame delay in ms')
     args = parser.parse_args()
+    max_frames = args.frames
+    frame_ms   = args.fps if args.fps else FRAME_MS
 
     # ── Load policy if provided ────────────────────────────────────────────────
     model   = None
@@ -287,11 +293,11 @@ def main():
     los_steps = 0
 
     mode_str = f'policy: {os.path.basename(args.model)}' if model else 'no policy'
-    print(f'Recording up to {MAX_FRAMES} frames  '
+    print(f'Recording up to {max_frames} frames  '
           f'(n_aircraft={env.n_aircraft}, max_steps={env._max_steps})')
     print(f'Mode: {mode_str}\n')
 
-    while len(frames) < MAX_FRAMES:
+    while len(frames) < max_frames:
         if model is not None:
             norm_obs = vecnorm.normalize_obs(obs[None])[0] if vecnorm else obs
             action, _ = model.predict(norm_obs, deterministic=True)
@@ -310,11 +316,11 @@ def main():
         frames.append(capture(screen))
 
         n = len(frames)
-        if n % 100 == 0:
+        if n % 50 == 0:
             U      = env._urgency_matrix
             n_los  = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
             n_conf = int((U > 0).sum())   // 2 if U.size > 0 else 0
-            print(f'  frame {n:4d}/{MAX_FRAMES}  T={bs.sim.simt:.0f}s  '
+            print(f'  frame {n:4d}/{max_frames}  T={bs.sim.simt:.0f}s  '
                   f'active={len(env._active_callsigns)}  '
                   f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}')
 
@@ -328,7 +334,7 @@ def main():
 
     print(f'\nSaving {len(frames)} frames -> {OUTPUT}')
     frames[0].save(OUTPUT, save_all=True, append_images=frames[1:],
-                   duration=FRAME_MS, loop=0, optimize=False)
+                   duration=frame_ms, loop=0, optimize=False)
     print(f'Done  ({os.path.getsize(OUTPUT)/1e6:.1f} MB)')
     pygame.quit()
 

@@ -1,4 +1,4 @@
-%% explanation.tex — v3 ATCO advisory environment, current specification.
+%% explanation.tex — v3_improved ATCO advisory environment, current specification.
 % !TEX program = pdflatex
 
 \documentclass[11pt, a4paper]{article}
@@ -11,7 +11,7 @@
 \usepackage[hidelinks]{hyperref}
 \geometry{margin=2.5cm}
 
-\title{\textbf{v3 Environment: Technical Specification}}
+\title{\textbf{v3\_improved Environment: Technical Specification}}
 \author{}
 \date{}
 
@@ -23,32 +23,34 @@
 % ─────────────────────────────────────────────────────────────────────────────
 
 The environment simulates a single upper-airspace sector of approximately
-80\,000\,km$^2$, roughly the scale of Dutch upper airspace (ACC\,EHAA).
-The sector shape is a random convex polygon with 5--7 vertices, resampled each
-episode and filtered to a minimum isoperimetric ratio of 0.65 to avoid
-degenerate shapes.
-Traffic density varies per episode: $N \in [8,\,13]$ A320 aircraft at FL350
-and 450\,kts, drawn from a uniform density of
-6\,000--10\,000\,km$^2$ per aircraft.
+80\,000\,km$^2$, comparable in scale to Dutch upper airspace (ACC\,EHAA).
+The sector boundary is a random convex polygon with 5--7 vertices, resampled
+each episode and filtered to a minimum isoperimetric ratio of 0.65.
+Each episode contains $N \in [8,\,13]$ A320 aircraft at FL350, drawn from a
+uniform density of 5\,000--10\,000\,km$^2$ per aircraft.
+All aircraft cruise at $M = 0.78$ (approximately 450\,kt TAS at FL350).
+Speed commands are issued in Mach to avoid the CAS-to-TAS ambiguity that
+arises at high altitude.
 
 \paragraph{Initialisation.}
-All $N$ aircraft spawn simultaneously at episode start.
+All $N$ aircraft spawn simultaneously.
 The sector perimeter is divided into $N$ equal arcs; each aircraft is placed
-within its dedicated arc with uniform jitter, and heads toward a reference point
-on the opposite side of the polygon (with $\pm30\%$ jitter in arc position),
-then continues to a destination 2$\times$ the sector diameter beyond the boundary.
-This guarantees realistic crossing traffic from the first step.
-Minimum inter-aircraft spawn separation is $d_\text{sep} + d_\text{buf} = 10$\,NM.
-When an aircraft exits the sector it is replaced within one step from a randomly
-selected boundary arc, maintaining constant density throughout the episode.
+within its arc with uniform jitter and flies toward a reference point on the
+opposite side (with $\pm30\%$ arc jitter), then continues to a destination
+twice the sector diameter beyond the boundary.
+This produces realistic crossing traffic from the first step.
+Minimum spawn separation is 10\,NM.
+Exiting aircraft are replaced within one step to maintain constant density.
+Episodes last approximately 60\,min of simulated time (2.5 sector crossings).
 
 \paragraph{Decision cycle.}
-A single agent represents the ATCO.
-Each RL step (10\,s of simulated flight, 20 BlueSky sub-steps of 0.5\,s each)
-the agent issues one absolute heading command to the \textit{focus aircraft}
-selected by the urgency matrix (Section~\ref{sec:urgency}).
-At the standard A320 bank angle, a 30$^\circ$ heading change completes in
-roughly 10\,s, so issued commands take full physical effect within one step.
+A single agent acts as the air traffic controller.
+At each RL step (10\,s simulated, 20 BlueSky sub-steps of 0.5\,s), the agent
+issues one instruction, either a heading offset or a Mach adjustment, to the
+\textit{focus aircraft} selected by the urgency matrix
+(Section~\ref{sec:urgency}).
+Heading changes complete within one step; speed adjustments settle gradually
+over approximately 60 steps (10\,min), consistent with cruise deceleration.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Urgency Matrix and Focus Selection}
@@ -57,101 +59,99 @@ roughly 10\,s, so issued commands take full physical effect within one step.
 
 \subsection{Urgency scores}
 
-A symmetric urgency matrix $\mathbf{U} \in \mathbb{R}^{N\times N}$ is rebuilt
-from scratch each step using only current positions and headings — no BlueSky
-conflict-detection module is used anywhere.
-The entry $u_{ij}$ quantifies conflict severity for pair $(i,j)$:
+A symmetric urgency matrix $\mathbf{U} \in \mathbb{R}^{N\times N}$ is
+recomputed each step from current positions, headings, and true airspeeds.
+The entry $u_{ij}$ for pair $(i,j)$ is:
 
 \begin{equation}
     u_{ij} =
     \begin{cases}
         1 + 9\!\left(1 - \dfrac{d_{ij}}{d_\text{sep}}\right)
-            & d_{ij} < d_\text{sep} \quad\text{(active LoS, } u_{ij} \in [1,10]\text{)} \\[10pt]
+            & d_{ij} < d_\text{sep}
+              \quad\text{(active LoS, } u_{ij} \in [1,10]\text{)} \\[10pt]
         \dfrac{T_\text{warn} - t_\text{CPA}^{ij}}{T_\text{warn}}
             & d_\text{CPA}^{ij} < d_\text{sep},\;
-              0 \leq t_\text{CPA}^{ij} \leq T_\text{warn} \\[8pt]
-        0   & \text{otherwise (diverging or out of horizon)}
+              0 \leq t_\text{CPA}^{ij} \leq T_\text{look} \\[8pt]
+        0   & \text{otherwise}
     \end{cases}
     \label{eq:urgency}
 \end{equation}
 
-where $d_\text{sep}=5$\,NM, $T_\text{warn}=180$\,s, and $t_\text{CPA}^{ij}$ is
-the analytical time to closest point of approach computed from current positions
-and headings assuming straight-line flight at 450\,kts.
-
-\paragraph{Design rationale.}
-The predicted-conflict branch is a linear early-warning ramp that rises from~0
-at $t_\text{CPA} = T_\text{warn}$ to~1 at $t_\text{CPA}=0$.
-The previous formulation ($1/\max(t_\text{CPA},1)$) was hyperbolic: a conflict
-90\,s out yielded urgency $\approx 0.011$, far below the $w_\text{eff}=0.20$
-efficiency pull, so the agent was not rewarded for acting preventively.
-The ramp ensures a 90\,s conflict produces urgency 0.5, which clearly
-outweighs the drift penalty and motivates early intervention.
-Both branches are continuous at the separation boundary (both equal~1 when
-$d_{ij}=d_\text{sep}$), and LoS urgency ($[1,10]$) strictly dominates predicted
-conflicts ($[0,1]$), preserving the priority ordering in focus selection.
+where $d_\text{sep} = 5$\,NM, $T_\text{warn} = 600$\,s (10\,min), and
+$T_\text{look} = 900$\,s (15\,min).
+The warning horizon is set to 10\,min to match standard practice, in which
+conflicts are resolved 8--10\,min before closest approach.
+This ensures a reward gradient is present from the moment a conflict begins
+to develop, incentivising early rather than reactive intervention.
+Both branches are continuous at $d_{ij} = d_\text{sep}$ (both equal~1 there),
+and active LoS urgency ($[1,10]$) strictly dominates predicted urgency
+($[0,1]$) in focus selection.
 
 \subsection{Focus selection}
 
-The focus aircraft receives the heading instruction each step.
-It is selected as the aircraft with the highest row-maximum:
+The focus aircraft is the one with the highest row-maximum of $\mathbf{U}$:
 \begin{equation}
     f = \arg\max_i \;\max_{j\neq i}\; u_{ij}.
 \end{equation}
-When $\mathbf{U} = \mathbf{0}$ (no conflicts anywhere), focus falls back to
-the aircraft with the greatest commanded-heading deviation from its destination,
-measured as $(1-\cos\Delta\psi)/2$.
+When no conflicts are active, focus falls back to the aircraft with the
+largest commanded-heading deviation from its destination,
+$(1-\cos\Delta\psi)/2$.
 
-\paragraph{Hysteresis and sticky focus.}
-Two mechanisms prevent rapid oscillation.
-First, a 5\,\% hysteresis margin suppresses switching when the urgency
-difference is marginal: the focus changes only if the new candidate's row-max
-exceeds the current aircraft's row-max by at least 5\,\%.
-Second, \textit{sticky focus} holds the same aircraft for a minimum of
-$k_\text{sticky}=3$ steps (30\,s) before any switch is allowed.
-The sole exception is an emergency override: if a new LoS appears
-(urgency $>1$) while the current focus aircraft is clear (urgency $\leq 1$),
-the switch occurs immediately regardless of the step counter.
-These two mechanisms together stabilise the observation stream, preventing the
-consecutive observations from being drawn from different aircraft perspectives
-and thus giving PPO consistent rollouts to learn from.
+\paragraph{Commitment rule.}
+A controller typically resolves one conflict before moving to the next.
+This is implemented as follows.
+If the focus aircraft is in an active conflict ($u_f > 0$), it is retained
+unless a candidate $b$ satisfies $u_b > u_f \cdot (1 + \theta)$, with
+override margin $\theta = 0.10$.
+If the conflict has just cleared ($u_f = 0$) but fewer than
+$n_\text{clear} = 5$ steps have elapsed since the last nonzero urgency, the
+focus is held to confirm resolution.
+An emergency override applies in both cases: a new active LoS ($u_b > 1$)
+releases the commitment immediately.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Action Space}
 % ─────────────────────────────────────────────────────────────────────────────
 
-Six discrete actions set the commanded heading as an absolute offset from
-the current direct-to-destination bearing:
+Nine discrete actions are available: six heading instructions and three speed
+instructions.
+Heading actions set the commanded heading as an offset from the current
+direct-to-destination bearing:
 \begin{equation}
     \psi_\text{cmd} = \psi_\text{dest} + \delta, \qquad
     \delta \in \{-30^\circ,\,-15^\circ,\,0^\circ,\,+15^\circ,\,+30^\circ,\,\varnothing\}.
 \end{equation}
-The direct action ($\delta=0^\circ$) points the aircraft straight toward its
-destination and is free (no workload cost).
-The hold action ($\varnothing$) re-issues the current commanded heading to
-the simulator every step without modification, also free.
-Resolution turns ($\delta \neq 0$) carry a small workload cost $w_\text{work}$.
+The direct ($\delta = 0^\circ$) and hold ($\varnothing$) actions are free.
+Resolution turns ($\delta \neq 0^\circ$) carry a workload cost of 1.0.
+Offsets are recomputed from the aircraft's actual position each step, so the
+direct action always means ``fly to destination now.''
 
-Absolute offsets from the \textit{current} destination bearing are recomputed
-each step from the aircraft's actual position, so no heading error accumulates
-across steps: \textit{direct} always means ``fly to destination now,''
-regardless of prior deviations.
-The maximum offset of $\pm30^\circ$ gives the agent enough authority to
-resolve head-on conflicts without excessive off-track deviation.
+Speed actions adjust the commanded Mach cumulatively:
+\begin{equation}
+    M_\text{cmd} \leftarrow
+    \operatorname{clip}\!\bigl(M_\text{cmd} + \Delta M,\;0.70,\;0.82\bigr),
+    \qquad
+    \Delta M \in \{-0.04,\,-0.02,\,+0.02\}.
+\end{equation}
+The upper limit of 0.82 corresponds to the A320 maximum operating Mach (MMO).
+Speed adjustments carry a workload cost of 0.5, lower than heading turns
+because they are less disruptive to aircraft routing.
+Commanded Mach is reset to $M_\text{nom} = 0.78$ on respawn.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Observation Space ($\mathbb{R}^{21}$)}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The observation is constructed ego-centrically from the focus aircraft's
-perspective every step after the single focus selection call.
-All features are dimensionless and bounded; intruder slots are sorted by
-urgency descending so the most dangerous threat is always in slot~0.
+The observation is constructed ego-centrically from the focus aircraft.
+All features are dimensionless and bounded.
+The four nearest intruders are included, sorted by predicted CPA distance
+ascending so the geometrically closest pass is always in slot~0.
+Empty slots are padded with $(1,\,0,\,0,\,0)$.
 
 \begin{table}[h]
 \centering
-\caption{Observation vector. All features bounded; zero-padding for missing intruders
-         uses $(1,\,0,\,0,\,0,\,0)$ (distant, neutral geometry, no urgency).}
+\caption{Observation vector (21 features). Intruder slots are sorted by
+         predicted CPA distance ascending. Empty slots: $(1,\,0,\,0,\,0)$.}
 \label{tab:obs}
 \smallskip
 \begin{tabular}{clll}
@@ -159,68 +159,62 @@ urgency descending so the most dangerous threat is always in slot~0.
 \textbf{Index} & \textbf{Feature} & \textbf{Definition} & \textbf{Range} \\
 \midrule
 \multicolumn{4}{l}{\textit{Ownship goal (2 features)}} \\[2pt]
-0 & $\sin\Delta\psi$        & $\sin(\psi_\text{dest}-\psi_\text{cmd})$      & $[-1,1]$ \\[2pt]
-1 & $\cos\Delta\psi$        & $\cos(\psi_\text{dest}-\psi_\text{cmd})$      & $[-1,1]$ \\[4pt]
+0 & $\sin\Delta\psi$
+  & $\sin(\psi_\text{dest}-\psi_\text{cmd})$
+  & $[-1,1]$ \\[2pt]
+1 & $\cos\Delta\psi$
+  & $\cos(\psi_\text{dest}-\psi_\text{cmd})$
+  & $[-1,1]$ \\[4pt]
 \multicolumn{4}{l}{\textit{Ownship state (3 features)}} \\[2pt]
-2 & Turn progress   & $\operatorname{clip}\!\left(\tfrac{\psi_\text{cmd}-\psi_\text{actual}}{30^\circ},\,-1,1\right)$
-                    & $[-1,1]$ \\[2pt]
-3 & Clearance timer & $\min(t_\text{clear}/30,\;1)$;\quad $t_\text{clear}$ = steps since last $u_{fj}>0$
-                    & $[0,1]$  \\[2pt]
-4 & Time to exit    & $d_\text{boundary} \;/\; (v \cdot T_\text{warn})$
-                    & $[0,1]$  \\[4pt]
-\multicolumn{4}{l}{\textit{3 intruders $\times$ 5 features, sorted by urgency $\downarrow$:}} \\[2pt]
-$+0$ & Distance    & $\min(d_{fk}/3d_\text{sep},\;1)$                          & $[0,1]$   \\[2pt]
-$+1$ & Forward     & $\cos(\beta_{fk} - \psi_f)$;\quad $+1$ = ahead, $-1$ = behind & $[-1,1]$ \\[2pt]
-$+2$ & Right       & $\sin(\beta_{fk} - \psi_f)$;\quad $+1$ = right, $-1$ = left   & $[-1,1]$ \\[2pt]
-$+3$ & CPA side    & $\operatorname{clip}(r^\text{right}_\text{CPA}/d_\text{sep},\,-1,1)$           & $[-1,1]$ \\[2pt]
-$+4$ & Pair urgency & $\min(u_{fk},\;1)$                                         & $[0,1]$   \\[4pt]
-20   & Urgency density & $\min\!\left(\tfrac{1}{2}\sum_{i\neq j}u_{ij}/10,\;1\right)$ & $[0,1]$ \\
+2 & Turn progress
+  & $\operatorname{clip}\!\left(\tfrac{\psi_\text{cmd}-\psi_\text{actual}}{30^\circ},\,-1,1\right)$
+  & $[-1,1]$ \\[2pt]
+3 & Time to exit
+  & $d_\text{boundary}\;/\;(v\cdot T_\text{look})$
+  & $[0,1]$ \\[2pt]
+4 & Speed offset
+  & $(M_\text{cmd} - 0.70)\;/\;0.12$
+  & $[0,1]$ \\[4pt]
+\multicolumn{4}{l}{\textit{4 intruders $\times$ 4 features, sorted by CPA distance $\uparrow$:}} \\[2pt]
+$+0$ & Distance
+     & $\min(d_{fk}\,/\,3d_\text{sep},\;1)$
+     & $[0,1]$ \\[2pt]
+$+1$ & Forward
+     & $\cos(\beta_{fk} - \psi_f)$
+     & $[-1,1]$ \\[2pt]
+$+2$ & Right
+     & $\sin(\beta_{fk} - \psi_f)$
+     & $[-1,1]$ \\[2pt]
+$+3$ & CPA side
+     & $\operatorname{clip}(r^\text{right}_\text{CPA}\,/\,d_\text{sep},\,-1,1)$
+     & $[-1,1]$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Heading error as unit vector (indices 0--1).}
-The conventional single-angle encoding $\Delta\psi/180$ is monotone but
-discontinuous at $\pm180^\circ$.
-The unit-vector encoding $(\sin\Delta\psi,\cos\Delta\psi)$ is smooth everywhere
-and encodes both the required turn direction and magnitude without any
-normalisation ambiguity.
+\paragraph{Heading error (indices 0--1).}
+The unit-vector encoding $(\sin\Delta\psi,\cos\Delta\psi)$ is smooth and
+unambiguous across all headings, unlike a single-angle normalisation which
+is discontinuous at $\pm180^\circ$.
 
 \paragraph{Turn progress (index 2).}
-At the standard A320 turn rate ($\approx3^\circ$/s), a 30$^\circ$ command takes
-$\approx10$\,s to complete — exactly one step.
-Without this feature the observation is aliased: issuing \textit{direct} while
-the aircraft is mid-turn looks identical to issuing it when already aligned,
-yet the correct response is completely different (wait vs.\ snap back now).
-Turn progress makes the mid-turn state explicit and removes this aliasing.
+Without this feature, issuing the direct action while the aircraft is
+mid-turn looks identical to issuing it when already aligned, yet the
+required response differs.
+Turn progress makes the aircraft's rotational state explicit.
 
-\paragraph{Clearance timer (index 3).}
-After a conflict resolves, the aircraft is still geometrically close to the
-intruder.
-Returning to direct immediately risks recreating the same conflict.
-The clearance timer counts steps since the focus aircraft last had nonzero
-urgency, normalised by a 30-step ($\approx5$\,min) horizon.
-A value near~0 signals ``resolved just now, wait''; a value near~1 signals
-``clear long enough, safe to go direct.''
-Without this feature the agent cannot distinguish the two situations,
-so it learns a single conservative hold strategy rather than a time-aware one.
+\paragraph{Speed offset (index 4).}
+The commanded Mach is normalised over the reachable range $[0.70, 0.82]$.
+Without this, the policy cannot distinguish a slowed aircraft from one at
+nominal cruise, even though the available speed actions differ.
 
-\paragraph{Time to exit (index 4).}
-The distance from the focus aircraft to the sector boundary along its current
-heading, normalised by the cruise speed $\times$ $T_\text{warn}$.
-This informs the value function that the return horizon is shortening as the
-aircraft approaches the exit, which is critical under the focus-switching regime
-where the critic otherwise cannot distinguish a fresh entrant (long horizon) from
-an aircraft about to leave (short horizon).
+\paragraph{Forward/right components (indices $+1$, $+2$).}
+A single bearing-sine is ambiguous: an intruder ahead and one behind both
+give $\sin \approx 0$.
+The forward component ($\cos$) resolves this, and the rightward component
+($\sin$) retains the lateral information.
 
-\paragraph{Forward / right unit vector (intruder indices $+1,+2$).}
-A single bearing-sine encodes left/right position but is ambiguous:
-an intruder dead ahead and one dead behind both give $\sin\approx0$.
-Decomposing into forward ($\cos$) and rightward ($\sin$) components resolves
-this: the forward component distinguishes the two cases and the rightward
-component retains the lateral information.
-
-\paragraph{CPA side (intruder index $+3$).}
+\paragraph{CPA side (index $+3$).}
 \begin{equation}
     r^\text{right}_\text{CPA}
         = \Delta x_\text{CPA}\cos\psi - \Delta y_\text{CPA}\sin\psi,
@@ -229,106 +223,77 @@ component retains the lateral information.
         = \begin{pmatrix}\Delta x\\\Delta y\end{pmatrix}
         + t_\text{CPA}\begin{pmatrix}\Delta v_e\\\Delta v_n\end{pmatrix}.
 \end{equation}
-A positive value means the intruder passes to the right of the ownship at CPA;
-a left turn ($\delta < 0$) therefore increases separation.
-This directly encodes the correct turn direction without requiring the network
-to infer it from Cartesian geometry.
+A positive value means the intruder passes to the right; a left turn
+($\delta < 0$) therefore increases separation.
+This encodes the geometrically correct evasion direction directly.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Reward Function}
 % ─────────────────────────────────────────────────────────────────────────────
 
-Every component is normalised to $[0,1]$ and attributed solely to the
-focus aircraft.
-No global penalty is applied: the global sector state enters the reward
-only indirectly through the urgency matrix used for focus selection.
-The reward is purely non-positive with 0 as the unreachable ideal:
+All components are attributed solely to the focus aircraft.
+The reward is purely non-positive:
 \begin{equation}
-    r_t = -\!\left(
-        w_\text{safe}\cdot d_a
-      + w_\text{eff} \cdot\frac{1-\cos\Delta\psi_a}{2}
-      + w_\text{work}\cdot c_a
-      + w_\text{exit}\cdot e_a
-    \right),
-    \qquad
-    r_t \in \bigl[-(w_\text{safe}+w_\text{eff}+w_\text{work}),\;0\bigr].
+    r_t = r_\text{safe}
+        - w_\text{eff}\cdot\frac{1-\cos\Delta\psi_f}{2}
+        - w_\text{work}\cdot c_f
+        + r_\text{exit}.
     \label{eq:reward}
 \end{equation}
 
-\paragraph{Danger term — soft-OR aggregation.}
-The danger $d_a$ aggregates the urgencies of all intruders threatening the
-focus aircraft via a soft-OR:
+\paragraph{Safety: CPA-margin penalty.}
 \begin{equation}
-    d_a = 1 - \prod_{j \neq a}\!\bigl(1 - \min(u_{aj},\,1)\bigr) \;\in [0,1].
+    r_\text{safe}
+        = -w_\text{safe}\cdot
+          \max\!\left(0,\;1 - \frac{d_\text{CPA}^\text{min}}{2\,d_\text{sep}}\right),
+    \label{eq:rsafe}
 \end{equation}
-The soft-OR has two advantages over a raw sum.
-First, it is bounded: a single severe conflict drives $d_a$ near~1, but adding
-further moderate conflicts raises it smoothly without ever exceeding~1, which
-prevents variance spikes when multiple conflicts coincide.
-Second, the worst pair dominates multiplicatively: if one intruder has urgency
-$u\approx1$ the product collapses to near~0 regardless of other pairs, mimicking
-the ATCO heuristic of focusing on the most dangerous situation.
+where $d_\text{CPA}^\text{min}$ is the minimum predicted separation across all
+focus-intruder pairs within the lookahead horizon.
+The penalty is zero beyond 10\,NM predicted separation, grows linearly below
+that, and reaches $-w_\text{safe}$ at zero separation.
+Because this term activates as soon as urgency is nonzero (at $T_\text{warn}
+= 600$\,s), the reward signal is present well before any violation occurs.
 
-\paragraph{Drift term.}
-The efficiency penalty $(1-\cos\Delta\psi_a)/2$ is evaluated against the
-\textit{commanded} heading, not the actual heading.
-This ensures the penalty is felt immediately on the step the action is issued,
-rather than 10--30\,s later when the aircraft completes its turn.
-
-\paragraph{Workload term.}
-A small cost $c_a=1$ for any non-free action ($\delta\neq0$ and not hold)
-discourages unnecessary deviations.
-Free actions are \textit{direct} ($\delta=0^\circ$) and \textit{hold}
-($\varnothing$); all resolution turns carry the cost.
-
-\paragraph{Wrong-exit term.}
-A sparse penalty $e_a=1$ fires when any aircraft exits the sector heading more
-than $90^\circ$ away from its destination.
-This is attributed on the exit step and is not accumulated per step.
+\paragraph{Efficiency, workload, and exit.}
+The drift penalty $(1-\cos\Delta\psi_f)/2$ is evaluated against the commanded
+heading so that the cost is felt immediately on the step the action is issued.
+The workload cost is $c_f = 1.0$ for heading turns, $c_f = 0.5$ for speed
+adjustments, and $c_f = 0$ for direct and hold.
+A sparse penalty $r_\text{exit} = -w_\text{exit}$ fires when any aircraft
+exits the sector heading more than $90^\circ$ away from its destination.
 
 \begin{table}[h]
 \centering
-\caption{Reward weights and their multi-objective priority.}
+\caption{Reward weights in descending order of magnitude.}
 \label{tab:weights}
 \smallskip
-\begin{tabular}{llrl}
+\begin{tabular}{llr}
 \toprule
-$w_\text{safe}$  & Safety: soft-OR danger            & $1.00$ & priority 1 \\
-$w_\text{exit}$  & Wrong-direction sector exit        & $0.50$ & priority 2 (sparse) \\
-$w_\text{eff}$   & Efficiency: heading drift          & $0.20$ & priority 3 \\
-$w_\text{work}$  & Workload: resolution turn cost     & $0.05$ & priority 4 \\
+$w_\text{safe}$  & Safety: CPA-margin penalty    & $1.00$ \\
+$w_\text{exit}$  & Wrong-direction exit (sparse) & $0.50$ \\
+$w_\text{eff}$   & Efficiency: heading drift     & $0.20$ \\
+$w_\text{work}$  & Workload: instruction cost    & $0.05$ \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-The ordering $w_\text{safe} \gg w_\text{exit} > w_\text{eff} > w_\text{work}$
-encodes the ATCO priority: safety first, then correct sector exit, then
-efficiency, then minimal control workload.
-Because the reward is bounded to $[\approx-1.25,\,0]$ per step, reward
-normalisation in \texttt{VecNormalize} is disabled (\texttt{norm\_reward=False});
-the returned value is directly interpretable on an absolute scale.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Training}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The policy is a two-hidden-layer MLP trained with Proximal Policy Optimisation
-(PPO) from Stable-Baselines3.
-Four parallel environments run in separate processes (\texttt{SubprocVecEnv});
-observations are normalised online with running mean and variance
-(\texttt{VecNormalize}, clip $\pm10$); rewards are not normalised because they
-are bounded by construction.
+The policy is a two-layer MLP trained with PPO (Stable-Baselines3).
+Four parallel environments run in separate processes (\texttt{SubprocVecEnv}),
+each seeded independently.
+Observations are normalised online (\texttt{VecNormalize}, clip $\pm10$);
+rewards are not normalised as they are bounded by construction.
 
-Rollouts of $T=1024$ steps per environment are collected before each
-gradient update, giving $4 \times 1024 = 4096$ transitions per update.
-The rollout is split into mini-batches of 64 for $K=10$ epochs.
-Generalised Advantage Estimation (GAE, $\lambda=0.95$) propagates the
-reward signal roughly $1/(1-\lambda)=20$ steps into the future, sufficient
-to cover the multi-step consequence of a heading command.
-
-An entropy coefficient $\beta_H=0.01$ maintains exploration throughout
-training, preventing premature convergence to a deterministic policy
-before the agent has experienced the full range of conflict geometries.
+Rollouts of $T = 1024$ steps per environment yield 4096 transitions per
+update, split into mini-batches of 64 for $K = 10$ epochs.
+The entropy coefficient $\beta_H = 0.02$ encourages exploration of the
+nine-action space, including the speed actions.
+The network is widened to $[128,\,128]$ hidden units relative to earlier
+versions.
 
 \begin{table}[h]
 \centering
@@ -337,21 +302,22 @@ before the agent has experienced the full range of conflict geometries.
 \smallskip
 \begin{tabular}{llr}
 \toprule
-$\gamma$               & Discount factor            & $0.99$ \\
-$\lambda$              & GAE parameter              & $0.95$ \\
-$T$                    & Steps per env per update   & $1024$ \\
-$N_\text{envs}$        & Parallel environments      & $4$    \\
-$B$                    & Mini-batch size            & $64$   \\
-$K$                    & Epochs per update          & $10$   \\
-$\epsilon_\text{clip}$ & PPO clip range             & $0.2$  \\
-$\beta_H$              & Entropy coefficient        & $0.01$ \\
-$\alpha_\text{LR}$     & Learning rate              & $3\times10^{-4}$ \\
-\texttt{net\_arch}     & MLP hidden layers          & $[64,64]$ \\
+$\gamma$               & Discount factor          & $0.99$ \\
+$\lambda$              & GAE parameter            & $0.95$ \\
+$T$                    & Steps per env per update & $1024$ \\
+$N_\text{envs}$        & Parallel environments    & $4$    \\
+$B$                    & Mini-batch size          & $64$   \\
+$K$                    & Epochs per update        & $10$   \\
+$\epsilon_\text{clip}$ & PPO clip range           & $0.2$  \\
+$\beta_H$              & Entropy coefficient      & $0.02$ \\
+$\alpha_\text{LR}$     & Learning rate            & $3\times10^{-4}$ \\
+\texttt{net\_arch}     & MLP hidden layers        & $[128,\,128]$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 Checkpoints and VecNormalize statistics are saved every 100\,000 steps.
-Three independent seeds are run in parallel to assess policy variance.
+Three independent seeds are run in parallel to assess variance across
+initialisations.
 
 \end{document}

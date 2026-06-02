@@ -1,30 +1,33 @@
 """
-v3_simple_env — ATCO conflict-resolution environment.
+v3_improved — ATCO conflict-resolution environment.
 
-One agent issues one heading instruction per step to the most urgent aircraft.
-Urgency, observation and reward are all built from pure geometry.
+One agent issues one instruction per step to the highest-threat aircraft.
+Focus selection uses commitment-based logic (ATCO resolves one conflict at a
+time).  Urgency drives focus selection but is not exposed in the observation —
+the policy sees pure geometry only.
 
 Observation  21 floats  (ego-centric from focus aircraft)
-  [0,1]   sin/cos(Δψ_dest)        unit-vector heading error to destination
-  [2]     turn_progress            (commanded−actual)/30, clipped [-1,1]
-  [3]     clearance_timer          0=just had conflict, 1=clear ≥30 steps
-  [4]     time_to_exit             distance to sector boundary / lookahead, [0,1]
-  [5:20]  3 intruders × 5 sorted by urgency desc:
-            dist      current distance / (3·sep_nm)
-            fwd       cos(bearing_to_intruder − own_hdg)   ahead=+1, behind=−1
-            right     sin(bearing_to_intruder − own_hdg)   right=+1, left=−1
-            cpa_side  lateral offset at CPA / sep_nm, clipped [−1,1]
-            urgency   min(u_ij, 1)           — raw urgency capped at 1 (LoS > 1 excluded)
-  [20]    urgency_density          min(Σu/10, 1)  — sum still divided by 10 (includes LoS)
+  [0]     sin(Δψ_dest)         heading error to destination  [-1, 1]
+  [1]     cos(Δψ_dest)                                        [-1, 1]
+  [2]     turn_progress        (commanded−actual)/30          [-1, 1]
+  [3]     time_to_exit         t_to_boundary / lookahead_s    [0, 1]
+  [4]     speed_offset         (cmd_mach − mach_min) / mach_range [0, 1]
+  [5:21]  4 intruders × 4     sorted by urgency desc (hidden):
+            dist_norm  current dist / (3·sep_nm)              [0, 1]
+            fwd        cos(bearing_intruder − own_hdg)        [-1, 1]
+            right      sin(bearing_intruder − own_hdg)        [-1, 1]
+            cpa_side   lateral offset at CPA / sep_nm         [-1, 1]
 
-Reward  r ∈ [−(w_safe+w_eff+w_work), 0]  — perfect score is exactly 0
-  −w_safe × danger_a      safety     — soft-OR of normalised pair urgencies
-  −w_eff  × drift_a       efficiency — (1−cos Δψ)/2 of commanded heading
-  −w_work × act_cost      workload   — 1 if resolution turn, else 0
-  −w_exit × exit_bad      exit       — 1 if wrong-direction sector exit
+Reward  r ≤ 0  (all penalties, no positive terms)
+  −w_safe   × cpa_penalty   CPA-margin: max(0, 1 − cpa_min/(2·sep_nm))
+  −w_second × sec_penalty   max urgency increase caused by this action
+  −w_eff    × drift          (1−cos Δψ_cmd)/2 from destination
+  −w_work   × act_cost       1.0 heading / 0.5 speed / 0 direct+hold
+  −w_exit                    wrong-direction sector exit (sparse)
 
-Action  (Discrete 6)  absolute offsets from direct-to-destination bearing
-  0 −30°   1 −15°   2 0° direct [free]   3 +15°   4 +30°   5 hold [free]
+Action  (Discrete 9)
+  0 −30°   1 −15°   2 direct [free]   3 +15°   4 +30°   5 hold [free]
+  6 M−0.04    7 M−0.02    8 M+0.02
 """
 
 import math
@@ -37,6 +40,7 @@ from gymnasium import spaces
 import bluesky as bs
 from bluesky.simulation import ScreenIO
 from bluesky.tools import geo
+from bluesky.stack.stackbase import Stack as _BsStack
 from polygenerator import random_convex_polygon
 from shapely.geometry import LineString, Polygon as ShapelyPolygon
 from shapely.affinity import scale as shapely_scale
@@ -45,55 +49,59 @@ from shapely.affinity import scale as shapely_scale
 
 CONFIG = {
     # Aircraft & sector
-    'ac_type':              'A320',
-    'ac_speed':             450.0,           # kts
-    'altitude':             350,             # FL350
-    'center_ll':            (52.3, 5.3),     # Dutch upper airspace
-    'area_km2':             lambda: 80_000.0,
-    'density_km2':          lambda: random.uniform(6_000.0, 10_000.0), # → 8–13 aircraft
-    'max_agents':           12,
-    'sep_nm':               5.0,             # ICAO separation standard
-    'buffer_nm':            5.0,
-    'dest_dist_factor':     2.0,
+    'ac_type':               'A320',
+    'ac_speed':              450.0,           # kts TAS ≈ M0.78 at FL350 — used for episode length
+    'ac_mach':               0.78,            # nominal cruise Mach (vcasormach: < 2.0 → Mach)
+    'ac_mach_min':           0.70,            # lower bound for speed actions
+    'ac_mach_max':           0.82,            # upper bound (A320 MMO)
+    'altitude':              350,             # FL350
+    'center_ll':             (52.3, 5.3),     # Dutch upper airspace
+    'area_km2':              lambda: 80_000.0,
+    'density_km2':           lambda: random.uniform(5_000.0, 10_000.0),
+    'max_agents':            12,
+    'sep_nm':                5.0,             # ICAO separation standard
+    'buffer_nm':             5.0,
+    'dest_dist_factor':      2.0,
     # Polygon
-    'n_vertices':           lambda: random.randint(5, 7),
-    'min_circularity':      0.65,
-    'max_placement_tries':  50,
-    # Aircraft placement jitter — each aircraft gets its own boundary sector,
-    # with randomised entry point and reference point so headings cross realistically
-    'spawn_jitter':         lambda: random.uniform(0.1, 0.9),
-    'ref_jitter':           lambda: random.uniform(-0.30, 0.30),
+    'n_vertices':            lambda: random.randint(5, 7),
+    'min_circularity':       0.65,
+    'max_placement_tries':   50,
+    # Aircraft placement jitter
+    'spawn_jitter':          lambda: random.uniform(0.1, 0.9),
+    'ref_jitter':            lambda: random.uniform(-0.30, 0.30),
     # Simulation
-    'sim_dt':               0.5,             # BlueSky timestep (s)
-    'action_freq':          20,              # RL steps → 10 s/decision
-    'lookahead_s':          600.0,
-    't_warn':               180.0,           # lead time for linear urgency ramp (s)
-    'crossings_per_episode': 3,
-    'spawn_delay_s':        (0, 0),             # immediate replacement keeps density constant
+    'sim_dt':                0.5,             # BlueSky timestep (s)
+    'action_freq':           20,              # RL step = 10 s simulated time
+    'lookahead_s':           900.0,           # 15-min conflict lookahead
+    't_warn':                600.0,           # urgency ramp starts at tcpa = 10 min
+    'crossings_per_episode': 2.5,             # ≈ 60 min simulated per episode
+    'spawn_delay_s':         (0, 0),          # immediate replacement keeps density constant
     # Observation
-    'n_neighbours':         3,
-    'spatial_scale':        150.0,           # NM — position normalisation
-    'clearance_horizon':    30,              # steps until clearance_timer = 1.0
-    'min_focus_steps':      3,               # hold focus for at least this many steps
-    # Reward weights — all components normalised to [0,1]; r ∈ [−(safe+eff+work), 0]
-    'w_safe':               1.00,  # danger: soft-OR of pair urgencies (priority 1)
-    'w_exit':               0.50,  # wrong-direction exit (priority 2, sparse)
-    'w_eff':                0.20,  # drift from destination (priority 3)
-    'w_work':               0.05,  # resolution turn cost (priority 4)
-    'seed':                 None,
+    'n_neighbours':          4,
+    # Focus selection — commitment-based
+    'focus_clear_steps':     5,               # steps at u=0 → conflict resolved, free to switch
+    'focus_override_margin': 0.10,            # new aircraft must be 10% more urgent to take focus
+    # Reward weights
+    'w_safe':                1.00,            # CPA-margin safety penalty
+    'w_exit':                0.50,            # wrong-direction sector exit
+    'w_eff':                 0.20,            # heading drift from destination
+    'w_work':                0.05,            # workload per instruction
+    'seed':                  None,
 }
 
 NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
-N_NBR    = CONFIG['n_neighbours']
-OBS_DIM  = 5 + N_NBR * 5 + 1       # = 21
-# Ownship goal    [2]: sin/cos(Δψ_dest)
-# Ownship state   [3]: turn_progress, clearance_timer, time_to_exit
-# Intruders      [15]: 3 × (dist, fwd, right, cpa_side, urgency)  sorted by urgency ↓
-# Global          [1]: urgency_density
+N_NBR   = CONFIG['n_neighbours']  # 4
+OBS_DIM = 5 + N_NBR * 4          # 5 own + 16 intruder = 21
 
-HEADING_OFFSETS = [-30, -15, 0, 15, 30, None]
+# Heading actions: offset from direct-to-destination; None = hold current heading
+HEADING_OFFSETS = [-30, -15, 0, 15, 30, None]  # action indices 0–5
+# Speed actions: Mach delta from current commanded Mach; action indices 6–8
+SPEED_DELTAS    = [-0.04, -0.02, 0.02]
+
+# Workload cost per action (for w_work penalty)
+ACT_COST = [1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.5]
 
 _bs_initialized = False
 
@@ -116,33 +124,29 @@ def nm_to_latlon(center_ll, x_nm, y_nm):
 def wrap_to_180(a):
     return (a + 180) % 360 - 180
 
+def _spd_nms(i):
+    """Aircraft TAS in NM/s from BlueSky state."""
+    return float(bs.traf.tas[i]) / 1852.0
+
 # ── Sector polygon ────────────────────────────────────────────────────────────
 
 def _make_polygon():
-    """Random convex polygon scaled to the configured area, filtered by circularity."""
     target_nm2 = CONFIG['area_km2']() * KM_TO_NM ** 2
-    while True:
+    scaled = None
+    for _ in range(1000):
         raw    = ShapelyPolygon(random_convex_polygon(CONFIG['n_vertices']()))
         scaled = shapely_scale(raw,
                                xfact=math.sqrt(target_nm2 / raw.area),
                                yfact=math.sqrt(target_nm2 / raw.area),
                                origin='centroid')
         if 4 * math.pi * scaled.area / scaled.length ** 2 >= CONFIG['min_circularity']:
-            cx, cy = scaled.centroid.x, scaled.centroid.y
-            return ShapelyPolygon([(x - cx, y - cy) for x, y in scaled.exterior.coords])
+            break
+    cx, cy = scaled.centroid.x, scaled.centroid.y
+    return ShapelyPolygon([(x - cx, y - cy) for x, y in scaled.exterior.coords])
 
 # ── Aircraft placement ────────────────────────────────────────────────────────
 
 def _place_one(polygon, sector, n_sectors):
-    """
-    Place one aircraft in its boundary sector with jitter.
-
-    The polygon perimeter is divided into n_sectors equal slices.  Aircraft
-    slot `sector` spawns within its slice (jittered) and heads toward a
-    reference point on the far side of the polygon, then continues to a
-    destination beyond the sector.  This gives realistic crossing traffic:
-    each aircraft enters from a different direction with a different heading.
-    """
     minx, miny, maxx, maxy = polygon.bounds
     dest_dist = math.sqrt((maxx-minx)**2 + (maxy-miny)**2) * CONFIG['dest_dist_factor']
     t_spawn = (sector + CONFIG['spawn_jitter']()) / n_sectors
@@ -155,30 +159,32 @@ def _place_one(polygon, sector, n_sectors):
     dlat, dlon = geo.qdrpos(float(sp_ll[0]), float(sp_ll[1]), hdg, dest_dist)
     return {'sp_ll': sp_ll, 'dest_ll': (dlat, dlon), 'heading': hdg}
 
-# ── Urgency (pure geometry, smooth LoS boundary) ──────────────────────────────
+# ── Pair urgency (focus selector + reward input) ──────────────────────────────
 
 def _pair_urgency(i, j):
     """
-    [1, 10] dist < sep_nm  (active LoS, smooth)
-    (0, 1]  predicted conflict within lookahead horizon
-    0       diverging or will miss
+    Uses actual aircraft speeds from BlueSky state.
+    [1, 10]  dist < sep_nm  (active LoS)
+    (0, 1]   tcpa within lookahead and CPA < sep_nm, ramping from t_warn
+    0        diverging or will miss
     """
     nm1 = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[i], bs.traf.lon[i])
     nm2 = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[j], bs.traf.lon[j])
-    dx, dy  = nm2[0]-nm1[0], nm2[1]-nm1[1]
-    d2      = dx*dx + dy*dy
-    sep     = CONFIG['sep_nm']
+    dx, dy = nm2[0]-nm1[0], nm2[1]-nm1[1]
+    d2     = dx*dx + dy*dy
+    sep    = CONFIG['sep_nm']
 
     if d2 < sep*sep:
-        return 1.0 + 9.0*(1.0 - math.sqrt(d2)/sep)
+        return 1.0 + 9.0 * (1.0 - math.sqrt(d2) / sep)
 
-    spd = CONFIG['ac_speed'] / 3600.0
-    vn1 = spd*math.cos(math.radians(bs.traf.hdg[i]))
-    ve1 = spd*math.sin(math.radians(bs.traf.hdg[i]))
-    vn2 = spd*math.cos(math.radians(bs.traf.hdg[j]))
-    ve2 = spd*math.sin(math.radians(bs.traf.hdg[j]))
+    spd1 = _spd_nms(i)
+    spd2 = _spd_nms(j)
+    vn1  = spd1 * math.cos(math.radians(bs.traf.hdg[i]))
+    ve1  = spd1 * math.sin(math.radians(bs.traf.hdg[i]))
+    vn2  = spd2 * math.cos(math.radians(bs.traf.hdg[j]))
+    ve2  = spd2 * math.sin(math.radians(bs.traf.hdg[j]))
     dvn, dve = vn2-vn1, ve2-ve1
-    rv2 = dvn*dvn + dve*dve
+    rv2  = dvn*dvn + dve*dve
     if rv2 < 1e-12:
         return 0.0
 
@@ -207,7 +213,7 @@ class AirspaceEnv(gym.Env):
         super().__init__()
         global _bs_initialized
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space      = spaces.Discrete(6)
+        self.action_space      = spaces.Discrete(9)
 
         if not _bs_initialized:
             bs.init(mode='sim', detached=True)
@@ -215,26 +221,25 @@ class AirspaceEnv(gym.Env):
         bs.scr = _ScreenDummy()
         bs.stack.stack(f"DT {CONFIG['sim_dt']};FF")
 
-        self.n_aircraft            = 0
-        self._slots                = []
-        self._active_callsigns     = set()
-        self._destination_ll       = {}
-        self._commanded_heading    = {}
-        self._steps_since_urgency  = {}
-        self._next_callsign_id     = 0
-        self._step_count           = 0
-        self._max_steps            = 0
-        self._focus_cs             = None
-        self._focus_steps          = 0
-        self._pending_spawns       = {}
-        self._spawn_delay_range    = (24, 60)
-        self._ep_stats             = {}
-        self.polygon               = None
-        self._polygon_shape        = None
+        self.n_aircraft           = 0
+        self._slots               = []
+        self._active_callsigns    = set()
+        self._destination_ll      = {}
+        self._commanded_heading   = {}
+        self._commanded_speed     = {}
+        self._steps_since_urgency = {}
+        self._next_callsign_id    = 0
+        self._step_count          = 0
+        self._max_steps           = 0
+        self._focus_cs            = None
+        self._pending_spawns      = {}
+        self._spawn_delay_range   = (1, 1)
+        self._ep_stats            = {}
+        self.polygon              = None
+        self._polygon_shape       = None
 
-        # Exposed for visualiser / make_gifs
-        self._urgency_matrix       = np.zeros((0, 0))
-        self._urgency_cs_list      = []
+        self._urgency_matrix      = np.zeros((0, 0))
+        self._urgency_cs_list     = []
 
     # ── Gym interface ─────────────────────────────────────────────────────────
 
@@ -245,7 +250,9 @@ class AirspaceEnv(gym.Env):
             random.seed(effective_seed)
             np.random.seed(effective_seed)
 
+        _BsStack.cmdstack.clear()
         bs.traf.reset()
+        bs.stack.stack(f"DT {CONFIG['sim_dt']};FF")
 
         poly = _make_polygon()
         self._polygon_shape = poly
@@ -261,18 +268,18 @@ class AirspaceEnv(gym.Env):
         n = int(np.clip(
             round(CONFIG['area_km2']() / CONFIG['density_km2']()), 2, CONFIG['max_agents']
         ))
-        self.n_aircraft            = n
-        self._slots                = [None] * n
-        self._active_callsigns     = set()
-        self._destination_ll       = {}
-        self._commanded_heading    = {}
-        self._steps_since_urgency  = {}
-        self._next_callsign_id     = 0
-        self._step_count           = 0
-        self._ep_stats             = {'reward': 0.0, 'steps': 0, 'los': 0, 'actions': []}
-        self._urgency_matrix       = np.zeros((0, 0))
-        self._urgency_cs_list      = []
-        self._focus_steps          = 0
+        self.n_aircraft           = n
+        self._slots               = [None] * n
+        self._active_callsigns    = set()
+        self._destination_ll      = {}
+        self._commanded_heading   = {}
+        self._commanded_speed     = {}
+        self._steps_since_urgency = {}
+        self._next_callsign_id    = 0
+        self._step_count          = 0
+        self._ep_stats            = {'reward': 0.0, 'steps': 0, 'los': 0, 'actions': []}
+        self._urgency_matrix      = np.zeros((0, 0))
+        self._urgency_cs_list     = []
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_s))
         delay_max = max(1, round(CONFIG['spawn_delay_s'][1] / step_s))
@@ -282,8 +289,6 @@ class AirspaceEnv(gym.Env):
         bs.tools.areafilter.defineArea('SECTOR', 'POLY', self._flat_latlon())
         bs.stack.stack('ASAS OFF')
 
-        # Spawn all aircraft immediately, each in its own perimeter sector.
-        # This gives constant density from step 0 and guarantees crossing traffic.
         min_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']
         for slot in range(n):
             for _ in range(CONFIG['max_placement_tries']):
@@ -313,7 +318,7 @@ class AirspaceEnv(gym.Env):
         self._step_count += 1
 
         exit_r         = self._process_exits()
-        self._focus_cs = self._select_focus_aircraft()   # single selection per step
+        self._focus_cs = self._select_focus_aircraft()
         reward         = self._compute_reward(acting_cs, int(action)) + exit_r
 
         U     = self._urgency_matrix
@@ -334,11 +339,11 @@ class AirspaceEnv(gym.Env):
                 'ep_los_steps':        self._ep_stats['los'],
                 'ep_length':           self._ep_stats['steps'],
                 'action_distribution': np.bincount(
-                    self._ep_stats['actions'], minlength=6).tolist(),
+                    self._ep_stats['actions'], minlength=9).tolist(),
             })
         return self._get_observation(), reward, False, truncated, info
 
-    # ── Focus & urgency ───────────────────────────────────────────────────────
+    # ── Focus selection — commitment-based ────────────────────────────────────
 
     def _select_focus_aircraft(self):
         cs_list = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
@@ -358,40 +363,35 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix  = U
         self._urgency_cs_list = cs_list
 
-        # Update clearance timers
         row_max = U.max(axis=1)
+        clear_steps = CONFIG['focus_clear_steps']
         for i, cs in enumerate(cs_list):
             if row_max[i] > 0:
                 self._steps_since_urgency[cs] = 0
             else:
-                self._steps_since_urgency[cs] = self._steps_since_urgency.get(cs, 30) + 1
+                self._steps_since_urgency[cs] = self._steps_since_urgency.get(cs, clear_steps) + 1
 
-        if row_max.max() > 0:
-            best_idx = int(np.argmax(row_max))
-            best_cs  = cs_list[best_idx]
-            if self._focus_cs in cs_list:
-                cur_idx = cs_list.index(self._focus_cs)
-                cur_u   = row_max[cur_idx]
-                # 5% hysteresis: don't switch for marginal differences
-                if row_max[best_idx] < cur_u * 1.05:
-                    best_cs = self._focus_cs
-        else:
-            best_cs = self._drift_fallback(cs_list)
+        best_cs = (cs_list[int(np.argmax(row_max))]
+                   if row_max.max() > 0 else self._drift_fallback(cs_list))
 
-        # Sticky focus: hold current aircraft for min_focus_steps unless a new
-        # LoS appears (urgency > 1) while the current focus aircraft is clear.
+        # Commitment:
+        #   cur_u > 0 — active conflict: stay unless a 20%-more-urgent aircraft appears.
+        #   cur_u == 0, not yet resolved — hold for focus_clear_steps to confirm clear.
         if self._focus_cs in cs_list and best_cs != self._focus_cs:
-            cur_u   = row_max[cs_list.index(self._focus_cs)] if row_max.max() > 0 else 0.0
-            best_u  = row_max[cs_list.index(best_cs)]        if row_max.max() > 0 else 0.0
-            new_los = best_u > 1.0 and cur_u <= 1.0
-            if self._focus_steps < CONFIG['min_focus_steps'] and not new_los:
-                self._focus_steps += 1
+            cur_u          = row_max[cs_list.index(self._focus_cs)]
+            best_u         = row_max[cs_list.index(best_cs)] if row_max.max() > 0 else 0.0
+            focus_resolved = (self._steps_since_urgency.get(self._focus_cs, clear_steps)
+                              >= clear_steps)
+            if cur_u > 0:
+                if best_u < cur_u * (1.0 + CONFIG['focus_override_margin']):
+                    return self._focus_cs
+            elif not focus_resolved and best_u < 1.0:
                 return self._focus_cs
 
-        self._focus_steps = self._focus_steps + 1 if best_cs == self._focus_cs else 0
         return best_cs
 
     def _drift_fallback(self, cs_list):
+        """When no conflicts active: focus on most off-route aircraft."""
         best_cs, best_drift = None, -1.0
         for cs in sorted(cs_list):
             idx = bs.traf.id2idx(cs)
@@ -409,18 +409,13 @@ class AirspaceEnv(gym.Env):
     # ── Reward ────────────────────────────────────────────────────────────────
 
     def _compute_reward(self, acting_cs, action_idx):
-        # ── Safety: soft-OR of normalised pair urgencies for acting aircraft ──
-        danger_a = 0.0
-        U        = self._urgency_matrix
-        if acting_cs and U.size > 0 and acting_cs in self._urgency_cs_list:
-            a_i     = self._urgency_cs_list.index(acting_cs)
-            product = 1.0
-            for j in range(U.shape[0]):
-                if j != a_i:
-                    product *= 1.0 - min(float(U[a_i, j]), 1.0)
-            danger_a = 1.0 - product
+        # Safety: penalise based on how close the predicted CPA is to sep_nm.
+        # Grows from 0 at cpa=2·sep_nm to −w_safe at cpa=0.
+        cpa_min = self._min_cpa_dist(acting_cs)
+        sep2    = 2.0 * CONFIG['sep_nm']
+        r_safe  = -CONFIG['w_safe'] * max(0.0, 1.0 - cpa_min / sep2)
 
-        # ── Efficiency: commanded heading drift from destination ───────────────
+        # Efficiency: commanded heading drift from direct-to-destination
         drift_a = 0.0
         if acting_cs and acting_cs in self._destination_ll:
             idx = bs.traf.id2idx(acting_cs)
@@ -432,11 +427,53 @@ class AirspaceEnv(gym.Env):
                     bearing - self._commanded_heading.get(acting_cs, bs.traf.hdg[idx]))
                 drift_a = (1.0 - math.cos(math.radians(diff))) / 2.0
 
-        act_cost = 0.0 if action_idx in (2, 5) else 1.0
+        r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
 
-        return float(-(CONFIG['w_safe']  * danger_a
-                      + CONFIG['w_eff']  * drift_a
-                      + CONFIG['w_work'] * act_cost))
+        return float(r_safe - CONFIG['w_eff'] * drift_a + r_work)
+
+    def _min_cpa_dist(self, cs):
+        """Minimum predicted CPA distance (NM) between focus aircraft and any intruder."""
+        if cs is None:
+            return float('inf')
+        idx = bs.traf.id2idx(cs)
+        if idx < 0:
+            return float('inf')
+
+        nm1  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
+        spd1 = _spd_nms(idx)
+        vn1  = spd1 * math.cos(math.radians(bs.traf.hdg[idx]))
+        ve1  = spd1 * math.sin(math.radians(bs.traf.hdg[idx]))
+
+        min_d = float('inf')
+        for other in self._active_callsigns:
+            oi = bs.traf.id2idx(other)
+            if other == cs or oi < 0:
+                continue
+            nm2 = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[oi], bs.traf.lon[oi])
+            dx, dy = nm2[0]-nm1[0], nm2[1]-nm1[1]
+            d_now  = math.sqrt(dx*dx + dy*dy)
+
+            spd2 = _spd_nms(oi)
+            vn2  = spd2 * math.cos(math.radians(bs.traf.hdg[oi]))
+            ve2  = spd2 * math.sin(math.radians(bs.traf.hdg[oi]))
+            dvn, dve = vn2-vn1, ve2-ve1
+            rv2  = dvn*dvn + dve*dve
+
+            if rv2 < 1e-12:
+                cpa_d = d_now
+            else:
+                dot  = dx*dve + dy*dvn
+                tcpa = -dot / rv2
+                if tcpa <= 0 or tcpa > CONFIG['lookahead_s']:
+                    cpa_d = d_now
+                else:
+                    dx_c  = dx + tcpa * dve
+                    dy_c  = dy + tcpa * dvn
+                    cpa_d = math.sqrt(dx_c*dx_c + dy_c*dy_c)
+
+            min_d = min(min_d, cpa_d)
+
+        return min_d
 
     # ── Action ────────────────────────────────────────────────────────────────
 
@@ -444,26 +481,35 @@ class AirspaceEnv(gym.Env):
         idx = bs.traf.id2idx(cs)
         if idx < 0:
             return
-        offset = HEADING_OFFSETS[action_idx]
-        if offset is None:
-            # Explicit hold: re-issue the current commanded heading so BlueSky
-            # always receives a command this step (no silent no-op).
-            bs.stack.stack(f'HDG {cs} {self._commanded_heading.get(cs, bs.traf.hdg[idx]):.1f}')
-            return
 
-        bearing, _ = geo.kwikqdrdist(
-            bs.traf.lat[idx], bs.traf.lon[idx],
-            *[float(v) for v in self._destination_ll[cs]])
-
-        if offset == 0:
-            # Guard: don't issue "direct" while mid-turn
-            if abs(wrap_to_180(
-                    self._commanded_heading.get(cs, bs.traf.hdg[idx]) - bs.traf.hdg[idx]
-               )) > 5.0:
+        if action_idx < 6:
+            # Heading action
+            offset = HEADING_OFFSETS[action_idx]
+            if offset is None:
+                # Hold: re-issue commanded heading
+                bs.stack.stack(
+                    f'HDG {cs} {self._commanded_heading.get(cs, bs.traf.hdg[idx]):.1f}')
                 return
+            bearing, _ = geo.kwikqdrdist(
+                bs.traf.lat[idx], bs.traf.lon[idx],
+                *[float(v) for v in self._destination_ll[cs]])
+            if offset == 0:
+                # Direct: guard against issuing while mid-turn
+                if abs(wrap_to_180(
+                        self._commanded_heading.get(cs, bs.traf.hdg[idx])
+                        - bs.traf.hdg[idx])) > 5.0:
+                    return
+            self._commanded_heading[cs] = (float(bearing) + offset) % 360
+            bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
 
-        self._commanded_heading[cs] = (float(bearing) + offset) % 360
-        bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+        else:
+            # Speed action — commanded and issued in Mach
+            delta    = SPEED_DELTAS[action_idx - 6]
+            cur_mach = self._commanded_speed.get(cs, CONFIG['ac_mach'])
+            new_mach = float(np.clip(cur_mach + delta,
+                                     CONFIG['ac_mach_min'], CONFIG['ac_mach_max']))
+            self._commanded_speed[cs] = new_mach
+            bs.stack.stack(f'MACH {cs} {new_mach:.3f}')
 
     # ── Observation ───────────────────────────────────────────────────────────
 
@@ -476,39 +522,35 @@ class AirspaceEnv(gym.Env):
         own_hdg = bs.traf.hdg[idx]
         cmd_hdg = self._commanded_heading.get(cs, own_hdg)
         own_nm  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
-        spd     = CONFIG['ac_speed'] / 3600.0   # NM/s
         sep     = CONFIG['sep_nm']
         sin_h   = math.sin(math.radians(own_hdg))
         cos_h   = math.cos(math.radians(own_hdg))
+        spd_own = _spd_nms(idx)
+        vn_o    = spd_own * math.cos(math.radians(own_hdg))
+        ve_o    = spd_own * math.sin(math.radians(own_hdg))
 
-        # Destination heading error
+        # Heading error to destination
         bearing, _ = geo.kwikqdrdist(
             bs.traf.lat[idx], bs.traf.lon[idx],
             *[float(v) for v in self._destination_ll[cs]])
         diff = wrap_to_180(bearing - cmd_hdg)
 
-        # Turn progress: how far aircraft still needs to turn (0 = on commanded heading)
-        turn_prog = max(-1.0, min(1.0,
-                        wrap_to_180(cmd_hdg - own_hdg) / 30.0))
-
-        # Time to sector boundary along current heading (normalized)
-        t_exit = self._time_to_exit(idx)
+        turn_prog    = max(-1.0, min(1.0, wrap_to_180(cmd_hdg - own_hdg) / 30.0))
+        t_exit       = self._time_to_exit(idx)
+        cmd_mach     = self._commanded_speed.get(cs, CONFIG['ac_mach'])
+        speed_offset = ((cmd_mach - CONFIG['ac_mach_min'])
+                        / (CONFIG['ac_mach_max'] - CONFIG['ac_mach_min']))
 
         obs = [
-            math.sin(math.radians(diff)),   # sin(Δψ_dest)
-            math.cos(math.radians(diff)),   # cos(Δψ_dest)
-            turn_prog,                      # mid-turn state
-            min(self._steps_since_urgency.get(cs, 30) / CONFIG['clearance_horizon'], 1.0),
-            t_exit,
+            math.sin(math.radians(diff)),  # [0] sin(Δψ_dest)
+            math.cos(math.radians(diff)),  # [1] cos(Δψ_dest)
+            turn_prog,                     # [2] mid-turn state
+            t_exit,                        # [3] time to sector boundary
+            speed_offset,                  # [4] current speed deviation
         ]
 
-        # Urgency lookup
-        U       = self._urgency_matrix
-        urg_idx = {c: i for i, c in enumerate(self._urgency_cs_list)}
-        own_ui  = urg_idx.get(cs, -1)
-        vn_o    = spd * math.cos(math.radians(own_hdg))
-        ve_o    = spd * math.sin(math.radians(own_hdg))
-
+        # Build intruder list; sort by predicted CPA distance ascending so the
+        # geometrically closest pass is always in slot 0.
         intruders = []
         for other in self._active_callsigns:
             oi = bs.traf.id2idx(other)
@@ -518,48 +560,42 @@ class AirspaceEnv(gym.Env):
             dx, dy = int_nm[0]-own_nm[0], int_nm[1]-own_nm[1]
             dist   = math.sqrt(dx*dx + dy*dy)
 
-            # Bearing to intruder decomposed into ego-frame forward/right unit vector
             rel_bearing = math.degrees(math.atan2(dx*cos_h - dy*sin_h,
                                                    dx*sin_h + dy*cos_h))
             fwd   = math.cos(math.radians(rel_bearing))
             right = math.sin(math.radians(rel_bearing))
 
-            # Lateral offset at CPA
-            vn_i = spd * math.cos(math.radians(bs.traf.hdg[oi]))
-            ve_i = spd * math.sin(math.radians(bs.traf.hdg[oi]))
+            spd_int = _spd_nms(oi)
+            vn_i    = spd_int * math.cos(math.radians(bs.traf.hdg[oi]))
+            ve_i    = spd_int * math.sin(math.radians(bs.traf.hdg[oi]))
             dvn, dve = vn_i-vn_o, ve_i-ve_o
-            rv2  = dvn*dvn + dve*dve
+            rv2      = dvn*dvn + dve*dve
             cpa_side = 0.0
+            cpa_dist = dist  # fallback for diverging pairs: current distance
             if rv2 > 1e-12:
                 dot      = dx*dve + dy*dvn
-                tcpa     = max(0.0, -dot / rv2)
+                tcpa_raw = -dot / rv2
+                tcpa     = max(0.0, tcpa_raw)
                 dx_cpa   = dx + tcpa*dve
                 dy_cpa   = dy + tcpa*dvn
                 cpa_side = max(-1.0, min(1.0, (dx_cpa*cos_h - dy_cpa*sin_h) / sep))
+                if tcpa_raw > 0:
+                    cpa_dist = math.sqrt(dx_cpa*dx_cpa + dy_cpa*dy_cpa)
 
-            int_ui = urg_idx.get(other, -1)
-            u_k = float(U[own_ui, int_ui]) \
-                  if (own_ui >= 0 and int_ui >= 0 and U.size > 0) else 0.0
-            u_norm    = min(u_k, 1.0)
             dist_norm = min(dist / (3.0 * sep), 1.0)
-            intruders.append((u_norm, dist_norm, fwd, right, cpa_side, u_norm))
+            intruders.append((cpa_dist, dist_norm, fwd, right, cpa_side))
 
-        # Sort by urgency descending so worst threat is always in slot 0
-        intruders.sort(key=lambda x: -x[0])
+        intruders.sort(key=lambda x: x[0])  # ascending: nearest CPA first
         for k in range(N_NBR):
             if k < len(intruders):
-                _, dn, fw, ri, cs_, uk = intruders[k]
-                obs += [dn, fw, ri, cs_, uk]
+                _, dn, fw, ri, cs_ = intruders[k]
+                obs += [dn, fw, ri, cs_]
             else:
-                obs += [1.0, 0.0, 0.0, 0.0, 0.0]   # distant, neutral, no CPA, no urgency
-
-        urg_sum = float(U.sum()) / 2.0 if U.size > 0 else 0.0
-        obs.append(min(urg_sum / 10.0, 1.0))
+                obs += [1.0, 0.0, 0.0, 0.0]  # distant neutral placeholder
 
         return np.array(obs, dtype=np.float32)
 
     def _time_to_exit(self, idx):
-        """Normalised distance to sector boundary along current heading [0,1]."""
         nm  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
         hdg = bs.traf.hdg[idx]
         end = nm + 400.0 * np.array([math.sin(math.radians(hdg)),
@@ -568,10 +604,9 @@ class AirspaceEnv(gym.Env):
         isect = self._polygon_shape.exterior.intersection(ray)
         if isect.is_empty:
             return 1.0
-        pts   = list(isect.geoms) if hasattr(isect, 'geoms') else [isect]
-        d     = min(math.hypot(p.x - nm[0], p.y - nm[1]) for p in pts)
-        spd   = CONFIG['ac_speed'] / 3600.0
-        return min(d / max(spd * CONFIG['lookahead_s'], 1.0), 1.0)
+        pts = list(isect.geoms) if hasattr(isect, 'geoms') else [isect]
+        d   = min(math.hypot(p.x - nm[0], p.y - nm[1]) for p in pts)
+        return min(d / max(_spd_nms(idx) * CONFIG['lookahead_s'], 1.0), 1.0)
 
     # ── Exits ─────────────────────────────────────────────────────────────────
 
@@ -585,6 +620,7 @@ class AirspaceEnv(gym.Env):
             self._slots[slot] = None
             self._destination_ll.pop(cs, None)
             self._commanded_heading.pop(cs, None)
+            self._commanded_speed.pop(cs, None)
             self._steps_since_urgency.pop(cs, None)
             if slot not in self._pending_spawns:
                 delay = random.randint(*self._spawn_delay_range)
@@ -620,18 +656,18 @@ class AirspaceEnv(gym.Env):
     # ── Spawning ──────────────────────────────────────────────────────────────
 
     def _process_pending_spawns(self):
-        for slot in sorted(s for s, t in self._pending_spawns.items() if t <= 1):
+        ready = sorted(s for s, t in list(self._pending_spawns.items()) if t <= 1)
+        for slot in ready:
             del self._pending_spawns[slot]
-            # Re-enter from the same perimeter sector the slot was originally assigned,
-            # keeping traffic patterns consistent across the episode.
             ac = self._generate_replacement(slot)
             if ac is not None:
                 self._spawn_aircraft(slot, ac)
-        for slot in self._pending_spawns:
+            else:
+                self._pending_spawns[slot] = 5  # sector too dense: retry in 5 steps
+        for slot in list(self._pending_spawns):
             self._pending_spawns[slot] -= 1
 
     def _generate_replacement(self, slot):
-        """Try up to max_placement_tries times to find a clear spawn for this slot."""
         occupied = [
             (bs.traf.lat[bs.traf.id2idx(cs)], bs.traf.lon[bs.traf.id2idx(cs)])
             for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0
@@ -649,15 +685,17 @@ class AirspaceEnv(gym.Env):
     def _spawn_aircraft(self, slot, ac):
         cs = f'AC{self._next_callsign_id:02d}'
         self._next_callsign_id += 1
+        mach = CONFIG['ac_mach']
         bs.traf.cre(cs, actype=CONFIG['ac_type'],
                     aclat=float(ac['sp_ll'][0]), aclon=float(ac['sp_ll'][1]),
-                    achdg=float(ac['heading']), acspd=CONFIG['ac_speed'],
-                    acalt=CONFIG['altitude'])
-        bs.stack.stack(f'SPD {cs} {int(CONFIG["ac_speed"])}')
+                    achdg=float(ac['heading']), acspd=mach,
+                    acalt=CONFIG['altitude'] * 30.48)  # FL350 = 350 * 30.48 = 10668 m
+        bs.stack.stack(f'MACH {cs} {mach}')
         bs.stack.stack(f'ALT {cs} FL{CONFIG["altitude"]}')
         self._destination_ll[cs]      = ac['dest_ll']
         self._commanded_heading[cs]   = float(ac['heading'])
-        self._steps_since_urgency[cs] = 30
+        self._commanded_speed[cs]     = mach  # stored as Mach throughout
+        self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs
         self._active_callsigns.add(cs)
 
