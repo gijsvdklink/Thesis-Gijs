@@ -71,7 +71,7 @@ CONFIG = {
     'ref_jitter':            lambda: random.uniform(-0.30, 0.30),
     # Simulation
     'sim_dt':                0.5,             # BlueSky timestep (s)
-    'action_freq':           20,              # RL step = 10 s simulated time
+    'action_freq':           60,              # RL step = 30 s simulated time
     'lookahead_s':           900.0,           # 15-min conflict lookahead
     't_warn':                600.0,           # urgency ramp starts at tcpa = 10 min
     'crossings_per_episode': 2.5,             # ≈ 60 min simulated per episode

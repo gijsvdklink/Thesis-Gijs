@@ -78,7 +78,7 @@ clean single-aircraft MDP.
 \end{algorithm}
 
 \begin{algorithm}[h]
-\caption{\textsc{Step}(action) — advance one RL step (10\,s simulated)}
+\caption{\textsc{Step}(action) — advance one RL step (30\,s simulated)}
 \label{alg:step}
 \begin{algorithmic}[1]
 \State Spawn any pending replacement aircraft
@@ -88,7 +88,7 @@ clean single-aircraft MDP.
     \State $M_\text{cmd} \leftarrow \operatorname{clip}(M_\text{cmd} + \Delta M,\;0.70,\;0.82)$
 \EndIf
 \State \textit{(Traffic aircraft receive no commands)}
-\State Advance BlueSky simulation $20\times0.5$\,s $= 10$\,s
+\State Advance BlueSky simulation $60\times0.5$\,s $= 30$\,s
 \For{each aircraft that exited the sector}
     \If{exiting aircraft is ownship}
         \State Apply wrong-direction exit penalty if $|\Delta\psi_\text{dest}| > 90^\circ$
@@ -179,6 +179,22 @@ where $d_\text{CPA}^\text{min}$ is the minimum predicted separation between
 the ownship and any traffic aircraft.
 The exit penalty $r_\text{exit} = -w_\text{exit}$ applies only when the
 ownship exits in the wrong direction.
+
+\paragraph{Step-resolution limitation.}
+With a 30\,s decision cycle, a fast head-on geometry (closure $\approx 900$\,kts)
+can in principle produce a loss of separation that starts and fully resolves
+within a single step.
+In that case the reward is evaluated after the aircraft have already diverged,
+so the worst-case separation is not directly penalised.
+This is partially mitigated by the predictive $d_\text{CPA}^\text{min}$: once
+past closest approach the code substitutes the current distance, which remains
+small immediately after a breach.
+The exponential reward shaping further reduces the impact by providing a
+non-zero gradient in the steps preceding the conflict, so the policy is
+penalised for converging geometry before any separation violation occurs.
+The 30\,s step is retained because a shorter cycle reintroduces turn-aliasing,
+making it impossible for the policy to observe the full geometric consequence
+of a heading command.
 
 \begin{table}[h]
 \centering

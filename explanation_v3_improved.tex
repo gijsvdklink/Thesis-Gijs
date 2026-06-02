@@ -49,12 +49,15 @@ Episodes last approximately 60\,min of simulated time (2.5 sector crossings).
 
 \paragraph{Decision cycle.}
 A single agent acts as the air traffic controller.
-At each RL step (10\,s simulated, 20 BlueSky sub-steps of 0.5\,s), the agent
+At each RL step (30\,s simulated, 60 BlueSky sub-steps of 0.5\,s), the agent
 issues one instruction, either a heading offset or a Mach adjustment, to the
 \textit{focus aircraft} selected by the urgency matrix
 (Section~\ref{sec:urgency}).
-Heading changes complete within one step; speed adjustments settle gradually
-over approximately 60 steps (10\,min), consistent with cruise deceleration.
+At the standard A320 bank angle a $30^\circ$ heading change takes roughly 10\,s,
+so the commanded turn is fully complete well before the step ends and the reward
+is evaluated against the resulting geometry.
+Speed adjustments settle gradually over approximately 20 steps (10\,min),
+consistent with cruise deceleration.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Environment Loop}
@@ -311,6 +314,23 @@ The penalty is zero beyond 10\,NM predicted separation, grows linearly below
 that, and reaches $-w_\text{safe}$ at zero separation.
 Because this term activates as soon as urgency is nonzero (at $T_\text{warn}
 = 600$\,s), the reward signal is present well before any violation occurs.
+
+\paragraph{Step-resolution limitation.}
+With a 30\,s decision cycle, a fast head-on geometry (closure $\approx 900$\,kts)
+can in principle produce a loss of separation that starts and fully resolves
+within a single step.
+In that case the reward is evaluated after the aircraft have already diverged,
+so the worst-case separation is not directly observed by the policy.
+This effect is partially mitigated by the predictive nature of $d_\text{CPA}^\text{min}$:
+when two aircraft are past their closest point of approach the code substitutes
+the current distance, which remains small if the separation was recently breached.
+More importantly, the exponential shaping of $r_\text{safe}$ ensures a non-zero
+gradient in the steps \emph{preceding} the conflict window, so the policy is
+penalised for converging geometry before any violation occurs.
+The 30\,s step length is nevertheless retained because reverting to a shorter
+cycle reintroduces turn-aliasing: a half-finished turn and a completed one produce
+nearly identical observations, which prevents the policy from learning the
+geometric consequence of its actions.
 
 \paragraph{Efficiency, workload, and exit.}
 The drift penalty $(1-\cos\Delta\psi_f)/2$ is evaluated against the commanded
