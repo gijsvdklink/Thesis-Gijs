@@ -65,7 +65,7 @@ CONFIG = {
     'spawn_jitter':          lambda: random.uniform(0.1, 0.9),
     'ref_jitter':            lambda: random.uniform(-0.30, 0.30),
     'sim_dt':                0.5,
-    'action_freq':           20,
+    'action_freq':           60,
     'lookahead_s':           900.0,
     't_warn':                600.0,
     'crossings_per_episode': 2.5,
@@ -348,8 +348,7 @@ class AirspaceEnv(gym.Env):
 
     def _compute_reward(self, acting_cs, action_idx):
         cpa_min = self._min_cpa_dist(acting_cs)
-        sep2    = 2.0 * CONFIG['sep_nm']
-        r_safe  = -CONFIG['w_safe'] * max(0.0, 1.0 - cpa_min / sep2)
+        r_safe  = -CONFIG['w_safe'] * math.exp(-cpa_min / CONFIG['sep_nm'])
 
         drift_a = 0.0
         if acting_cs and acting_cs in self._destination_ll:
