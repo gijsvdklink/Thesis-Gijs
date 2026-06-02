@@ -9,6 +9,8 @@
 \usepackage{parskip}
 \usepackage{graphicx}
 \usepackage[hidelinks]{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 \geometry{margin=2.5cm}
 
 \title{\textbf{v3\_improved Environment: Technical Specification}}
@@ -22,12 +24,14 @@
 \section{Overview}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The environment simulates a single upper-airspace sector of approximately
-80\,000\,km$^2$, comparable in scale to Dutch upper airspace (ACC\,EHAA).
+The environment simulates a single upper-airspace sector whose area is drawn
+uniformly each episode from 10\,000--80\,000\,km$^2$, spanning a range from
+a small sub-sector to a scale comparable with Dutch upper airspace (ACC\,EHAA).
 The sector boundary is a random convex polygon with 5--7 vertices, resampled
 each episode and filtered to a minimum isoperimetric ratio of 0.65.
-Each episode contains $N \in [8,\,13]$ A320 aircraft at FL350, drawn from a
-uniform density of 5\,000--10\,000\,km$^2$ per aircraft.
+Each episode contains $N \in [2,\,15]$ A320 aircraft at FL350, where $N$ is
+determined by the sampled area divided by a density drawn uniformly from
+5\,000--15\,000\,km$^2$ per aircraft, clipped to the range $[2,\,15]$.
 All aircraft cruise at $M = 0.78$ (approximately 450\,kt TAS at FL350).
 Speed commands are issued in Mach to avoid the CAS-to-TAS ambiguity that
 arises at high altitude.
@@ -51,6 +55,57 @@ issues one instruction, either a heading offset or a Mach adjustment, to the
 (Section~\ref{sec:urgency}).
 Heading changes complete within one step; speed adjustments settle gradually
 over approximately 60 steps (10\,min), consistent with cruise deceleration.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Environment Loop}
+\label{sec:loop}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The environment follows the standard Gymnasium \textsc{reset}/\textsc{step}
+interface.
+Algorithms~\ref{alg:reset} and~\ref{alg:step} give a compact summary of each
+call; the sections that follow describe each component in detail.
+
+\begin{algorithm}[h]
+\caption{\textsc{Reset} — initialise a new episode}
+\label{alg:reset}
+\begin{algorithmic}[1]
+\State Generate random convex polygon (5--7 vertices, area $\approx 80\,000$\,km$^2$)
+\State area $\sim\mathcal{U}(10\,000,\,80\,000)$\,km$^2$,\quad density $\sim\mathcal{U}(5\,000,\,15\,000)$\,km$^2$/aircraft
+\State $N \leftarrow \operatorname{clip}\!\bigl(\lfloor\text{area}/\text{density}\rceil,\;2,\;15\bigr)$
+\State Compute $T_\text{max}$ from sector diameter and cruise speed
+\For{each slot $s = 1,\ldots,N$}
+    \State Place aircraft on perimeter arc $s$ with uniform jitter
+    \State Set heading toward reference point on opposite arc
+\EndFor
+\State Recompute urgency matrix $\mathbf{U}$ from positions and velocities
+\State $f \leftarrow \arg\max_i \max_{j\neq i}\, u_{ij}$ \quad (focus aircraft)
+\State \Return observation $\mathbf{o}(f)$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[h]
+\caption{\textsc{Step}(action) — advance one RL step (10\,s simulated)}
+\label{alg:step}
+\begin{algorithmic}[1]
+\State Spawn any aircraft whose replacement delay has elapsed
+\If{action is heading offset $\delta$}
+    \State $\psi_\text{cmd} \leftarrow \psi_\text{dest}(f) + \delta$
+    \quad\textit{(recomputed from current position)}
+\ElsIf{action is Mach adjustment $\Delta M$}
+    \State $M_\text{cmd} \leftarrow \operatorname{clip}(M_\text{cmd} + \Delta M,\;0.70,\;0.82)$
+\EndIf
+\State Advance BlueSky simulation $20\times0.5$\,s $= 10$\,s
+\For{each aircraft that exited the sector}
+    \State Apply wrong-direction exit penalty if $|\Delta\psi_\text{dest}| > 90^\circ$
+    \State Schedule replacement (immediate respawn)
+\EndFor
+\State Recompute urgency matrix $\mathbf{U}$
+\State Select new focus $f'$ using commitment rule (Section~\ref{sec:urgency})
+\State $r \leftarrow r_\text{safe}(f) - w_\text{eff}\cdot\text{drift}(f) - w_\text{work}\cdot c_f + r_\text{exit}$
+\State \Return $\mathbf{o}(f'),\; r,\; \text{truncated}=(\text{step\_count} \geq T_\text{max})$
+\end{algorithmic}
+\end{algorithm}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Urgency Matrix and Focus Selection}
@@ -170,10 +225,10 @@ Empty slots are padded with $(1,\,0,\,0,\,0)$.
   & $\operatorname{clip}\!\left(\tfrac{\psi_\text{cmd}-\psi_\text{actual}}{30^\circ},\,-1,1\right)$
   & $[-1,1]$ \\[2pt]
 3 & Time to exit
-  & $d_\text{boundary}\;/\;(v\cdot T_\text{look})$
+  & $\min\!\bigl(d_\text{boundary}\;/\;(v\cdot T_\text{look}),\;1\bigr)$
   & $[0,1]$ \\[2pt]
 4 & Speed offset
-  & $(M_\text{cmd} - 0.70)\;/\;0.12$
+  & $(M_\text{cmd} - M_\text{min})\;/\;(M_\text{max}-M_\text{min})$;\quad $M_\text{min}{=}0.70,\;M_\text{max}{=}0.82$
   & $[0,1]$ \\[4pt]
 \multicolumn{4}{l}{\textit{4 intruders $\times$ 4 features, sorted by CPA distance $\uparrow$:}} \\[2pt]
 $+0$ & Distance
@@ -204,7 +259,9 @@ required response differs.
 Turn progress makes the aircraft's rotational state explicit.
 
 \paragraph{Speed offset (index 4).}
-The commanded Mach is normalised over the reachable range $[0.70, 0.82]$.
+The commanded Mach is normalised by min-max scaling over the reachable range
+$[M_\text{min}, M_\text{max}] = [0.70, 0.82]$, mapping the full range to
+$[0,1]$ with 0.70 at 0 and 0.82 at 1.
 Without this, the policy cannot distinguish a slowed aircraft from one at
 nominal cruise, even though the available speed actions differ.
 

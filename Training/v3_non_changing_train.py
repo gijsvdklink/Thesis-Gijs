@@ -1,11 +1,12 @@
 """
-PPO training for v3_simple_env.
+PPO training for v3_non_changing (single-ownship environment).
 
 Run:
-    python -m Training.v3_stable_train
+    python -m Training.v3_non_changing_train
+    python -m Training.v3_non_changing_train --multi   # 3 seeds in parallel
 
 Monitor:
-    tensorboard --logdir Runs_saved/v3
+    tensorboard --logdir Runs_saved/v3_non_changing
 """
 
 import os, random, subprocess, sys, time, argparse
@@ -18,7 +19,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from Environments.v3_simple_env import AirspaceEnv
+from Environments.v3_non_changing import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,7 @@ CHECKPOINT_EVERY = 100_000
 N_RUNS           = 3
 
 RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3')
+    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3_non_changing')
 )
 
 PPO_KWARGS = dict(
@@ -39,16 +40,17 @@ PPO_KWARGS = dict(
     gamma         = 0.99,
     gae_lambda    = 0.95,
     clip_range    = 0.2,
-    ent_coef      = 0.01,
+    ent_coef      = 0.02,
     vf_coef       = 0.5,
     verbose       = 0,
-    policy_kwargs = dict(net_arch=[64, 64]),
+    policy_kwargs = dict(net_arch=[128, 128]),
 )
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 class EpisodeStatsCallback(BaseCallback):
-    _LABELS = ['-30°', '-15°', 'direct', '+15°', '+30°', 'hold']
+    _LABELS = ['-30°', '-15°', 'direct', '+15°', '+30°', 'hold',
+               'M-0.04', 'M-0.02', 'M+0.02']
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
@@ -108,14 +110,14 @@ class ProgressCallback(BaseCallback):
 # ── Training run ──────────────────────────────────────────────────────────────
 
 def train(seed):
-    run_name = f"ramp180_obs21_sticky3_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"non_changing_9act_obs21_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(tb_dir,   exist_ok=True)
 
-    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv)
+    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
     env  = VecNormalize(VecMonitor(venv),
                         norm_obs=True, norm_reward=False,
                         clip_obs=10.0, gamma=0.99)
@@ -149,7 +151,7 @@ def main():
     args = parser.parse_args()
 
     if args.multi:
-        seeds = [random.randint(0, 99_999) for _ in range(N_RUNS)]
+        seeds = [random.randint(1, 99_999) for _ in range(N_RUNS)]
         print(f'Launching {N_RUNS} runs — seeds: {seeds}')
         procs = [subprocess.Popen([sys.executable, __file__, '--seed', str(s)])
                  for s in seeds]
@@ -158,7 +160,7 @@ def main():
         except KeyboardInterrupt:
             for p in procs: p.terminate()
     else:
-        train(args.seed or random.randint(0, 99_999))
+        train(args.seed if args.seed is not None else random.randint(0, 99_999))
 
 if __name__ == '__main__':
     main()

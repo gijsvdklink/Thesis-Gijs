@@ -8,7 +8,22 @@
       "Bash(mv '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_ppo_v3.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_complex.py')",
       "Bash(rm '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_simple.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Training/train_bs_delay_complex.py')",
       "Bash(rm '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Visualisation/visualise_bs_delay_simple.py' '/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/RL_ENVS/Visualisation/visualise_bs_delay_complex.py')",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "Bash(git fetch *)",
+      "Bash(git reset *)",
+      "Bash(python -m Validation.v3_monte_carlo)",
+      "Bash(/Users/gijsvdklink/.venvs/RL/bin/python -c ' *)",
+      "Bash(python -m Validation.v3_improved_sanity)",
+      "Bash(python -c \"import bluesky as bs; import inspect; print\\(inspect.getsourcefile\\(bs.traf.cre\\)\\)\")",
+      "Bash(python -c \"import bluesky as bs; help\\(bs.traf.cre\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python make_gifs.py --frames 167)",
+      "Bash(pdflatex -interaction=nonstopmode explanation.tex)",
+      "Bash(python -m Validation.v3_improved_heatmap --model \"Runs_saved/v3_improved/improved_9act_obs21_seed46248_20260602_143043/checkpoints/ckpt_300000.zip\")"
     ]
   }
 }
