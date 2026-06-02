@@ -17,13 +17,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize, VecFrameStack
 
 from Environments.v4_trial import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 N_ENVS           = 4
+HISTORY_LEN      = 4   # frames stacked — matches navigation-mappo-rl history_length
 TOTAL_TIMESTEPS  = 100_000_000
 CHECKPOINT_EVERY = 100_000
 N_RUNS           = 3
@@ -118,9 +119,10 @@ def train(seed):
     os.makedirs(tb_dir,   exist_ok=True)
 
     venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
-    env  = VecNormalize(VecMonitor(venv),
-                        norm_obs=True, norm_reward=False,
-                        clip_obs=10.0, gamma=0.99)
+    env  = VecFrameStack(VecNormalize(VecMonitor(venv),
+                                      norm_obs=True, norm_reward=False,
+                                      clip_obs=10.0, gamma=0.99),
+                         n_stack=HISTORY_LEN)
 
     model = PPO('MlpPolicy', env, seed=seed, tensorboard_log=tb_dir, **PPO_KWARGS)
 

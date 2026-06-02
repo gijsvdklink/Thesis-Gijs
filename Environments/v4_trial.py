@@ -1,32 +1,34 @@
 """
 v4_trial — single-ownship, LiDAR-observation conflict-avoidance environment.
 
-Same scenario as v3_non_changing (BlueSky, random convex sector, density-based
-traffic, uncontrolled surrounding aircraft) with two deliberate changes:
+Mirrors the observation and reward design of navigation-mappo-rl, adapted for
+a BlueSky airspace scenario with a single controlled agent.
 
-  Observation  5 ego features + 16 LiDAR rays  (21 floats — same dim as v3)
-    [0]  sin(Δψ_dest)      heading error to destination          [-1, 1]
-    [1]  cos(Δψ_dest)                                            [-1, 1]
-    [2]  turn_progress     (cmd_hdg − actual_hdg) / 30           [-1, 1]
-    [3]  time_to_exit      normalised time to sector boundary     [0, 1]
-    [4]  speed_offset      (cmd_mach − mach_min) / mach_range    [0, 1]
-    [5:21]  16 ego-centric LiDAR rays, ray 0 = dead ahead, clockwise.
-            each ray: 0.0 = intruder touching ownship, 1.0 = clear / beyond range
+Observation  5 ego features + 36 rays × 2 LiDAR channels  (77 floats per frame)
+  [0]   sin(Δψ_dest)     heading error to destination               [-1, 1]
+  [1]   cos(Δψ_dest)                                                [-1, 1]
+  [2]   speed_ratio      cmd_mach / ac_mach                         [0, ~1]
+  [3]   turn_progress    (cmd_hdg − actual_hdg) / 30                [-1, 1]
+  [4]   time_to_exit     normalised time to sector boundary          [0, 1]
+  [5:41]   aircraft LiDAR — 36 ego-centric rays, ray 0 = dead ahead, clockwise.
+           0.0 = intruder touching ownship, 1.0 = clear / beyond range
+  [41:77]  boundary LiDAR — same 36 rays cast against sector polygon.
+           0.0 = at boundary, 1.0 = boundary beyond lidar_range_nm
 
-  Action  Discrete(9) — same ATCO-style clearances as v3_non_changing
-    0 −30°   1 −15°   2 direct [free]   3 +15°   4 +30°   5 hold [free]
-    6 M−0.04   7 M−0.02   8 M+0.02
+Temporal context is provided by VecFrameStack(4) in the training script,
+stacking 4 consecutive frames → 308-dim observation fed to the network.
+This matches the history_length = 4 used in navigation-mappo-rl.
 
-  Reward
-    +w_nav  × cos(Δψ_actual_to_dest)    heading alignment with destination
-    −w_safe × exp(−min_lidar_nm / sep)  LiDAR-based proximity penalty
-    −w_work × ACT_COST[action]          ATCO workload penalty
-    −w_exit                              wrong-direction sector exit  (sparse)
+Action  Discrete(9) — ATCO-style clearances
+  0 −30°   1 −15°   2 direct [free]   3 +15°   4 +30°   5 hold [free]
+  6 M−0.04   7 M−0.02   8 M+0.02
 
-Key difference from v3_non_changing: the explicit per-neighbour CPA features are
-replaced by 16 LiDAR rays.  The agent must learn to infer future conflicts from
-the current geometric proximity snapshot.  Actions and reward structure are
-otherwise kept consistent to isolate the effect of the observation representation.
+Reward  (navigation-mappo-rl style, adapted for airspace)
+  +w_nav   × cos(Δψ_actual) × speed_ratio   navigation progress
+  −w_safe  × exp(−min_ac_lidar_nm / sep)    proximity penalty
+  −w_alive                                   alive cost (encourages efficiency)
+  −w_work  × ACT_COST[action]               ATCO workload penalty
+  −w_exit                                    wrong-direction sector exit (sparse)
 """
 
 import math
@@ -70,13 +72,14 @@ CONFIG = {
     'lookahead_s':           900.0,
     'crossings_per_episode': 2.5,
     'spawn_delay_s':         (0, 0),
-    # LiDAR
-    'n_lidar_rays':          16,
+    # LiDAR — 2 channels: aircraft + sector boundary
+    'n_lidar_rays':          36,
     'lidar_range_nm':        30.0,   # 6× sep_nm
     'lidar_detect_nm':       5.0,    # ray hit half-width = sep_nm
     # Reward weights
     'w_safe':                1.00,
     'w_nav':                 0.20,
+    'w_alive':               0.05,
     'w_work':                0.05,
     'w_exit':                0.50,
     'seed':                  None,
@@ -85,8 +88,9 @@ CONFIG = {
 NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
-N_RAYS  = CONFIG['n_lidar_rays']
-OBS_DIM = 5 + N_RAYS   # 21
+N_RAYS    = CONFIG['n_lidar_rays']
+N_CHANNELS = 2                       # aircraft + boundary
+OBS_DIM   = 5 + N_RAYS * N_CHANNELS  # 77
 
 HEADING_OFFSETS = [-30, -15, 0, 15, 30, None]
 SPEED_DELTAS    = [-0.04, -0.02, 0.02]
@@ -186,7 +190,8 @@ class AirspaceEnv(gym.Env):
         self._ep_stats          = {}
         self.polygon            = None
         self._polygon_shape     = None
-        self._last_lidar        = np.ones(N_RAYS, dtype=np.float32)
+        self._last_ac_lidar     = np.ones(N_RAYS, dtype=np.float32)
+        self._last_bnd_lidar    = np.ones(N_RAYS, dtype=np.float32)
 
     # ── Gym interface ─────────────────────────────────────────────────────────
 
@@ -225,7 +230,8 @@ class AirspaceEnv(gym.Env):
         self._next_callsign_id  = 0
         self._step_count        = 0
         self._ep_stats          = {'reward': 0.0, 'steps': 0, 'los': 0, 'actions': []}
-        self._last_lidar        = np.ones(N_RAYS, dtype=np.float32)
+        self._last_ac_lidar     = np.ones(N_RAYS, dtype=np.float32)
+        self._last_bnd_lidar    = np.ones(N_RAYS, dtype=np.float32)
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_s))
         delay_max = max(1, round(CONFIG['spawn_delay_s'][1] / step_s))
@@ -252,7 +258,8 @@ class AirspaceEnv(gym.Env):
         self._ownship_cs = self._slots[OWNSHIP_SLOT]
         own_idx = bs.traf.id2idx(self._ownship_cs) if self._ownship_cs else -1
         if own_idx >= 0:
-            self._last_lidar = self._compute_lidar(self._ownship_cs, own_idx)
+            self._last_ac_lidar  = self._compute_ac_lidar(self._ownship_cs, own_idx)
+            self._last_bnd_lidar = self._compute_bnd_lidar(own_idx)
         return self._get_observation(), {}
 
     def step(self, action):
@@ -271,11 +278,15 @@ class AirspaceEnv(gym.Env):
             self._ownship_cs = self._slots[OWNSHIP_SLOT]
 
         own_idx = bs.traf.id2idx(self._ownship_cs) if self._ownship_cs else -1
-        self._last_lidar = (self._compute_lidar(self._ownship_cs, own_idx)
-                            if own_idx >= 0 else np.ones(N_RAYS, dtype=np.float32))
+        if own_idx >= 0:
+            self._last_ac_lidar  = self._compute_ac_lidar(self._ownship_cs, own_idx)
+            self._last_bnd_lidar = self._compute_bnd_lidar(own_idx)
+        else:
+            self._last_ac_lidar  = np.ones(N_RAYS, dtype=np.float32)
+            self._last_bnd_lidar = np.ones(N_RAYS, dtype=np.float32)
 
-        reward  = self._compute_reward(self._ownship_cs, int(action)) + exit_r
-        n_los   = self._count_los()
+        reward = self._compute_reward(self._ownship_cs, int(action)) + exit_r
+        n_los  = self._count_los()
 
         self._ep_stats['reward']  += reward
         self._ep_stats['steps']   += 1
@@ -296,23 +307,21 @@ class AirspaceEnv(gym.Env):
             })
         return self._get_observation(), reward, False, truncated, info
 
-    # ── LiDAR ─────────────────────────────────────────────────────────────────
+    # ── LiDAR — aircraft channel ───────────────────────────────────────────────
 
-    def _compute_lidar(self, cs, idx):
+    def _compute_ac_lidar(self, cs, idx):
         """
-        16 ego-centric proximity rays around the ownship.
-        Ray 0 = dead ahead, clockwise.  Intruders modelled as circles of radius
-        lidar_detect_nm.  Returns normalised distance ∈ [0, 1]; 1.0 = clear.
+        36 ego-centric rays; each returns normalised distance to nearest
+        intruder aircraft.  Intruders modelled as circles of radius lidar_detect_nm.
+        0.0 = intruder at ownship position, 1.0 = clear / beyond lidar_range_nm.
         """
         hdg_rad = math.radians(bs.traf.hdg[idx])
         sin_h   = math.sin(hdg_rad)
         cos_h   = math.cos(hdg_rad)
         own_nm  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
-
-        max_r  = CONFIG['lidar_range_nm']
-        det_r  = CONFIG['lidar_detect_nm']
-        det_r2 = det_r * det_r
-
+        max_r   = CONFIG['lidar_range_nm']
+        det_r   = CONFIG['lidar_detect_nm']
+        det_r2  = det_r * det_r
         readings = np.ones(N_RAYS, dtype=np.float32)
 
         for other in self._active_callsigns:
@@ -324,33 +333,58 @@ class AirspaceEnv(gym.Env):
             dx_n = float(int_nm[1] - own_nm[1])
             if dx_e*dx_e + dx_n*dx_n > (max_r + det_r) ** 2:
                 continue
-
             # Ego frame: px = right, py = forward
             px = dx_e * cos_h - dx_n * sin_h
             py = dx_e * sin_h + dx_n * cos_h
-
             for r in range(N_RAYS):
                 theta = math.radians(r * 360.0 / N_RAYS)
                 rdx   = math.sin(theta)
                 rdy   = math.cos(theta)
-
                 t = px * rdx + py * rdy
                 if t < 0:
                     continue
-
                 perp2 = max(0.0, px*px + py*py - t*t)
                 if perp2 < det_r2:
                     hit  = max(0.0, t - math.sqrt(max(0.0, det_r2 - perp2)))
                     norm = min(hit / max_r, 1.0)
                     if norm < readings[r]:
                         readings[r] = norm
+        return readings
 
+    # ── LiDAR — boundary channel ───────────────────────────────────────────────
+
+    def _compute_bnd_lidar(self, idx):
+        """
+        36 rays cast against the sector polygon boundary.
+        0.0 = ownship is at the boundary, 1.0 = boundary beyond lidar_range_nm.
+        Rays are in absolute NM heading (not ego-relative) to decouple boundary
+        geometry from ownship orientation; the ego frame is recovered by the
+        same ordering as the aircraft channel (ray 0 = dead ahead, clockwise).
+        """
+        own_nm  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
+        own_hdg = bs.traf.hdg[idx]
+        max_r   = CONFIG['lidar_range_nm']
+        readings = np.ones(N_RAYS, dtype=np.float32)
+
+        for r in range(N_RAYS):
+            # Absolute heading: ray 0 = dead ahead of ownship, clockwise
+            alpha = math.radians(own_hdg + r * 360.0 / N_RAYS)
+            ray_e = math.sin(alpha)
+            ray_n = math.cos(alpha)
+            end   = (float(own_nm[0] + max_r * ray_e),
+                     float(own_nm[1] + max_r * ray_n))
+            ray_line = LineString([(float(own_nm[0]), float(own_nm[1])), end])
+            isect    = self._polygon_shape.exterior.intersection(ray_line)
+            if isect.is_empty:
+                continue
+            pts = list(isect.geoms) if hasattr(isect, 'geoms') else [isect]
+            d   = min(math.hypot(p.x - own_nm[0], p.y - own_nm[1]) for p in pts)
+            readings[r] = min(d / max_r, 1.0)
         return readings
 
     # ── LoS counter ───────────────────────────────────────────────────────────
 
     def _count_los(self):
-        """Number of traffic aircraft currently inside sep_nm of the ownship."""
         if not self._ownship_cs:
             return 0
         own_idx = bs.traf.id2idx(self._ownship_cs)
@@ -358,8 +392,8 @@ class AirspaceEnv(gym.Env):
             return 0
         own_nm = latlon_to_nm(CONFIG['center_ll'],
                                bs.traf.lat[own_idx], bs.traf.lon[own_idx])
-        sep2   = CONFIG['sep_nm'] ** 2
-        count  = 0
+        sep2  = CONFIG['sep_nm'] ** 2
+        count = 0
         for cs in self._active_callsigns:
             if cs == self._ownship_cs:
                 continue
@@ -375,11 +409,7 @@ class AirspaceEnv(gym.Env):
     # ── Reward ────────────────────────────────────────────────────────────────
 
     def _compute_reward(self, cs, action_idx):
-        # Safety: exponential proximity penalty via minimum LiDAR reading
-        min_lidar_nm = float(self._last_lidar.min()) * CONFIG['lidar_range_nm']
-        r_safe = -CONFIG['w_safe'] * math.exp(-min_lidar_nm / CONFIG['sep_nm'])
-
-        # Navigation: reward actual heading alignment with destination
+        # Navigation progress: cos(heading error) × speed ratio (nav-mappo style)
         r_nav = 0.0
         if cs and cs in self._destination_ll:
             idx = bs.traf.id2idx(cs)
@@ -388,12 +418,20 @@ class AirspaceEnv(gym.Env):
                     bs.traf.lat[idx], bs.traf.lon[idx],
                     *[float(v) for v in self._destination_ll[cs]])
                 heading_err = wrap_to_180(bearing - bs.traf.hdg[idx])
-                r_nav = CONFIG['w_nav'] * math.cos(math.radians(heading_err))
+                speed_ratio = self._commanded_speed.get(cs, CONFIG['ac_mach']) / CONFIG['ac_mach']
+                r_nav = CONFIG['w_nav'] * math.cos(math.radians(heading_err)) * speed_ratio
 
-        # Workload: discrete action cost
+        # Safety: exponential proximity via minimum aircraft LiDAR reading
+        min_ac_nm = float(self._last_ac_lidar.min()) * CONFIG['lidar_range_nm']
+        r_safe = -CONFIG['w_safe'] * math.exp(-min_ac_nm / CONFIG['sep_nm'])
+
+        # Alive cost — encourages efficient navigation (from nav-mappo-rl)
+        r_alive = -CONFIG['w_alive']
+
+        # Workload: discrete ATCO action cost
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx]
 
-        return float(r_safe + r_nav + r_work)
+        return float(r_nav + r_safe + r_alive + r_work)
 
     # ── Action ────────────────────────────────────────────────────────────────
 
@@ -435,27 +473,26 @@ class AirspaceEnv(gym.Env):
         idx     = bs.traf.id2idx(cs)
         own_hdg = bs.traf.hdg[idx]
         cmd_hdg = self._commanded_heading.get(cs, own_hdg)
+        cmd_mach = self._commanded_speed.get(cs, CONFIG['ac_mach'])
 
         bearing, _ = geo.kwikqdrdist(
             bs.traf.lat[idx], bs.traf.lon[idx],
             *[float(v) for v in self._destination_ll[cs]])
         diff = wrap_to_180(bearing - cmd_hdg)
 
+        speed_ratio  = cmd_mach / CONFIG['ac_mach']
         turn_prog    = max(-1.0, min(1.0, wrap_to_180(cmd_hdg - own_hdg) / 30.0))
         t_exit       = self._time_to_exit(idx)
-        cmd_mach     = self._commanded_speed.get(cs, CONFIG['ac_mach'])
-        speed_offset = ((cmd_mach - CONFIG['ac_mach_min'])
-                        / (CONFIG['ac_mach_max'] - CONFIG['ac_mach_min']))
 
         ego = np.array([
             math.sin(math.radians(diff)),
             math.cos(math.radians(diff)),
+            speed_ratio,
             turn_prog,
             t_exit,
-            speed_offset,
         ], dtype=np.float32)
 
-        return np.concatenate([ego, self._last_lidar])
+        return np.concatenate([ego, self._last_ac_lidar, self._last_bnd_lidar])
 
     def _time_to_exit(self, idx):
         nm  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
