@@ -50,7 +50,7 @@ PPO_KWARGS = dict(
 
 class EpisodeStatsCallback(BaseCallback):
     _LABELS = ['-30°', '-15°', 'direct', '+15°', '+30°', 'hold',
-               'M-0.04', 'M-0.02', 'M+0.02']
+               'M-0.04', 'M-0.02', 'M+0.02', 'M+0.04']
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
@@ -110,7 +110,7 @@ class ProgressCallback(BaseCallback):
 # ── Training run ──────────────────────────────────────────────────────────────
 
 def train(seed):
-    run_name = f"improved_9act_obs21_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"improved_9act_obs25_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
@@ -119,8 +119,8 @@ def train(seed):
 
     venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
     env  = VecNormalize(VecMonitor(venv),
-                        norm_obs=True, norm_reward=False,
-                        clip_obs=10.0, gamma=0.99)
+                        norm_obs=False, norm_reward=False,
+                        gamma=0.99)
 
     model = PPO('MlpPolicy', env, seed=seed, tensorboard_log=tb_dir, **PPO_KWARGS)
 

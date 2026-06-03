@@ -1,7 +1,6 @@
 """
-make_gifs.py — v3 sector visualisation, no policy (aircraft fly direct to destination).
+make_gifs.py — v3_improved sector visualisation, policy or no-policy.
 
-Urgency is taken directly from env._urgency_matrix — no separate computation.
 Colour scheme reflects the two ATCO objectives:
 
   Objective 1 — Safety  (urgency)
@@ -12,15 +11,18 @@ Colour scheme reflects the two ATCO objectives:
   Objective 2 — Efficiency  (drift)
     Circle ring size scales with heading deviation from destination bearing.
 
-  CYAN outline — most urgent aircraft (focus), would receive instruction first.
+  CYAN outline — focus aircraft (would receive next instruction).
 
-Output: v3_no_policy.gif
-Run:    python make_gifs.py
+Run:
+    python make_gifs.py                        # no policy, random episode
+    python make_gifs.py --model path/to/ckpt.zip
 """
 
 import argparse
+import io
 import math
 import os
+import pickle
 import sys
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
@@ -32,19 +34,56 @@ import numpy as np
 import pygame
 from PIL import Image
 
+# ── NumPy compatibility shim ──────────────────────────────────────────────────
+# NumPy 2.x renamed numpy._core → numpy.core; this lets old .zip/.pkl files load.
+
+class _NumpyShim(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module.startswith('numpy._core'):
+            module = module.replace('numpy._core', 'numpy.core')
+        return super().find_class(module, name)
+
+from stable_baselines3.common import save_util
+
+def _patched_json_to_data(json_string, custom_objects=None):
+    import json, base64, warnings
+    data = {}
+    for key, item in json.loads(json_string).items():
+        if custom_objects and key in custom_objects:
+            data[key] = custom_objects[key]
+        elif isinstance(item, dict) and ':serialized:' in item:
+            try:
+                raw = base64.b64decode(item[':serialized:'].encode())
+                data[key] = _NumpyShim(io.BytesIO(raw)).load()
+            except Exception as e:
+                warnings.warn(f'Could not deserialise {key}: {e}')
+        else:
+            data[key] = item
+    return data
+
+save_util.json_to_data = _patched_json_to_data
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 import bluesky as bs
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from Environments.v3_improved import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
 
+# Default checkpoint to visualise
+DEFAULT_MODEL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    'Runs_saved', 'v3_improved',
+    'improved_9act_obs25_seed47674_20260603_160034',
+    'checkpoints', 'ckpt_200000.zip',
+)
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_NO_POLICY = os.path.join(HERE, 'v3_no_policy.gif')
-OUTPUT_POLICY    = os.path.join(HERE, 'v3_policy.gif')
 WINDOW_SIZE = 750
 FRAME_MS    = 120                # ms per GIF frame
-MAX_FRAMES  = 400               # 400 × 120 ms = 48 s of GIF
+MAX_FRAMES  = 600                # safety cap — episode ends naturally first
 
 SEP_NM = float(CONFIG['sep_nm'])
 
@@ -57,6 +96,8 @@ ORANGE     = (255, 140,   0)   # predicted conflict
 RED        = (220,  40,  40)   # active LoS
 CYAN       = (  0, 210, 255)   # focus aircraft outline
 GREEN_DARK = ( 40, 160,  80)   # on-track label accent
+GREEN      = ( 50, 200,  80)   # positive reward
+BLUE       = ( 80, 140, 220)   # neutral / info
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
@@ -119,7 +160,8 @@ def _blend(c1, c2, t):
 
 # ── Frame renderer ────────────────────────────────────────────────────────────
 
-def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no):
+def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no,
+               mode_str='', step_reward=0.0, cum_reward=0.0):
     screen.fill(WHITE)
 
     # Sector polygon
@@ -219,14 +261,17 @@ def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no):
         drifts.append(abs(wrap_to_180(dest_bearing - cmd_hdg)))
     mean_drift = sum(drifts) / max(len(drifts), 1)
 
+    rew_color = GREEN if step_reward > 0 else (RED if step_reward < 0 else BLACK)
     hud = [
-        ('v3 · no policy · 80 000 km² · 450 kts', BLACK),
+        (f'v3_improved · {mode_str}', BLACK),
         (f'T={bs.sim.simt:.0f}s   active={n_active}/{env.n_aircraft}   '
          f'served={env._next_callsign_id}   frame={frame_no}', BLACK),
         (f'[OBJ 1 SAFETY]   LoS pairs={n_los}   conflict pairs={n_conf}'
          f'   Σurgency={urg_sum:.2f}   LoS-steps={los_steps}', RED if n_los > 0 else BLACK),
-        (f'[OBJ 2 EFFIC.]   mean drift={mean_drift:.1f}°   '
-         f'focus={focus_cs}', GREEN_DARK),
+        (f'[OBJ 2 EFFIC.]   mean drift={mean_drift:.1f}°   focus={focus_cs}', GREEN_DARK),
+        (f'[REWARD]   step={step_reward:+.3f}   cumulative={cum_reward:+.2f}   '
+         f'mean={cum_reward / max(frame_no, 1):+.3f}'
+         + ('   [GRACE STEP]' if env._first_step_on_focus else ''), rew_color),
     ]
     for j, (line, col) in enumerate(hud):
         screen.blit(font.render(line, True, col), (8, 8 + j * 15))
@@ -252,67 +297,87 @@ def capture(surface):
 def main():
     pygame.init()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model',  default=None, help='Path to model .zip')
+    parser.add_argument('--model',  default=DEFAULT_MODEL,
+                        help='Path to model .zip  (default: ckpt_100000.zip)')
+    parser.add_argument('--no-policy', action='store_true',
+                        help='Ignore model, run no-policy baseline instead')
     parser.add_argument('--frames', type=int, default=MAX_FRAMES,
-                        help='Number of GIF frames (default %(default)s)')
+                        help='Safety cap on frames (default %(default)s)')
     parser.add_argument('--fps',    type=int, default=None,
-                        help='Override frame delay in ms')
+                        help='Override GIF frame delay in ms')
     args = parser.parse_args()
+
     max_frames = args.frames
     frame_ms   = args.fps if args.fps else FRAME_MS
+    use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
 
-    # ── Load policy if provided ────────────────────────────────────────────────
+    # ── Load policy ───────────────────────────────────────────────────────────
     model   = None
     vecnorm = None
-    OUTPUT  = OUTPUT_NO_POLICY
 
-    if args.model:
-        model_path = args.model
+    if use_policy:
+        model_path   = args.model
         vecnorm_path = model_path.replace('.zip', '_vecnorm.pkl')
         print(f'Loading model   : {model_path}')
         model = PPO.load(model_path)
         if os.path.exists(vecnorm_path):
             print(f'Loading vecnorm : {vecnorm_path}')
-            dummy = DummyVecEnv([AirspaceEnv])
-            vecnorm = VecNormalize.load(vecnorm_path, dummy)
+            with open(vecnorm_path, 'rb') as fh:
+                vecnorm = _NumpyShim(fh).load()
+            vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
             vecnorm.training    = False
             vecnorm.norm_reward = False
-        OUTPUT = OUTPUT_POLICY
 
+    # ── Output path ───────────────────────────────────────────────────────────
+    if use_policy:
+        stem   = os.path.splitext(os.path.basename(args.model))[0]
+        OUTPUT = os.path.join(HERE, f'v3_{stem}.gif')
+    else:
+        OUTPUT = os.path.join(HERE, 'v3_no_policy.gif')
+
+    # ── Run one episode ───────────────────────────────────────────────────────
     screen  = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
     font    = pygame.font.SysFont('monospace', 11)
     font_sm = pygame.font.SysFont('monospace', 10)
 
-    env    = AirspaceEnv()
-    obs, _ = env.reset()
-    view   = _View(env.polygon, WINDOW_SIZE, WINDOW_SIZE)
+    episode_seed = int.from_bytes(os.urandom(4), 'big')
+    print(f'Episode seed    : {episode_seed}')
+
+    env     = AirspaceEnv()
+    obs, _  = env.reset(seed=episode_seed)
+    view    = _View(env.polygon, WINDOW_SIZE, WINDOW_SIZE)
     dest_px = {cs: view.ll_to_px(*env._destination_ll[cs])
                for cs in env._active_callsigns}
 
-    frames    = []
-    los_steps = 0
+    frames     = []
+    los_steps  = 0
+    cum_reward = 0.0
+    step_reward = 0.0
+    mode_str   = f'policy: {os.path.basename(args.model)}' if use_policy else 'no policy'
 
-    mode_str = f'policy: {os.path.basename(args.model)}' if model else 'no policy'
-    print(f'Recording up to {max_frames} frames  '
-          f'(n_aircraft={env.n_aircraft}, max_steps={env._max_steps})')
-    print(f'Mode: {mode_str}\n')
+    print(f'Mode            : {mode_str}')
+    print(f'n_aircraft={env.n_aircraft}   max_steps={env._max_steps}   '
+          f'frame cap={max_frames}\n')
 
     while len(frames) < max_frames:
-        if model is not None:
-            norm_obs = vecnorm.normalize_obs(obs[None])[0] if vecnorm else obs
+        if use_policy:
+            norm_obs  = vecnorm.normalize_obs(obs[None])[0] if vecnorm else obs
             action, _ = model.predict(norm_obs, deterministic=True)
-            obs, _, terminated, truncated, info = env.step(int(action))
+            obs, step_reward, terminated, truncated, info = env.step(int(action))
         else:
-            obs, _, terminated, truncated, info = env.step(2)
+            obs, step_reward, terminated, truncated, info = env.step(2)  # hold action
 
-        if info.get('los_pairs'):
+        cum_reward += float(step_reward)
+
+        if info.get('los_pairs', 0) > 0:
             los_steps += 1
 
         for cs in env._active_callsigns:
             if cs not in dest_px and cs in env._destination_ll:
                 dest_px[cs] = view.ll_to_px(*env._destination_ll[cs])
 
-        draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, len(frames))
+        draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, len(frames),
+                   mode_str, float(step_reward), cum_reward)
         frames.append(capture(screen))
 
         n = len(frames)
@@ -320,19 +385,16 @@ def main():
             U      = env._urgency_matrix
             n_los  = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
             n_conf = int((U > 0).sum())   // 2 if U.size > 0 else 0
-            print(f'  frame {n:4d}/{max_frames}  T={bs.sim.simt:.0f}s  '
+            print(f'  frame {n:4d}  T={bs.sim.simt:.0f}s  '
                   f'active={len(env._active_callsigns)}  '
-                  f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}')
+                  f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}  '
+                  f'r={step_reward:+.3f}  Σr={cum_reward:+.2f}')
 
         if terminated or truncated:
-            print('  Episode ended -- resetting')
-            obs, _ = env.reset()
-            view    = _View(env.polygon, WINDOW_SIZE, WINDOW_SIZE)
-            dest_px = {cs: view.ll_to_px(*env._destination_ll[cs])
-                       for cs in env._active_callsigns}
-            los_steps = 0
+            print(f'  Episode finished at frame {n}  (LoS-steps={los_steps})')
+            break   # one episode only
 
-    print(f'\nSaving {len(frames)} frames -> {OUTPUT}')
+    print(f'\nSaving {len(frames)} frames → {OUTPUT}')
     frames[0].save(OUTPUT, save_all=True, append_images=frames[1:],
                    duration=frame_ms, loop=0, optimize=False)
     print(f'Done  ({os.path.getsize(OUTPUT)/1e6:.1f} MB)')
