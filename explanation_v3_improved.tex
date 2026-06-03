@@ -28,7 +28,7 @@ Per episode: $N \sim \mathcal{U}\{2,\ldots,15\}$ aircraft, density $\sim\mathcal
 Sector boundary: random convex polygon, 5--7 vertices, isoperimetric ratio $\geq 0.65$.
 Minimum spawn separation 10\,NM; exiting aircraft replaced immediately.
 Episode length $\approx60$\,min (2.5 sector crossings).
-Each RL step spans 5\,s (10 BlueSky sub-steps of 0.5\,s); a $30^\circ$ turn takes $\approx26.5$\,s ($\approx5$--6 steps), speed changes 2--5 steps.
+Each RL step spans 5\,s (10 BlueSky sub-steps of 0.5\,s); a $45^\circ$ turn takes $\approx40$\,s ($\approx8$ steps), speed changes 2--5 steps.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Environment Loop}
@@ -99,7 +99,7 @@ Emergency override: another aircraft reaching $u_\text{emerg}=0.8$
 10 discrete actions (6 heading, 4 speed):
 \begin{align}
     \psi_\text{cmd} &= \psi_\text{dest} + \delta,\qquad
-    \delta \in \{-30^\circ,\,-15^\circ,\,0^\circ,\,+15^\circ,\,+30^\circ,\,\varnothing\} \\
+    \delta \in \{-45^\circ,\,-30^\circ,\,0^\circ,\,+30^\circ,\,+45^\circ,\,\varnothing\} \\
     M_\text{cmd} &\leftarrow \operatorname{clip}(M_\text{cmd}+\Delta M,\,0.70,\,0.82),\qquad
     \Delta M \in \{-0.04,\,-0.02,\,+0.02,\,+0.04\}
 \end{align}
@@ -124,7 +124,7 @@ Empty/diverging slot: $(1,1,0,1,1)$.
 \midrule
 0 & $\sin\Delta\psi$ & $\sin(\psi_\text{dest}-\psi_\text{cmd})$ & $[-1,1]$ \\
 1 & $\cos\Delta\psi$ & $\cos(\psi_\text{dest}-\psi_\text{cmd})$ & $[-1,1]$ \\
-2 & Turn progress & $\operatorname{clip}((\psi_\text{cmd}-\psi_\text{act})/30^\circ,-1,1)$ & $[-1,1]$ \\
+2 & Turn progress & $\operatorname{clip}((\psi_\text{cmd}-\psi_\text{act})/45^\circ,-1,1)$ & $[-1,1]$ \\
 3 & Time to exit & $\min(d_\text{boundary}/(v\,T_\text{look}),1)$ & $[0,1]$ \\
 4 & Speed offset & $(M_\text{cmd}-0.70)/0.12$ & $[0,1]$ \\[4pt]
 \multicolumn{4}{l}{\textit{4 intruders $\times$ 5 features, sorted urgency $\downarrow$ / CPA $\uparrow$:}} \\
@@ -171,8 +171,7 @@ $\sigma_{t-1}$ is synchronised to the aircraft's actual state.
 \begin{equation}
     r_\text{LoS} = -w_\text{LoS}\cdot\mathbf{1}[\ell_\text{LoS}]
     \qquad
-    r_\text{nav} = w_\text{nav}\cdot\bigl(\cos\Delta\psi_\text{act}^{\,t}
-                                          - \cos\Delta\psi_\text{act}^{\,t-1}\bigr)
+    r_\text{nav} = -w_\text{nav}\cdot\frac{1-\cos\Delta\psi_\text{act}}{2}
 \end{equation}
 
 \begin{table}[h]
@@ -184,8 +183,8 @@ $\sigma_{t-1}$ is synchronised to the aircraft's actual state.
 \toprule
 $w_\text{resolve}$ & Conflict transition & $1.00$ \\
 $w_\text{LoS}$     & LoS penalty (additive) & $3.00$ \\
-$w_\text{nav}$     & Navigation $\Delta\cos\Delta\psi$ & $0.30$ \\
-$w_\text{work}$    & Workload & $0.05$ \\
+$w_\text{nav}$     & Drift penalty (applied always) & $0.30$ \\
+$w_\text{work}$    & Workload & $0.10$ \\
 \bottomrule
 \end{tabular}
 \end{table}

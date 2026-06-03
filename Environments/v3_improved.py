@@ -13,7 +13,7 @@ overridden to prevent a developing critical conflict going unaddressed.
 Observation  25 floats  (ego-centric from focus aircraft)
   [0]     sin(Δψ_dest)         heading error to destination  [-1, 1]
   [1]     cos(Δψ_dest)                                        [-1, 1]
-  [2]     turn_progress        (commanded−actual)/30          [-1, 1]
+  [2]     turn_progress        (commanded−actual)/45          [-1, 1]
   [3]     time_to_exit         t_to_boundary / lookahead_s    [0, 1]
   [4]     speed_offset         (cmd_mach − mach_min) / mach_range [0, 1]
   [5:25]  4 intruders × 5     sorted urgency desc, CPA dist asc;
@@ -30,11 +30,11 @@ Reward  symmetric event-based (same aircraft throughout a conflict sequence)
   −w_resolve                   new conflict entered  (urgency 0→>0)
   −w_resolve                   ongoing conflict      (urgency >0→>0)
   −w_los                       LoS occurred during the 30 s window (additive)
-  ±w_nav × Δcos(Δψ_dest)       small: back on track positive, drifting negative
+  −w_nav × (1−cos Δψ_dest)/2    steady-state drift drag; zero while in conflict
   −w_work × act_cost           1.0 heading / 0.5 speed / 0 direct+hold
 
 Action  (Discrete 10)
-  0 −30°   1 −15°   2 direct [free]   3 +15°   4 +30°   5 hold [free]
+  0 −45°   1 −30°   2 direct [free]   3 +30°   4 +45°   5 hold [free]
   6 M−0.04    7 M−0.02    8 M+0.02    9 M+0.04
 """
 
@@ -93,8 +93,8 @@ CONFIG = {
     # Reward weights
     'w_resolve':             1.00,            # ±1 conflict resolved / new or ongoing conflict
     'w_los':                 3.00,            # additive penalty when LoS occurred during step
-    'w_nav':                 0.30,            # small ± delta cos(heading error)
-    'w_work':                0.05,            # workload per instruction
+    'w_nav':                 0.30,            # drift penalty weight (always applied)
+    'w_work':                0.10,            # workload per instruction
     'seed':                  None,
 }
 
@@ -108,7 +108,7 @@ OBS_DIM = 5 + N_NBR * 5          # 5 own + 20 intruder = 25
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # 75 NM (10 min at cruise)
 
 # Heading actions: offset from direct-to-destination; None = hold current heading
-HEADING_OFFSETS = [-30, -15, 0, 15, 30, None]  # action indices 0–5
+HEADING_OFFSETS = [-45, -30, 0, 30, 45, None]  # action indices 0–5
 # Speed actions: Mach delta from current commanded Mach; action indices 6–8
 SPEED_DELTAS    = [-0.04, -0.02, 0.02, 0.04]
 
@@ -253,9 +253,8 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._prev_in_conflict    = {}
-        self._prev_cos_diff       = {}
         self._los_this_step       = False
-        self._first_step_on_focus = False  # grace step when focus switches to new aircraft
+        self._first_step_on_focus = False
 
     # ── Gym interface ─────────────────────────────────────────────────────────
 
@@ -297,7 +296,6 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._prev_in_conflict    = {}
-        self._prev_cos_diff       = {}
         self._los_this_step       = False
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_s))
@@ -479,10 +477,8 @@ class AirspaceEnv(gym.Env):
                 bearing, _ = geo.kwikqdrdist(
                     bs.traf.lat[idx], bs.traf.lon[idx],
                     *[float(v) for v in self._destination_ll[acting_cs]])
-                cos_now  = math.cos(math.radians(wrap_to_180(bearing - bs.traf.hdg[idx])))
-                cos_prev = self._prev_cos_diff.get(acting_cs, cos_now)
-                self._prev_cos_diff[acting_cs] = cos_now
-                r_nav = CONFIG['w_nav'] * (cos_now - cos_prev)
+                cos_now = math.cos(math.radians(wrap_to_180(bearing - bs.traf.hdg[idx])))
+                r_nav   = -CONFIG['w_nav'] * (1.0 - cos_now) / 2.0
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
         return float(r_conflict + r_los + r_nav + r_work)
@@ -573,7 +569,7 @@ class AirspaceEnv(gym.Env):
             *[float(v) for v in self._destination_ll[cs]])
         diff = wrap_to_180(bearing - cmd_hdg)
 
-        turn_prog    = max(-1.0, min(1.0, wrap_to_180(cmd_hdg - own_hdg) / 30.0))
+        turn_prog    = max(-1.0, min(1.0, wrap_to_180(cmd_hdg - own_hdg) / 45.0))
         t_exit       = self._time_to_exit(idx)
         cmd_mach     = self._commanded_speed.get(cs, CONFIG['ac_mach'])
         speed_offset = ((cmd_mach - CONFIG['ac_mach_min'])
@@ -676,7 +672,6 @@ class AirspaceEnv(gym.Env):
             self._commanded_speed.pop(cs, None)
             self._steps_since_urgency.pop(cs, None)
             self._prev_in_conflict.pop(cs, None)
-            self._prev_cos_diff.pop(cs, None)
             if slot not in self._pending_spawns:
                 delay = random.randint(*self._spawn_delay_range)
                 self._pending_spawns[slot] = delay
