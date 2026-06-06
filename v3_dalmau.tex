@@ -1,0 +1,426 @@
+%% v3_dalmau.tex — environment specification
+% !TEX program = pdflatex
+
+\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+\geometry{margin=2.5cm}
+
+\title{\textbf{v3\_dalmau: Environment Specification}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The \texttt{v3\_dalmau} environment simulates a single upper-airspace sector
+in which a reinforcement learning agent acts as an air traffic controller,
+issuing heading instructions to resolve conflicts between en-route aircraft.
+Two design choices distinguish it from earlier versions.
+
+First, the action space combines \textit{ATC-styled turn instructions} with
+two free persistence actions.
+Turn instructions set the commanded heading as a one-shot offset from the
+current destination bearing, recomputed at the time of execution, so the
+deviation is always expressed relative to the live direct-to-destination
+track.
+A \textit{hold} action re-issues the commanded heading unchanged, allowing
+the aircraft to execute a turn over several steps without additional cost.
+A \textit{fly-direct} action resets the commanded heading to the destination
+bearing, eliminating accumulated drift in a single step.
+This structure encodes the intended resolution pattern: issue one turn,
+hold while the aircraft manoeuvres, then fly direct once the conflict clears.
+
+Second, the reward signal is composed entirely of penalty terms.
+The conflict penalty fires whenever a predicted separation violation is detected
+($d_\text{CPA} < d_\text{sep}$) and scales with both the imminence and the
+predicted miss distance, providing a graduated signal that reflects the
+full geometry of the encounter.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Scenario}
+\label{sec:scenario}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Episodes are simulated using the BlueSky air traffic simulator at a physics
+timestep of $\Delta t = 0.5$\,s.
+At the start of each episode, $N \sim \mathcal{U}\{10,\ldots,15\}$ Airbus A320
+aircraft are initialised at FL350 and cruise at a fixed speed of
+$M = 0.78$ ($\approx 450$\,kt TAS) throughout.
+The sector boundary is a random convex polygon with five to seven vertices,
+scaled to an area of $N \times \rho$\,km$^2$, where
+$\rho \sim \mathcal{U}(5\,000,\,15\,000)$\,km$^2$/aircraft.
+Polygons with an isoperimetric ratio below 0.65 are rejected to avoid
+pathologically elongated sectors.
+Each aircraft is spawned at a distinct arc of the sector perimeter with
+uniform jitter, assigned a heading toward a reference point on the opposite
+arc, and given a destination two sector diameters beyond the boundary.
+A minimum spawn separation of 15\,NM is enforced.
+Aircraft that exit the sector are replaced within one step, keeping traffic
+density approximately constant throughout each episode.
+Episode length corresponds to approximately 60 minutes of simulated time,
+derived from the sector diameter and nominal cruise speed.
+
+Each RL step advances the simulation by $10 \times 0.5\,\text{s} = 5\,\text{s}$.
+The selected action is applied at the start of the step and one instruction
+is issued to the \textit{focus aircraft}, selected as described in
+Section~\ref{sec:focus}.
+Separation is checked at the end of the final sub-step.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Focus Selection}
+\label{sec:focus}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Because only one instruction is issued per step, a principled selection
+mechanism is required to determine which aircraft receives it.
+An urgency matrix $\mathbf{U} \in \mathbb{R}^{N \times N}$ is recomputed
+after every step from current positions and velocities.
+The entry $u_{ij}$ is defined as
+
+\begin{equation}
+u_{ij} =
+\begin{cases}
+1 + 9\!\left(1 - \dfrac{d_{ij}}{d_\text{sep}}\right)
+  & d_{ij} < d_\text{sep} \\[8pt]
+\dfrac{T_\text{warn} - t_\text{CPA}^{ij}}{T_\text{warn}}
+  & d_\text{CPA}^{ij} < d_\text{sep},\quad
+    0 \leq t_\text{CPA}^{ij} \leq T_\text{look} \\[6pt]
+0 & \text{otherwise,}
+\end{cases}
+\label{eq:urgency}
+\end{equation}
+
+with $d_\text{sep} = 5$\,NM, $T_\text{warn} = 600$\,s, and
+$T_\text{look} = 900$\,s.
+The active-violation branch scales linearly from $u_{ij} = 1$ at the
+separation boundary to $u_{ij} = 10$ at zero distance.
+The predicted-conflict branch ramps linearly from 0 at $T_\text{warn}$ to 1
+at $t_\text{CPA} = 0$; both branches are continuous at $d_{ij} = d_\text{sep}$.
+The focus aircraft is selected as $f = \arg\max_i \max_{j \neq i}\, u_{ij}$.
+When no conflicts are active, focus falls back to the aircraft with the
+largest commanded-heading deviation from its destination, subject to a
+hysteresis margin of $0.05$ to prevent excessive switching.
+
+\paragraph{Commitment.}
+Conflict resolution typically requires several consecutive instructions
+to the same aircraft.
+The focus is therefore locked on $f$ while $u_f > 0$ or fewer than
+$n_\text{clear} = 5$ steps have elapsed since the urgency last cleared.
+An emergency override releases the lock immediately when any other aircraft
+reaches $u_\text{emerg} = 0.8$, corresponding to approximately 120\,s
+to predicted conflict.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Action Space}
+\label{sec:actions}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Eight discrete actions are available.
+Six \textit{turn instructions} set the commanded heading as a one-shot
+offset from the current destination bearing:
+
+\begin{equation}
+    \psi_\text{cmd} \leftarrow \bigl(\psi_\text{dest}(f) + \delta\bigr)\bmod 360^\circ,
+    \qquad
+    \delta \in \{-60^\circ,\,-45^\circ,\,-30^\circ,\,+30^\circ,\,+45^\circ,\,+60^\circ\}.
+\end{equation}
+
+Two additional actions require no heading computation.
+\textit{Hold} (action~3) re-issues $\psi_\text{cmd}$ unchanged, maintaining
+the current deviation without additional cost; it is the only truly free action.
+\textit{Fly direct} (action~7) sets $\psi_\text{cmd} \leftarrow \psi_\text{dest}(f)$,
+returning the aircraft immediately to its planned track.
+
+The intended resolution pattern is: issue one turn instruction to create
+separation, hold for the steps required to execute the turn and let the
+conflict resolve, then fly direct to eliminate accumulated drift.
+Workload cost is charged once per turn instruction.
+All aircraft operate at a fixed cruise speed of $M = 0.78$.
+
+\begin{table}[h]
+\centering
+\caption{Action space and associated workload costs.}
+\label{tab:actions}
+\smallskip
+\begin{tabular}{clc}
+\toprule
+\textbf{Index} & \textbf{Action} & \textbf{Cost $c$} \\
+\midrule
+0 & $\delta = -60^\circ$ & 1.5 \\
+1 & $\delta = -45^\circ$ & 1.0 \\
+2 & $\delta = -30^\circ$ & 0.5 \\
+3 & Hold ($\psi_\text{cmd}$ unchanged) & 0.0 \\
+4 & $\delta = +30^\circ$ & 0.5 \\
+5 & $\delta = +45^\circ$ & 1.0 \\
+6 & $\delta = +60^\circ$ & 1.5 \\
+7 & Fly direct ($\psi_\text{cmd} \leftarrow \psi_\text{dest}$) & $|\Delta\psi_\text{cmd}|/60^\circ \in [0,1]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Observation Space}
+\label{sec:obs}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The observation vector $\mathbf{o} \in \mathbb{R}^{23}$ is constructed
+ego-centrically from the focus aircraft $f$.
+It comprises three ownship features and four intruder slots of five features
+each.
+All positional and velocity quantities are expressed in $f$'s heading frame,
+with the forward axis aligned with $\psi_\text{act}$ and the lateral axis
+$90^\circ$ to the right.
+
+\begin{table}[h]
+\centering
+\caption{Observation vector ($\mathbf{o} \in \mathbb{R}^{23}$).
+$d_\text{warn} = T_\text{warn}\,v_\text{nom} = 75$\,NM.
+CPA coordinates are normalised by $d_\text{sep}$, the correct scale for
+conflict geometry.}
+\label{tab:obs}
+\smallskip
+\begin{tabular}{clll}
+\toprule
+\textbf{Index} & \textbf{Symbol} & \textbf{Definition} & \textbf{Range} \\
+\midrule
+\multicolumn{4}{l}{\textit{Ownship state}} \\[2pt]
+0 & $\sin\Delta\psi$ & $\sin(\psi_\text{dest} - \psi_\text{cmd})$ & $[-1,1]$ \\
+1 & $\cos\Delta\psi$ & $\cos(\psi_\text{dest} - \psi_\text{cmd})$ & $[-1,1]$ \\
+2 & $p_\text{turn}$  & $\operatorname{clip}\bigl((\psi_\text{cmd}-\psi_\text{act})/60^\circ,\,-1,1\bigr)$ & $[-1,1]$ \\[6pt]
+\multicolumn{4}{l}{\textit{Per intruder $j$ (slots 1--4, offset $+k$ for slot $k$)}} \\[2pt]
+$+0$ & $\tilde{x}_{fj}$            & lateral relative position $/ \, d_\text{warn}$            & $[-1,1]$ \\
+$+1$ & $\tilde{y}_{fj}$            & forward relative position $/ \, d_\text{warn}$            & $[-1,1]$ \\
+$+2$ & $\hat{t}_\text{CPA}$        & $\operatorname{clip}(t_\text{CPA}/T_\text{warn},\,0,\,1)$  & $[0,1]$ \\
+$+3$ & $\tilde{x}^\text{CPA}_{fj}$ & lateral CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
+$+4$ & $\tilde{y}^\text{CPA}_{fj}$ & forward CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The heading error is encoded as the pair $(\sin\Delta\psi,\,\cos\Delta\psi)$
+rather than a scalar angle, which avoids the discontinuity at $\pm 180^\circ$.
+The error is measured against the \textit{commanded} heading $\psi_\text{cmd}$
+rather than the actual heading, consistent with the drift penalty in the
+reward function.
+Turn progress $p_\text{turn}$ captures the execution lag: it is zero when
+the aircraft has completed its commanded turn and non-zero while the physical
+heading still lags behind the command.
+
+The intruder block combines current relative position with pre-computed
+CPA quantities.
+Relative position $(\tilde{x}_{fj},\,\tilde{y}_{fj})$ places the intruder
+in the ego frame and is normalised by $d_\text{warn}$ to cover the full
+conflict warning horizon.
+The CPA coordinate pair $(\tilde{x}^\text{CPA}_{fj},\,\tilde{y}^\text{CPA}_{fj})$
+encodes both the severity of the predicted conflict and, crucially, which
+side the intruder will pass: $\tilde{x}^\text{CPA}_{fj} < 0$ indicates a
+left-side conflict, providing a direct linear signal for turning direction.
+These coordinates are normalised by $d_\text{sep}$ rather than $d_\text{warn}$
+because the conflict geometry is confined to within one separation standard;
+using $d_\text{warn}$ would compress the CPA features to a tiny range near
+zero.
+The normalised time $\hat{t}_\text{CPA}$ mirrors the imminence factor in
+the reward function and is placed before the CPA coordinates to act as a
+gate: a value of 1 signals that no conflict is predicted, making the
+subsequent CPA features uninformative (both zero).
+Relative velocity is not included explicitly: it is implicit in the
+combination of current position and CPA offset, from which the network can
+recover the encounter geometry.
+The CPA offset is defined as
+\begin{equation}
+    \begin{pmatrix}\Delta x^\text{CPA}_{fj}\\\Delta y^\text{CPA}_{fj}\end{pmatrix}
+    =
+    \begin{pmatrix}\Delta x_{fj}\\\Delta y_{fj}\end{pmatrix}
+    + t_\text{CPA}
+    \begin{pmatrix}\Delta v_{e,fj}\\\Delta v_{n,fj}\end{pmatrix},
+\end{equation}
+rotated into $f$'s heading frame before normalisation.
+Non-converging pairs and empty slots receive the sentinel
+$(1,\,1,\,1,\,0,\,0)$.
+
+\subsection{Intruder Slot Ordering}
+\label{sec:nbr}
+
+The four intruder slots are filled in two passes.
+In the first pass, all aircraft $j$ for which $u_{fj} > 0$ are inserted
+in descending urgency order until the slots are full.
+In the second pass, any remaining slots are filled by the nearest aircraft
+by current distance, excluding those already selected.
+This two-pass strategy ensures that predicted-conflict aircraft are
+prioritised while nearby diverging aircraft, which may become relevant
+within the current step, are guaranteed a slot when space permits.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Reward Function}
+\label{sec:reward}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The reward is purely negative at every step:
+
+\begin{equation}
+    r_t \;=\; r_\text{LoS} + r_\text{conflict} + r_\text{drift} + r_\text{work}
+    \;\leq\; 0.
+    \label{eq:reward}
+\end{equation}
+
+By excluding positive terms, the training objective reduces to minimising
+cumulative harm, and the optimal policy is the one that keeps all penalties
+as small as possible throughout the episode.
+The four components and their weights are summarised in
+Table~\ref{tab:weights}.
+
+\paragraph{Loss-of-separation penalty.}
+A separation violation is detected when any pair of aircraft is found within
+$d_\text{sep}$ of each other at the end of the 5-second simulation window:
+
+\begin{equation}
+    r_\text{LoS} = -w_\text{LoS} \cdot \mathbf{1}[\ell_\text{LoS}].
+\end{equation}
+
+This component carries the largest weight and signals that a violation
+has already occurred, as distinct from the graduated conflict signal below.
+The check is sector-wide: violations between any pair, not only those
+involving the focus aircraft, contribute to $\ell_\text{LoS}$.
+
+\paragraph{Conflict penalty.}
+For each converging intruder $k$ whose predicted closest-point-of-approach
+satisfies $d_\text{CPA}^{(k)} < d_\text{sep}$, a severity score is
+computed as the product of an imminence factor and a miss-distance factor:
+
+\begin{equation}
+    s_k \;=\; \max\!\left(0,\;1 - \frac{t_\text{CPA}^{(k)}}{T_\text{warn}}\right)
+             \times
+             \max\!\left(0,\;1 - \frac{d_\text{CPA}^{(k)}}{d_\text{sep}}\right),
+    \label{eq:score}
+\end{equation}
+
+and the penalty is taken over the worst-case intruder:
+
+\begin{equation}
+    r_\text{conflict} = -w_\text{conflict} \cdot \max_k\, s_k.
+\end{equation}
+
+The imminence factor is zero when $t_\text{CPA} \geq T_\text{warn}$ and rises
+to 1 as the conflict becomes imminent.
+The miss-distance factor is zero when $d_\text{CPA} = d_\text{sep}$ and rises
+to 1 as the predicted miss distance approaches zero, so that a grazing
+predicted conflict scores lower than a direct collision course at the same
+time horizon.
+The predicted-LoS gate ($d_\text{CPA} < d_\text{sep}$) ensures that only
+pairs on a true collision course contribute.
+Aircraft already in active separation violation contribute $s_k = 1$.
+
+\paragraph{Drift penalty.}
+A continuous penalty on the commanded-heading deviation from the destination
+bearing penalises the agent for holding the aircraft off its planned route:
+
+\begin{equation}
+    r_\text{drift}
+    = -w_\text{drift} \cdot \frac{1 - \cos(\psi_\text{dest} - \psi_\text{cmd})}{2}.
+\end{equation}
+
+Unlike the workload term, drift is charged every step that the commanded
+heading deviates from the destination bearing, regardless of which action
+was issued.
+During the hold phase this penalty accumulates, creating a sustained
+incentive to issue the fly-direct action once a conflict has been resolved.
+The penalty is zero when $\psi_\text{cmd} = \psi_\text{dest}$ and reaches
+at most $(1 - \cos 45^\circ)/2 \approx 0.15$ at the largest deviation.
+
+\paragraph{Workload penalty.}
+A one-time cost is charged each time a turn instruction or a fly-direct
+instruction is issued.
+For turn instructions the cost is fixed:
+
+\begin{equation}
+    r_\text{work} = -w_\text{work} \cdot c,
+\end{equation}
+
+where $c$ is the action cost from Table~\ref{tab:actions}.
+The hold action (action~2) is the only truly free action ($c = 0$).
+For the fly-direct action (action~5) the cost scales with the commanded
+heading deviation being corrected at the moment the instruction is issued:
+
+\begin{equation}
+    r_\text{work}^\text{direct}
+    = -w_\text{work} \cdot \frac{|\Delta\psi_\text{cmd}|}{60^\circ},
+    \qquad
+    \Delta\psi_\text{cmd} = \psi_\text{dest} - \psi_\text{cmd}^{-},
+\end{equation}
+
+where $\psi_\text{cmd}^{-}$ denotes the commanded heading immediately before
+the fly-direct is applied.
+The cost is therefore zero when the aircraft is already on track and rises
+to $w_\text{work}$ when correcting a full $60^\circ$ deviation, matching
+the cost of the largest turn instruction.
+This discourages the agent from prematurely aborting a conflict resolution
+turn before the separation has been established, while keeping fly-direct
+effectively free once the deviation is small.
+
+\begin{table}[h]
+\centering
+\caption{Reward weights in descending order of magnitude.}
+\label{tab:weights}
+\smallskip
+\begin{tabular}{clc}
+\toprule
+\textbf{Weight} & \textbf{Penalises} & \textbf{Value} \\
+\midrule
+$w_\text{LoS}$      & Separation violation at step end                                        & $10.00$ \\
+$w_\text{conflict}$ & Worst-case imminence $\times$ miss-distance severity ($d_\text{CPA} < d_\text{sep}$) & $3.00$ \\
+$w_\text{drift}$    & Per-step deviation; accumulates during hold, motivates fly-direct        & $0.50$ \\
+$w_\text{work}$     & Per-turn cost (fixed); fly-direct cost $= w_\text{work}\cdot|\Delta\psi|/60^\circ$; hold free & $0.50$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Training Configuration}
+\label{sec:training}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The policy is trained with Proximal Policy Optimisation (PPO) as implemented
+in Stable-Baselines3, using four parallel environments (\texttt{SubprocVecEnv})
+each seeded independently.
+Observation normalisation is disabled (\texttt{norm\_obs=False}) because all
+features are bounded by design.
+Reward normalisation is enabled (\texttt{norm\_reward=True}): rewards are
+divided by the running standard deviation of the discounted return, which
+stabilises value function learning in the presence of sparse, large
+loss-of-separation penalties.
+The policy and value networks share a two-layer MLP with $[128,\,128]$ hidden
+units.
+
+\begin{table}[h]
+\centering
+\caption{PPO hyperparameters.}
+\label{tab:hp}
+\smallskip
+\begin{tabular}{llc}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} \\
+\midrule
+$\gamma$               & Discount factor                    & $0.99$           \\
+$\lambda$              & GAE parameter                      & $0.95$           \\
+$T$                    & Rollout steps per environment      & $1\,024$         \\
+$N_\text{envs}$        & Parallel environments              & $4$              \\
+$B$                    & Mini-batch size                    & $64$             \\
+$K$                    & Epochs per update                  & $10$             \\
+$\epsilon_\text{clip}$ & PPO clipping range                 & $0.2$            \\
+$\beta_H$              & Entropy coefficient                & $0.02$           \\
+$\alpha$               & Learning rate                      & $3\times10^{-4}$ \\
+                       & Network architecture               & $[128,\,128]$    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

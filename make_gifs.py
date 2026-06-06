@@ -68,15 +68,16 @@ save_util.json_to_data = _patched_json_to_data
 import bluesky as bs
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from Environments.v3_improved import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
+from Environments.v3_dalmau import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
 
 # Default checkpoint to visualise
 DEFAULT_MODEL = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    'Runs_saved', 'v3_improved',
-    'improved_9act_obs25_seed47674_20260603_160034',
-    'checkpoints', 'ckpt_200000.zip',
+    'Runs_saved', 'v3_dalmau',
+    'dalmau_8act_obs23_seed18592_20260606_132427',
+    'checkpoints', 'ckpt_700000.zip',
 )
+
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,8 @@ CYAN       = (  0, 210, 255)   # focus aircraft outline
 GREEN_DARK = ( 40, 160,  80)   # on-track label accent
 GREEN      = ( 50, 200,  80)   # positive reward
 BLUE       = ( 80, 140, 220)   # neutral / info
+PURPLE     = (160,  60, 200)   # emergency-approaching aircraft
+YELLOW     = (220, 200,   0)   # cooldown state
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
@@ -182,6 +185,25 @@ def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no,
     focus_cs = env._focus_cs
     sep_px   = view.nm_to_px_len(SEP_NM / 2)
 
+    # ── Focus lock state ───────────────────────────────────────────────────────
+    clear_steps = CONFIG['focus_clear_steps']
+    emerg_u     = CONFIG['focus_emergency_u']
+    focus_cur_u = 0.0
+    focus_steps_clear = clear_steps
+    if focus_cs and focus_cs in cs_list:
+        fi = cs_list.index(focus_cs)
+        focus_cur_u       = float(U[fi].max()) if U.size > 0 else 0.0
+        focus_steps_clear = env._steps_since_urgency.get(focus_cs, clear_steps)
+
+    if focus_cur_u > 1.0:
+        lock_str, lock_col = f'COMMITTED — LoS  u={focus_cur_u:.2f}', RED
+    elif focus_cur_u > 0.0:
+        lock_str, lock_col = f'COMMITTED — conflict  u={focus_cur_u:.2f}', ORANGE
+    elif focus_steps_clear < clear_steps:
+        lock_str, lock_col = f'COOLDOWN  {focus_steps_clear}/{clear_steps} steps clear', YELLOW
+    else:
+        lock_str, lock_col = 'FREE — ready to switch', GREEN_DARK
+
     for cs in list(env._active_callsigns):
         idx = bs.traf.id2idx(cs)
         if idx < 0:
@@ -228,13 +250,24 @@ def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no,
 
         if cs == focus_cs:
             pygame.draw.circle(screen, CYAN, (px, py), drift_ring + 3, 2)
+            # Cooldown arc: filled sector showing how many clear steps remain
+            if focus_steps_clear < clear_steps and focus_cur_u == 0.0:
+                frac = focus_steps_clear / clear_steps          # 0 → just cleared, 1 → free
+                pygame.draw.circle(screen, YELLOW, (px, py), drift_ring + 6, 1)
+                label_cd = f'cool {focus_steps_clear}/{clear_steps}'
+                screen.blit(font_sm.render(label_cd, True, YELLOW), (px + 7, py + 6))
+        elif cs != focus_cs and u_val >= emerg_u:
+            # Emergency-level non-focus aircraft: purple double ring
+            pygame.draw.circle(screen, PURPLE, (px, py), drift_ring + 5, 2)
+            pygame.draw.circle(screen, PURPLE, (px, py), drift_ring + 8, 1)
 
         pygame.draw.circle(screen, color, (px, py), 5)
 
         # Label: callsign + urgency score + drift
         u_str  = f' u={u_val:.2f}' if u_val > 0 else ''
         d_str  = f' {drift_deg:.0f}°off' if drift_deg > 2 else ''
-        label  = f'{cs}{u_str}{d_str}' + (' ◄' if cs == focus_cs else '')
+        emg_str = ' ⚡EMERG' if (cs != focus_cs and u_val >= emerg_u) else ''
+        label  = f'{cs}{u_str}{d_str}{emg_str}' + (' ◄' if cs == focus_cs else '')
         screen.blit(font_sm.render(label, True, color), (px + 7, py - 7))
 
     # ── HUD ────────────────────────────────────────────────────────────────────
@@ -263,25 +296,27 @@ def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no,
 
     rew_color = GREEN if step_reward > 0 else (RED if step_reward < 0 else BLACK)
     hud = [
-        (f'v3_improved · {mode_str}', BLACK),
+        (f'v3_dalmau · {mode_str}', BLACK),
         (f'T={bs.sim.simt:.0f}s   active={n_active}/{env.n_aircraft}   '
          f'served={env._next_callsign_id}   frame={frame_no}', BLACK),
         (f'[OBJ 1 SAFETY]   LoS pairs={n_los}   conflict pairs={n_conf}'
          f'   Σurgency={urg_sum:.2f}   LoS-steps={los_steps}', RED if n_los > 0 else BLACK),
-        (f'[OBJ 2 EFFIC.]   mean drift={mean_drift:.1f}°   focus={focus_cs}', GREEN_DARK),
+        (f'[OBJ 2 EFFIC.]   mean drift={mean_drift:.1f}°', GREEN_DARK),
+        (f'[FOCUS]   ac={focus_cs}   {lock_str}', lock_col),
         (f'[REWARD]   step={step_reward:+.3f}   cumulative={cum_reward:+.2f}   '
-         f'mean={cum_reward / max(frame_no, 1):+.3f}'
-         + ('   [GRACE STEP]' if env._first_step_on_focus else ''), rew_color),
+         f'mean={cum_reward / max(frame_no, 1):+.3f}', rew_color),
     ]
     for j, (line, col) in enumerate(hud):
         screen.blit(font.render(line, True, col), (8, 8 + j * 15))
 
     # Legend
     legend = [
-        ('● RED    active LoS  (dist < 5 NM)',   RED),
-        ('● ORANGE predicted conflict (≤10 min)', ORANGE),
-        ('● GREY   no conflict',                  GREY),
-        ('◯ CYAN   focus aircraft (most urgent)', CYAN),
+        ('● RED    active LoS  (dist < 5 NM)',          RED),
+        ('● ORANGE predicted conflict (≤10 min)',        ORANGE),
+        ('● GREY   no conflict',                         GREY),
+        ('◯ CYAN   focus aircraft',                      CYAN),
+        ('◯ YELLOW focus in cooldown (N/5 steps clear)', YELLOW),
+        ('◯ PURPLE non-focus at emergency (u ≥ 0.8)',   PURPLE),
     ]
     for j, (txt, col) in enumerate(legend):
         screen.blit(font_sm.render(txt, True, col),
@@ -292,72 +327,22 @@ def capture(surface):
     return Image.fromarray(pygame.surfarray.array3d(surface).transpose(1, 0, 2))
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Episode runner ────────────────────────────────────────────────────────────
 
-def main():
-    pygame.init()
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model',  default=DEFAULT_MODEL,
-                        help='Path to model .zip  (default: ckpt_100000.zip)')
-    parser.add_argument('--no-policy', action='store_true',
-                        help='Ignore model, run no-policy baseline instead')
-    parser.add_argument('--frames', type=int, default=MAX_FRAMES,
-                        help='Safety cap on frames (default %(default)s)')
-    parser.add_argument('--fps',    type=int, default=None,
-                        help='Override GIF frame delay in ms')
-    args = parser.parse_args()
-
-    max_frames = args.frames
-    frame_ms   = args.fps if args.fps else FRAME_MS
-    use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
-
-    # ── Load policy ───────────────────────────────────────────────────────────
-    model   = None
-    vecnorm = None
-
-    if use_policy:
-        model_path   = args.model
-        vecnorm_path = model_path.replace('.zip', '_vecnorm.pkl')
-        print(f'Loading model   : {model_path}')
-        model = PPO.load(model_path)
-        if os.path.exists(vecnorm_path):
-            print(f'Loading vecnorm : {vecnorm_path}')
-            with open(vecnorm_path, 'rb') as fh:
-                vecnorm = _NumpyShim(fh).load()
-            vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
-            vecnorm.training    = False
-            vecnorm.norm_reward = False
-
-    # ── Output path ───────────────────────────────────────────────────────────
-    if use_policy:
-        stem   = os.path.splitext(os.path.basename(args.model))[0]
-        OUTPUT = os.path.join(HERE, f'v3_{stem}.gif')
-    else:
-        OUTPUT = os.path.join(HERE, 'v3_no_policy.gif')
-
-    # ── Run one episode ───────────────────────────────────────────────────────
-    screen  = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
-    font    = pygame.font.SysFont('monospace', 11)
-    font_sm = pygame.font.SysFont('monospace', 10)
-
-    episode_seed = int.from_bytes(os.urandom(4), 'big')
-    print(f'Episode seed    : {episode_seed}')
-
-    env     = AirspaceEnv()
-    obs, _  = env.reset(seed=episode_seed)
+def run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
+                frame_ms, mode_str, output_path, screen, font, font_sm):
+    obs, _ = env.reset(seed=episode_seed)
     view    = _View(env.polygon, WINDOW_SIZE, WINDOW_SIZE)
     dest_px = {cs: view.ll_to_px(*env._destination_ll[cs])
                for cs in env._active_callsigns}
 
-    frames     = []
-    los_steps  = 0
-    cum_reward = 0.0
+    frames      = []
+    los_steps   = 0
+    cum_reward  = 0.0
     step_reward = 0.0
-    mode_str   = f'policy: {os.path.basename(args.model)}' if use_policy else 'no policy'
 
-    print(f'Mode            : {mode_str}')
-    print(f'n_aircraft={env.n_aircraft}   max_steps={env._max_steps}   '
-          f'frame cap={max_frames}\n')
+    print(f'  seed={episode_seed}  n_aircraft={env.n_aircraft}  '
+          f'max_steps={env._max_steps}  frame cap={max_frames}')
 
     while len(frames) < max_frames:
         if use_policy:
@@ -365,10 +350,9 @@ def main():
             action, _ = model.predict(norm_obs, deterministic=True)
             obs, step_reward, terminated, truncated, info = env.step(int(action))
         else:
-            obs, step_reward, terminated, truncated, info = env.step(2)  # hold action
+            obs, step_reward, terminated, truncated, info = env.step(2)
 
         cum_reward += float(step_reward)
-
         if info.get('los_pairs', 0) > 0:
             los_steps += 1
 
@@ -385,19 +369,73 @@ def main():
             U      = env._urgency_matrix
             n_los  = int((U > 1.0).sum()) // 2 if U.size > 0 else 0
             n_conf = int((U > 0).sum())   // 2 if U.size > 0 else 0
-            print(f'  frame {n:4d}  T={bs.sim.simt:.0f}s  '
-                  f'active={len(env._active_callsigns)}  '
+            print(f'    frame {n:4d}  T={bs.sim.simt:.0f}s  '
                   f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}  '
                   f'r={step_reward:+.3f}  Σr={cum_reward:+.2f}')
 
         if terminated or truncated:
-            print(f'  Episode finished at frame {n}  (LoS-steps={los_steps})')
-            break   # one episode only
+            print(f'    Episode finished at frame {n}  (LoS-steps={los_steps})')
+            break
 
-    print(f'\nSaving {len(frames)} frames → {OUTPUT}')
-    frames[0].save(OUTPUT, save_all=True, append_images=frames[1:],
+    print(f'  Saving {len(frames)} frames → {output_path}')
+    frames[0].save(output_path, save_all=True, append_images=frames[1:],
                    duration=frame_ms, loop=0, optimize=False)
-    print(f'Done  ({os.path.getsize(OUTPUT)/1e6:.1f} MB)')
+    print(f'  Done  ({os.path.getsize(output_path)/1e6:.1f} MB)\n')
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    pygame.init()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model',     default=DEFAULT_MODEL)
+    parser.add_argument('--no-policy', action='store_true')
+    parser.add_argument('--frames',    type=int, default=MAX_FRAMES)
+    parser.add_argument('--fps',       type=int, default=None)
+    parser.add_argument('--episodes',  type=int, default=3,
+                        help='Number of episodes to render (default 3)')
+    args = parser.parse_args()
+
+    max_frames = args.frames
+    frame_ms   = args.fps if args.fps else FRAME_MS
+    use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
+
+    # ── Load policy once ──────────────────────────────────────────────────────
+    model   = None
+    vecnorm = None
+
+    if use_policy:
+        model_path   = args.model
+        vecnorm_path = model_path.replace('.zip', '_vecnorm.pkl')
+        print(f'Loading model   : {model_path}')
+        model = PPO.load(model_path)
+        if os.path.exists(vecnorm_path):
+            print(f'Loading vecnorm : {vecnorm_path}')
+            with open(vecnorm_path, 'rb') as fh:
+                vecnorm = _NumpyShim(fh).load()
+            vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
+            vecnorm.training    = False
+            vecnorm.norm_reward = False
+
+    stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else 'no_policy'
+    mode_str = f'policy: {os.path.basename(args.model)}' if use_policy else 'no policy'
+
+    screen  = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
+    font    = pygame.font.SysFont('monospace', 11)
+    font_sm = pygame.font.SysFont('monospace', 10)
+
+    env = AirspaceEnv()
+
+    print(f'Mode            : {mode_str}')
+    print(f'Episodes        : {args.episodes}\n')
+
+    for ep in range(1, args.episodes + 1):
+        episode_seed = int.from_bytes(os.urandom(4), 'big')
+        output_path  = os.path.join(HERE, f'v3_{stem}_ep{ep}.gif')
+        print(f'── Episode {ep}/{args.episodes} ─────────────────────────────')
+        run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
+                    frame_ms, mode_str, output_path, screen, font, font_sm)
+
     pygame.quit()
 
 
