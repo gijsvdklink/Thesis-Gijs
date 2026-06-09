@@ -84,7 +84,7 @@ DEFAULT_MODEL = os.path.join(
 HERE        = os.path.dirname(os.path.abspath(__file__))
 WINDOW_SIZE = 750
 FRAME_MS    = 120                # ms per GIF frame
-MAX_FRAMES  = 600                # safety cap — episode ends naturally first
+MAX_FRAMES  = 1500               # safety cap — episode ends naturally first
 
 SEP_NM = float(CONFIG['sep_nm'])
 
@@ -350,7 +350,7 @@ def run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
             action, _ = model.predict(norm_obs, deterministic=True)
             obs, step_reward, terminated, truncated, info = env.step(int(action))
         else:
-            obs, step_reward, terminated, truncated, info = env.step(2)
+            obs, step_reward, terminated, truncated, info = env.step(3)
 
         cum_reward += float(step_reward)
         if info.get('los_pairs', 0) > 0:
@@ -388,12 +388,16 @@ def run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
 def main():
     pygame.init()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model',     default=DEFAULT_MODEL)
-    parser.add_argument('--no-policy', action='store_true')
-    parser.add_argument('--frames',    type=int, default=MAX_FRAMES)
-    parser.add_argument('--fps',       type=int, default=None)
-    parser.add_argument('--episodes',  type=int, default=3,
-                        help='Number of episodes to render (default 3)')
+    parser.add_argument('--model',       default=DEFAULT_MODEL)
+    parser.add_argument('--no-policy',   action='store_true')
+    parser.add_argument('--frames',      type=int,   default=MAX_FRAMES)
+    parser.add_argument('--fps',         type=int,   default=None)
+    parser.add_argument('--episodes',    type=int,   default=1,
+                        help='Number of episodes to render (default 1)')
+    parser.add_argument('--n-aircraft',  type=int,   default=None,
+                        help='Pin number of aircraft (overrides CONFIG)')
+    parser.add_argument('--density',     type=float, default=None,
+                        help='Pin sector density in km²/aircraft (overrides CONFIG)')
     args = parser.parse_args()
 
     max_frames = args.frames
@@ -424,14 +428,26 @@ def main():
     font    = pygame.font.SysFont('monospace', 11)
     font_sm = pygame.font.SysFont('monospace', 10)
 
+    if args.n_aircraft is not None:
+        CONFIG['n_aircraft'] = lambda n=args.n_aircraft: n
+    if args.density is not None:
+        CONFIG['density_km2'] = lambda d=args.density: d
+
     env = AirspaceEnv()
+
+    cond_str = ''
+    if args.n_aircraft is not None:
+        cond_str += f'_n{args.n_aircraft}'
+    if args.density is not None:
+        cond_str += f'_d{int(args.density//1000)}k'
 
     print(f'Mode            : {mode_str}')
     print(f'Episodes        : {args.episodes}\n')
 
     for ep in range(1, args.episodes + 1):
         episode_seed = int.from_bytes(os.urandom(4), 'big')
-        output_path  = os.path.join(HERE, f'v3_{stem}_ep{ep}.gif')
+        ep_tag       = f'_ep{ep}' if args.episodes > 1 else ''
+        output_path  = os.path.join(HERE, f'v3_{stem}{cond_str}{ep_tag}.gif')
         print(f'── Episode {ep}/{args.episodes} ─────────────────────────────')
         run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
                     frame_ms, mode_str, output_path, screen, font, font_sm)

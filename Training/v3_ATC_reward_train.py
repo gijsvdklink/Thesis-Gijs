@@ -1,12 +1,12 @@
 """
-PPO training for v3_improved.
+PPO training for v3_ATC_reward.
 
 Run:
-    python -m Training.v3_improved_train
-    python -m Training.v3_improved_train --multi   # 3 seeds in parallel
+    python -m Training.v3_ATC_reward_train
+    python -m Training.v3_ATC_reward_train --multi   # 3 seeds in parallel
 
 Monitor:
-    tensorboard --logdir Runs_saved/v3_improved
+    tensorboard --logdir Runs_saved/v3_ATC_reward
 """
 
 import os, random, subprocess, sys, time, argparse
@@ -19,7 +19,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from Environments.v3_improved import AirspaceEnv
+from Environments.v3_ATC_reward import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ CHECKPOINT_EVERY = 100_000
 N_RUNS           = 3
 
 RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3_improved')
+    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3_ATC_reward')
 )
 
 PPO_KWARGS = dict(
@@ -49,7 +49,7 @@ PPO_KWARGS = dict(
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 class EpisodeStatsCallback(BaseCallback):
-    _LABELS = ['-30°', '-15°', 'direct', '+15°', '+30°', 'hold',
+    _LABELS = ['-45°', '-30°', 'direct', '+30°', '+45°', 'hold',
                'M-0.04', 'M-0.02', 'M+0.02', 'M+0.04']
 
     def _on_step(self):
@@ -110,7 +110,7 @@ class ProgressCallback(BaseCallback):
 # ── Training run ──────────────────────────────────────────────────────────────
 
 def train(seed):
-    run_name = f"improved_9act_obs25_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"ATC_reward_9act_obs25_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')

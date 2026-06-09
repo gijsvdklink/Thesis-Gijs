@@ -21,29 +21,39 @@
 \section{Overview}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The \texttt{v3\_dalmau} environment simulates a single upper-airspace sector
-in which a reinforcement learning agent acts as an air traffic controller,
-issuing heading instructions to resolve conflicts between en-route aircraft.
-Two design choices distinguish it from earlier versions.
+The \texttt{v3\_dalmau} environment is a single-sector air traffic conflict
+resolution environment in which a reinforcement learning agent issues discrete
+heading instructions to maintain separation between en-route aircraft.
+Each episode places between ten and fifteen Airbus A320 aircraft in a randomly
+shaped convex sector at FL350.
+Aircraft enter from the sector boundary, transit toward a destination beyond
+the opposite boundary, and are replaced when they exit, keeping traffic density
+approximately constant.
+The agent observes the state of the focus aircraft and its four most urgent
+neighbours and selects one of eight discrete actions per step.
 
-First, the action space combines \textit{ATC-styled turn instructions} with
-two free persistence actions.
-Turn instructions set the commanded heading as a one-shot offset from the
-current destination bearing, recomputed at the time of execution, so the
-deviation is always expressed relative to the live direct-to-destination
-track.
-A \textit{hold} action re-issues the commanded heading unchanged, allowing
-the aircraft to execute a turn over several steps without additional cost.
-A \textit{fly-direct} action resets the commanded heading to the destination
-bearing, eliminating accumulated drift in a single step.
-This structure encodes the intended resolution pattern: issue one turn,
-hold while the aircraft manoeuvres, then fly direct once the conflict clears.
+The action space is structured around the ATC resolution pattern of turn,
+hold, and return.
+Six \textit{turn instructions} deflect the focus aircraft's commanded heading
+by $\delta \in \{{\pm}30^\circ,\,{\pm}45^\circ,\,{\pm}60^\circ\}$ from the
+destination bearing.
+A \textit{hold} action maintains the current commanded heading without
+additional cost, allowing the aircraft to execute a turn over multiple steps.
+A \textit{fly-direct} action returns the commanded heading to the destination
+bearing, eliminating accumulated drift once the conflict has resolved.
 
-Second, the reward signal is composed entirely of penalty terms.
-The conflict penalty fires whenever a predicted separation violation is detected
-($d_\text{CPA} < d_\text{sep}$) and scales with both the imminence and the
-predicted miss distance, providing a graduated signal that reflects the
-full geometry of the encounter.
+The reward signal is purely negative: a large penalty is applied when a
+separation violation occurs, a graduated conflict penalty scales with the
+imminence and predicted miss distance of approaching pairs, a drift penalty
+accumulates while the aircraft is held off its planned route, and a workload
+penalty is charged once per turn instruction.
+The combination of drift and workload terms creates a sustained incentive to
+resolve conflicts with as few instructions and as little deviation as possible.
+
+The focus aircraft, the one to which the instruction is applied, is selected
+each step by an urgency-based mechanism that prioritises aircraft in or near
+separation violations and locks onto a single aircraft for the duration of a
+resolution sequence.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Scenario}
@@ -124,27 +134,44 @@ to predicted conflict.
 \label{sec:actions}
 % ─────────────────────────────────────────────────────────────────────────────
 
-Eight discrete actions are available.
-Six \textit{turn instructions} set the commanded heading as a one-shot
-offset from the current destination bearing:
+The action space is discrete with eight elements, summarised in
+Table~\ref{tab:actions}.
+The eight actions fall into three groups.
 
+\paragraph{Turn instructions (actions 0--2 and 4--6).}
+Six actions set the commanded heading of the focus aircraft as a one-shot
+offset from the current destination bearing:
 \begin{equation}
     \psi_\text{cmd} \leftarrow \bigl(\psi_\text{dest}(f) + \delta\bigr)\bmod 360^\circ,
     \qquad
     \delta \in \{-60^\circ,\,-45^\circ,\,-30^\circ,\,+30^\circ,\,+45^\circ,\,+60^\circ\}.
 \end{equation}
+The offset is computed relative to the live direct-to-destination bearing at
+the moment the action is applied, so the commanded deviation is always
+expressed in terms of the current route.
+A workload cost $c$ is charged once when the instruction is issued; larger
+deviations carry higher cost.
 
-Two additional actions require no heading computation.
-\textit{Hold} (action~3) re-issues $\psi_\text{cmd}$ unchanged, maintaining
-the current deviation without additional cost; it is the only truly free action.
-\textit{Fly direct} (action~7) sets $\psi_\text{cmd} \leftarrow \psi_\text{dest}(f)$,
-returning the aircraft immediately to its planned track.
+\paragraph{Hold (action 3).}
+Hold re-issues $\psi_\text{cmd}$ unchanged, allowing the aircraft to continue
+executing a previously commanded turn without incurring an additional
+instruction cost.
+It is the only action with zero cost and serves as the natural
+\textit{no-intervention} baseline: if hold is applied every step, all
+aircraft follow their commanded headings without further modification.
 
-The intended resolution pattern is: issue one turn instruction to create
-separation, hold for the steps required to execute the turn and let the
-conflict resolve, then fly direct to eliminate accumulated drift.
-Workload cost is charged once per turn instruction.
-All aircraft operate at a fixed cruise speed of $M = 0.78$.
+\paragraph{Fly direct (action 7).}
+Fly direct resets $\psi_\text{cmd} \leftarrow \psi_\text{dest}(f)$,
+returning the aircraft to its planned route in a single step.
+The cost scales with the commanded deviation being corrected, so that
+fly direct is effectively free when the aircraft is already on track
+and expensive when a large turn is being aborted prematurely.
+
+\medskip
+The three groups encode the intended ATC resolution pattern: issue one turn
+instruction to create lateral separation, hold while the aircraft manoeuvres
+and the conflict geometry resolves, then fly direct to eliminate accumulated
+route deviation.
 
 \begin{table}[h]
 \centering
@@ -199,9 +226,9 @@ conflict geometry.}
 \multicolumn{4}{l}{\textit{Per intruder $j$ (slots 1--4, offset $+k$ for slot $k$)}} \\[2pt]
 $+0$ & $\tilde{x}_{fj}$            & lateral relative position $/ \, d_\text{warn}$            & $[-1,1]$ \\
 $+1$ & $\tilde{y}_{fj}$            & forward relative position $/ \, d_\text{warn}$            & $[-1,1]$ \\
-$+2$ & $\hat{t}_\text{CPA}$        & $\operatorname{clip}(t_\text{CPA}/T_\text{warn},\,0,\,1)$  & $[0,1]$ \\
-$+3$ & $\tilde{x}^\text{CPA}_{fj}$ & lateral CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
-$+4$ & $\tilde{y}^\text{CPA}_{fj}$ & forward CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
+$+2$ & $\tilde{x}^\text{CPA}_{fj}$ & lateral CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
+$+3$ & $\tilde{y}^\text{CPA}_{fj}$ & forward CPA offset $/ \, d_\text{sep}$                    & $[-1,1]$ \\
+$+4$ & $\hat{t}_\text{CPA}$        & $\operatorname{clip}(t_\text{CPA}/T_\text{warn},\,0,\,1)$  & $[0,1]$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -229,9 +256,9 @@ because the conflict geometry is confined to within one separation standard;
 using $d_\text{warn}$ would compress the CPA features to a tiny range near
 zero.
 The normalised time $\hat{t}_\text{CPA}$ mirrors the imminence factor in
-the reward function and is placed before the CPA coordinates to act as a
-gate: a value of 1 signals that no conflict is predicted, making the
-subsequent CPA features uninformative (both zero).
+the reward function.
+A value of 1 signals that no conflict is predicted, making the
+CPA coordinate features uninformative (both zero).
 Relative velocity is not included explicitly: it is implicit in the
 combination of current position and CPA offset, from which the network can
 recover the encounter geometry.
@@ -245,7 +272,7 @@ The CPA offset is defined as
 \end{equation}
 rotated into $f$'s heading frame before normalisation.
 Non-converging pairs and empty slots receive the sentinel
-$(1,\,1,\,1,\,0,\,0)$.
+$(1,\,1,\,0,\,1,\,1)$.
 
 \subsection{Intruder Slot Ordering}
 \label{sec:nbr}
@@ -334,7 +361,7 @@ was issued.
 During the hold phase this penalty accumulates, creating a sustained
 incentive to issue the fly-direct action once a conflict has been resolved.
 The penalty is zero when $\psi_\text{cmd} = \psi_\text{dest}$ and reaches
-at most $(1 - \cos 45^\circ)/2 \approx 0.15$ at the largest deviation.
+at most $(1 - \cos 60^\circ)/2 = 0.25$ at the largest deviation.
 
 \paragraph{Workload penalty.}
 A one-time cost is charged each time a turn instruction or a fly-direct
@@ -346,8 +373,8 @@ For turn instructions the cost is fixed:
 \end{equation}
 
 where $c$ is the action cost from Table~\ref{tab:actions}.
-The hold action (action~2) is the only truly free action ($c = 0$).
-For the fly-direct action (action~5) the cost scales with the commanded
+The hold action (action~3) is the only truly free action ($c = 0$).
+For the fly-direct action (action~7) the cost scales with the commanded
 heading deviation being corrected at the moment the instruction is issued:
 
 \begin{equation}
@@ -377,7 +404,7 @@ effectively free once the deviation is small.
 \midrule
 $w_\text{LoS}$      & Separation violation at step end                                        & $10.00$ \\
 $w_\text{conflict}$ & Worst-case imminence $\times$ miss-distance severity ($d_\text{CPA} < d_\text{sep}$) & $3.00$ \\
-$w_\text{drift}$    & Per-step deviation; accumulates during hold, motivates fly-direct        & $0.50$ \\
+$w_\text{drift}$    & Per-step deviation; accumulates during hold, motivates fly-direct        & $0.60$ \\
 $w_\text{work}$     & Per-turn cost (fixed); fly-direct cost $= w_\text{work}\cdot|\Delta\psi|/60^\circ$; hold free & $0.50$ \\
 \bottomrule
 \end{tabular}
@@ -393,10 +420,10 @@ in Stable-Baselines3, using four parallel environments (\texttt{SubprocVecEnv})
 each seeded independently.
 Observation normalisation is disabled (\texttt{norm\_obs=False}) because all
 features are bounded by design.
-Reward normalisation is enabled (\texttt{norm\_reward=True}): rewards are
-divided by the running standard deviation of the discounted return, which
-stabilises value function learning in the presence of sparse, large
-loss-of-separation penalties.
+Reward normalisation is disabled (\texttt{norm\_reward=False}): the raw
+reward signal is passed to the value function without scaling, so the
+penalty magnitudes in Table~\ref{tab:weights} are the values seen during
+training without transformation.
 The policy and value networks share a two-layer MLP with $[128,\,128]$ hidden
 units.
 
@@ -422,5 +449,55 @@ $\alpha$               & Learning rate                      & $3\times10^{-4}$ \
 \bottomrule
 \end{tabular}
 \end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Validation}
+\label{sec:validation}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Policy performance is evaluated by sweeping a two-dimensional grid of
+operating conditions: sector density $\rho$ on one axis and traffic count
+$N$ on the other.
+The sweep parameters are summarised in Table~\ref{tab:sweep}.
+These ranges cover the high-density, high-count conditions that are most
+relevant to operational stress testing, and extend beyond the training
+distribution ($N \sim \mathcal{U}\{10,\ldots,15\}$) to assess
+out-of-distribution robustness at both ends.
+
+\begin{table}[h]
+\centering
+\caption{Validation sweep parameters.}
+\label{tab:sweep}
+\smallskip
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Values} \\
+\midrule
+Sector density $\rho$ (km$^2$/aircraft) & $5\,000 \quad 8\,000 \quad 10\,000 \quad 15\,000$ \\
+Traffic count $N$ (aircraft)            & $8 \quad 10 \quad 12 \quad 14$ \\
+Episodes per cell                       & $8$ \\
+Checkpoint                              & $4.6\,\text{M}$ training steps \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The primary metric is the \textit{loss-of-separation fraction}: the fraction
+of steps within an episode in which at least one separation violation ($d < d_\text{sep}$)
+is active.
+Averaging over eight episodes per cell reduces variance from random sector
+geometry and initial placement.
+
+The same grid is evaluated under a \textit{no-policy baseline} in which
+actions are drawn uniformly at random.
+This baseline measures the separation violation rate that would occur without
+any conflict resolution, so that the reduction attributable to the learned
+policy can be quantified directly.
+
+Results are presented as side-by-side heatmaps of mean loss-of-separation
+fraction for the policy and the baseline, using a shared colour scale to
+allow direct visual comparison.
+A second figure shows loss-of-separation fraction as a function of density,
+with one panel per traffic count and shaded bands indicating $\pm 1$ standard
+deviation across episodes.
 
 \end{document}

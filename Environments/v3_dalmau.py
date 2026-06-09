@@ -93,7 +93,7 @@ CONFIG = {
     # Reward weights
     'w_los':                 10.00,           # heavy: separation violation
     'w_conflict':            3.00,            # medium: imminence × miss-distance of worst conflict
-    'w_drift':               0.50,            # accumulates during hold, motivates return to track via action 5
+    'w_drift':               0.60,            # accumulates during hold, motivates return to track via action 5
     'w_work':                0.50,            # charged once per turn instruction; hold and direct are free
     'seed':                  None,
 }
