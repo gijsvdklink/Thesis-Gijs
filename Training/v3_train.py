@@ -1,12 +1,12 @@
 """
-PPO training for v3_dalmau.
+PPO training for v3.
 
 Run:
     python -m Training.v3_ATC_dalmau
     python -m Training.v3_ATC_dalmau --multi   # 3 seeds in parallel
 
 Monitor:
-    tensorboard --logdir Runs_saved/v3_dalmau
+    tensorboard --logdir Runs_saved/v3
 """
 
 import os, random, subprocess, sys, time, argparse
@@ -19,7 +19,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from Environments.v3_dalmau import AirspaceEnv
+from Environments.v3 import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ CHECKPOINT_EVERY = 100_000
 N_RUNS           = 3
 
 RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3_dalmau')
+    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3')
 )
 
 PPO_KWARGS = dict(

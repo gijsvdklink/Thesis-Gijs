@@ -25,6 +25,8 @@ import os
 import pickle
 import sys
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
@@ -32,6 +34,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import numpy as np
 import pygame
+import cv2
 from PIL import Image
 
 # ── NumPy compatibility shim ──────────────────────────────────────────────────
@@ -68,12 +71,12 @@ save_util.json_to_data = _patched_json_to_data
 import bluesky as bs
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from Environments.v3_dalmau import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
+from Environments.v3 import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
 
 # Default checkpoint to visualise
 DEFAULT_MODEL = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    'Runs_saved', 'v3_dalmau',
+    'Runs_saved', 'v3',
     'dalmau_8act_obs23_seed18592_20260606_132427',
     'checkpoints', 'ckpt_700000.zip',
 )
@@ -296,7 +299,7 @@ def draw_frame(screen, font, font_sm, env, view, dest_px, los_steps, frame_no,
 
     rew_color = GREEN if step_reward > 0 else (RED if step_reward < 0 else BLACK)
     hud = [
-        (f'v3_dalmau · {mode_str}', BLACK),
+        (f'v3 · {mode_str}', BLACK),
         (f'T={bs.sim.simt:.0f}s   active={n_active}/{env.n_aircraft}   '
          f'served={env._next_callsign_id}   frame={frame_no}', BLACK),
         (f'[OBJ 1 SAFETY]   LoS pairs={n_los}   conflict pairs={n_conf}'
@@ -371,15 +374,28 @@ def run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
             n_conf = int((U > 0).sum())   // 2 if U.size > 0 else 0
             print(f'    frame {n:4d}  T={bs.sim.simt:.0f}s  '
                   f'LoS={n_los}  conf={n_conf}  focus={env._focus_cs}  '
-                  f'r={step_reward:+.3f}  Σr={cum_reward:+.2f}')
+                  f'r={step_reward:+.3f}  Sr={cum_reward:+.2f}')
 
         if terminated or truncated:
             print(f'    Episode finished at frame {n}  (LoS-steps={los_steps})')
             break
 
     print(f'  Saving {len(frames)} frames → {output_path}')
-    frames[0].save(output_path, save_all=True, append_images=frames[1:],
-                   duration=frame_ms, loop=0, optimize=False)
+    if output_path.endswith('.mp4'):
+        fps_val = round(1000 / frame_ms)
+        arr0    = np.array(frames[0])
+        h, w    = arr0.shape[:2]
+        fourcc  = cv2.VideoWriter_fourcc(*'avc1')   # H.264, broad player support
+        writer  = cv2.VideoWriter(output_path, fourcc, fps_val, (w, h))
+        if not writer.isOpened():                   # fallback if avc1 not available
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(output_path, fourcc, fps_val, (w, h))
+        for f in frames:
+            writer.write(cv2.cvtColor(np.array(f), cv2.COLOR_RGB2BGR))
+        writer.release()
+    else:
+        frames[0].save(output_path, save_all=True, append_images=frames[1:],
+                       duration=frame_ms, loop=0, optimize=False)
     print(f'  Done  ({os.path.getsize(output_path)/1e6:.1f} MB)\n')
 
 
@@ -390,6 +406,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model',       default=DEFAULT_MODEL)
     parser.add_argument('--no-policy',   action='store_true')
+    parser.add_argument('--mp4',         action='store_true',
+                        help='Save as .mp4 instead of .gif')
     parser.add_argument('--frames',      type=int,   default=MAX_FRAMES)
     parser.add_argument('--fps',         type=int,   default=None)
     parser.add_argument('--episodes',    type=int,   default=1,
@@ -431,7 +449,7 @@ def main():
     if args.n_aircraft is not None:
         CONFIG['n_aircraft'] = lambda n=args.n_aircraft: n
     if args.density is not None:
-        CONFIG['density_km2'] = lambda d=args.density: d
+        CONFIG['rho'] = lambda d=args.density: d
 
     env = AirspaceEnv()
 
@@ -447,8 +465,9 @@ def main():
     for ep in range(1, args.episodes + 1):
         episode_seed = int.from_bytes(os.urandom(4), 'big')
         ep_tag       = f'_ep{ep}' if args.episodes > 1 else ''
-        output_path  = os.path.join(HERE, f'v3_{stem}{cond_str}{ep_tag}.gif')
-        print(f'── Episode {ep}/{args.episodes} ─────────────────────────────')
+        ext          = '.mp4' if args.mp4 else '.gif'
+        output_path  = os.path.join(HERE, f'v3_{stem}{cond_str}{ep_tag}{ext}')
+        print(f'-- Episode {ep}/{args.episodes} ----------------------------')
         run_episode(env, model, vecnorm, use_policy, episode_seed, max_frames,
                     frame_ms, mode_str, output_path, screen, font, font_sm)
 

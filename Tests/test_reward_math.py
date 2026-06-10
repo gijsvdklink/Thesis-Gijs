@@ -1,5 +1,5 @@
 """
-Unit tests for reward formula components in v3_dalmau.
+Unit tests for reward formula components in v3.
 These tests exercise pure-math helpers and the conflict/drift/work formulae
 directly, without starting BlueSky or the Gym environment.
 """
@@ -10,7 +10,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from Environments.v3_dalmau import (
+from Environments.v3 import (
     latlon_to_nm, wrap_to_180, CONFIG, NM_TO_KM, ACT_COST
 )
 

@@ -1,5 +1,5 @@
 """
-Integration tests for v3_dalmau AirspaceEnv.
+Integration tests for v3 AirspaceEnv.
 
 Spins up the real environment (BlueSky) and checks:
   - observation shape and value ranges
@@ -15,7 +15,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from Environments.v3_dalmau import AirspaceEnv, CONFIG, OBS_DIM, ACT_COST, wrap_to_180
+from Environments.v3 import AirspaceEnv, CONFIG, OBS_DIM, ACT_COST, wrap_to_180
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ def test_action_heading_increments():
     Heading actions 0-4 should shift cmd_hdg by the expected delta.
     Action 2 (Δψ=0) should not change cmd_hdg.
     """
-    from Environments.v3_dalmau import HEADING_DELTAS
+    from Environments.v3 import HEADING_DELTAS
     env = get_env()
     env.reset(seed=10)
     cs = env._focus_cs

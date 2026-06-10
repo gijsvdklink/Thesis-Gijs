@@ -1,5 +1,5 @@
 """
-scenario_distribution.py — sample 10,000 v3_dalmau scenarios and visualise
+scenario_distribution.py — sample 10,000 v3 scenarios and visualise
 the joint distributions of sector size, density, aircraft count, and episode
 length.  No BlueSky simulation is run; only the scenario-generation logic from
 reset() is replicated (polygon, aircraft count, density draw).
@@ -19,7 +19,7 @@ from polygenerator import random_convex_polygon
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.affinity import scale as shapely_scale
 
-# ── Mirror CONFIG from v3_dalmau (scenario-generation fields only) ────────────
+# ── Mirror CONFIG from v3 (scenario-generation fields only) ────────────
 
 N_SAMPLES        = 10_000
 SEED             = 42
@@ -74,7 +74,7 @@ diam_arr    = np.empty(N_SAMPLES)
 ep_len_arr  = np.empty(N_SAMPLES, dtype=int)
 circ_arr    = np.empty(N_SAMPLES)
 
-print(f"Sampling {N_SAMPLES:,} v3_dalmau scenarios …")
+print(f"Sampling {N_SAMPLES:,} v3 scenarios …")
 for i in range(N_SAMPLES):
     n          = N_AIRCRAFT_FN()
     density    = DENSITY_KM2_FN()

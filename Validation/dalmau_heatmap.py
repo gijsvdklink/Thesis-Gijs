@@ -1,8 +1,8 @@
 """
-Heatmap validation for v3_dalmau — policy vs. no-policy baseline.
+Heatmap validation for v3 -- policy vs. no-policy baseline.
 
 Sweeps a 2-D grid of operating conditions:
-    rows : sector density  (km² per aircraft)
+    rows : aircraft density rho (aircraft/km^2)
     cols : number of aircraft
 
 For each cell N_EPISODES episodes are run and the mean LoS fraction
@@ -57,7 +57,7 @@ save_util.json_to_data = _patched_json_to_data
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from Environments.v3_dalmau import AirspaceEnv, CONFIG
+from Environments.v3 import AirspaceEnv, CONFIG
 
 # ── Default checkpoint ────────────────────────────────────────────────────────
 
@@ -65,26 +65,27 @@ HERE         = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR      = HERE
 DEFAULT_MODEL = os.path.join(
     os.path.dirname(HERE),
-    'Runs_saved', 'v3_dalmau',
+    'Runs_saved', 'v3',
     'dalmau_8act_obs23_seed18592_20260606_132427',
     'checkpoints', 'ckpt_4600000.zip',
 )
 
 # ── Sweep grid ────────────────────────────────────────────────────────────────
 
-N_AIRCRAFT     = [8, 10, 12, 14]
-DENSITY_PER_AC = [5_000, 8_000, 10_000, 15_000]
-N_EPISODES     = 4          # reduce to 2 with --quick
+N_AIRCRAFT = [8, 10, 12, 14]
+# rho in aircraft/km^2; equivalent area/ac: 1/5000=5k, 1/8000=8k, 1/10000=10k, 1/15000=15k km^2/ac
+RHO_VALUES = [1/5000, 1/8000, 1/10000, 1/15000]
+N_EPISODES = 4          # reduce to 2 with --quick
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
-def _configure_for_cell(n_ac, density_km2_per_ac):
-    CONFIG['n_aircraft']  = lambda n=n_ac:              n
-    CONFIG['density_km2'] = lambda d=density_km2_per_ac: d
+def _configure_for_cell(n_ac, rho):
+    CONFIG['n_aircraft'] = lambda n=n_ac: n
+    CONFIG['rho']        = lambda r=rho:  r
 
 def _restore_config_defaults():
-    CONFIG['n_aircraft']  = lambda: random.randint(2, 15)
-    CONFIG['density_km2'] = lambda: random.uniform(5_000.0, 15_000.0)
+    CONFIG['n_aircraft'] = lambda: random.randint(2, 15)
+    CONFIG['rho']        = lambda: random.uniform(1/15000, 1/5000)
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
@@ -125,7 +126,7 @@ def _run_episode(venv, model=None):
 # ── Grid sweep ────────────────────────────────────────────────────────────────
 
 def sweep(mode, model_path=None, vecnorm_path=None, n_episodes=N_EPISODES):
-    n_rows, n_cols = len(DENSITY_PER_AC), len(N_AIRCRAFT)
+    n_rows, n_cols = len(RHO_VALUES), len(N_AIRCRAFT)
     los_grid = np.zeros((n_rows, n_cols, n_episodes))
     rew_grid = np.zeros_like(los_grid)
 
@@ -140,12 +141,12 @@ def sweep(mode, model_path=None, vecnorm_path=None, n_episodes=N_EPISODES):
             'action_space':      venv.action_space,
         })
 
-    for di, density in enumerate(DENSITY_PER_AC):
+    for di, rho in enumerate(RHO_VALUES):
         for ai, n_ac in enumerate(N_AIRCRAFT):
-            _configure_for_cell(n_ac, density)
+            _configure_for_cell(n_ac, rho)
             for ep in range(n_episodes):
                 los_grid[di, ai, ep], rew_grid[di, ai, ep] = _run_episode(venv, model)
-            print(f'  [{mode:8s}] density={density//1000:2d}k km²/ac  n={n_ac}'
+            print(f'  [{mode:8s}] rho={rho:.2e} ac/km^2  n={n_ac}'
                   f'  LoS={100*los_grid[di,ai].mean():.1f}%'
                   f'  rew={rew_grid[di,ai].mean():.3f}', flush=True)
 
@@ -158,7 +159,7 @@ def sweep(mode, model_path=None, vecnorm_path=None, n_episodes=N_EPISODES):
 def _draw_heatmap(ax, matrix, title, vmax):
     im = ax.imshow(matrix, aspect='auto', interpolation='nearest',
                    cmap='RdYlGn_r', vmin=0, vmax=vmax)
-    for di in range(len(DENSITY_PER_AC)):
+    for di in range(len(RHO_VALUES)):
         for ai in range(len(N_AIRCRAFT)):
             val   = matrix[di, ai]
             color = 'white' if val > 0.55 * vmax else 'black'
@@ -166,10 +167,10 @@ def _draw_heatmap(ax, matrix, title, vmax):
                     ha='center', va='center', fontsize=9, color=color)
     ax.set_xticks(range(len(N_AIRCRAFT)))
     ax.set_xticklabels([str(n) for n in N_AIRCRAFT])
-    ax.set_yticks(range(len(DENSITY_PER_AC)))
-    ax.set_yticklabels([f'{d//1000}k' for d in DENSITY_PER_AC])
+    ax.set_yticks(range(len(RHO_VALUES)))
+    ax.set_yticklabels([f'{int(1/r/1000)}k km2/ac' for r in RHO_VALUES])
     ax.set_xlabel('Aircraft in sector', fontsize=10)
-    ax.set_ylabel('Density (km² per aircraft)', fontsize=10)
+    ax.set_ylabel('Density rho (ac/km^2)', fontsize=10)
     ax.set_title(title, fontsize=11)
     cbar = plt.gcf().colorbar(im, ax=ax, shrink=0.85, pad=0.02)
     cbar.set_label('Mean LoS fraction', fontsize=9)
@@ -186,7 +187,7 @@ def plot_heatmaps(pol_los, base_los, model_label, out_path):
     _draw_heatmap(axes[0], pol_mean,  f'PPO policy  ({model_label})', vmax)
     _draw_heatmap(axes[1], base_mean, 'No-policy baseline (random)',  vmax)
     fig.suptitle(
-        f'v3_dalmau — Mean LoS fraction: policy vs. baseline\n'
+        f'v3 — Mean LoS fraction: policy vs. baseline\n'
         f'({pol_los.shape[2]} episodes per cell)',
         fontsize=10)
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -198,7 +199,8 @@ def plot_summary(pol_los, base_los, out_path):
     n_cols = len(N_AIRCRAFT)
     fig, axes = plt.subplots(1, n_cols, figsize=(3.5*n_cols, 4),
                               sharey=True, gridspec_kw={'wspace': 0.12})
-    x = np.array(DENSITY_PER_AC) / 1_000
+    # x-axis: area per aircraft in thousands of km^2 (= 1/rho / 1000), for readability
+    x = np.array([1/r/1000 for r in RHO_VALUES])
 
     for ai, (ax, n_ac) in enumerate(zip(axes, N_AIRCRAFT)):
         for matrix, color, label in [(pol_los,  'steelblue', 'PPO'),
@@ -208,7 +210,7 @@ def plot_summary(pol_los, base_los, out_path):
             ax.fill_between(x, mu-sig, mu+sig, alpha=0.20, color=color)
             ax.plot(x, mu, 'o-', color=color, linewidth=1.8, label=label)
         ax.set_title(f'n = {n_ac} aircraft', fontsize=9)
-        ax.set_xlabel('km²/aircraft (×10³)', fontsize=8)
+        ax.set_xlabel('km^2/aircraft (x10^3)', fontsize=8)
         ax.set_xticks(x)
         ax.set_xticklabels([f'{int(v)}' for v in x], fontsize=7)
         ax.grid(axis='y', linestyle='--', alpha=0.4)
@@ -218,7 +220,7 @@ def plot_summary(pol_los, base_los, out_path):
         if ai == n_cols - 1:
             ax.legend(fontsize=8)
 
-    fig.suptitle(f'v3_dalmau — LoS fraction vs. density  '
+    fig.suptitle(f'v3 — LoS fraction vs. density  '
                  f'(mean ± 1 std, {pol_los.shape[2]} episodes each)', fontsize=10)
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -259,14 +261,14 @@ def main():
              pol_los=pol_los,  pol_rew=pol_rew,
              base_los=base_los, base_rew=base_rew,
              n_aircraft=np.array(N_AIRCRAFT),
-             density_per_ac=np.array(DENSITY_PER_AC))
+             rho_values=np.array(RHO_VALUES))
     print(f'\nResults saved to {npz_path}')
 
     # Summary table
     print('\n── LoS summary (mean %) ─────────────────────────────────────────')
-    print(f'{"density":>10}' + ''.join(f'  n={n}(P) n={n}(B)' for n in N_AIRCRAFT))
-    for di, density in enumerate(DENSITY_PER_AC):
-        row = f'{density:>10,}'
+    print(f'{"rho (ac/km2)":>14}' + ''.join(f'  n={n}(P) n={n}(B)' for n in N_AIRCRAFT))
+    for di, rho in enumerate(RHO_VALUES):
+        row = f'{rho:>14.2e}'
         for ai in range(len(N_AIRCRAFT)):
             row += (f'  {100*pol_los[di,ai].mean():>5.1f}%'
                     f' {100*base_los[di,ai].mean():>5.1f}%')

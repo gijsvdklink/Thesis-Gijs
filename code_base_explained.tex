@@ -1,0 +1,1013 @@
+% !TEX program = pdflatex
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\geometry{margin=2.5cm}
+
+% ── Python listing style ──────────────────────────────────────────────────────
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codeframe}{RGB}{200,200,200}
+\definecolor{kw}{RGB}{0,0,180}
+\definecolor{str}{RGB}{180,0,0}
+\definecolor{cmt}{RGB}{80,120,80}
+\definecolor{num}{RGB}{0,100,0}
+
+\lstdefinestyle{py}{
+  language        = Python,
+  backgroundcolor = \color{codebg},
+  frame           = single,
+  rulecolor       = \color{codeframe},
+  basicstyle      = \ttfamily\small,
+  keywordstyle    = \color{kw}\bfseries,
+  stringstyle     = \color{str},
+  commentstyle    = \color{cmt}\itshape,
+  numberstyle     = \tiny\color{gray},
+  numbers         = left,
+  numbersep       = 6pt,
+  breaklines      = true,
+  breakatwhitespace = true,
+  showstringspaces= false,
+  tabsize         = 4,
+  captionpos      = b,
+  morekeywords    = {self, True, False, None, lambda, as},
+}
+\lstset{style=py}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{\textbf{v3 Codebase Explained}\\[4pt]
+       \large Environment and Training Script — Line-by-Line}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Overview}
+% =============================================================================
+
+The codebase consists of two Python files:
+
+\begin{itemize}[noitemsep]
+  \item \texttt{Environments/v3.py} --- the Gymnasium environment that simulates
+        a sector of en-route airspace, computes rewards, and exposes observations
+        to the RL agent.
+  \item \texttt{Training/v3\_train.py} --- the PPO training script that wraps
+        the environment, configures Stable-Baselines3, and manages checkpoints
+        and logging.
+\end{itemize}
+
+The environment follows the standard Gymnasium interface: \texttt{reset()} starts
+a new episode, \texttt{step(action)} advances by one RL step (5 simulated seconds),
+and returns \texttt{(obs, reward, terminated, truncated, info)}.
+
+% =============================================================================
+\section{Environment: \texttt{Environments/v3.py}}
+% =============================================================================
+
+% -----------------------------------------------------------------------------
+\subsection{Imports and dependencies}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Module-level imports.}]
+import math, random
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+import bluesky as bs
+from bluesky.simulation import ScreenIO
+from bluesky.tools import geo
+from bluesky.stack.stackbase import Stack as _BsStack
+from polygenerator import random_convex_polygon
+from shapely.geometry import Polygon as ShapelyPolygon
+from shapely.affinity import scale as shapely_scale
+\end{lstlisting}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{bluesky} --- open-source ATC simulator; provides aircraft
+        physics, position tracking (\texttt{bs.traf}), and a command stack
+        (\texttt{bs.stack}).
+  \item \textbf{geo} --- BlueSky's geodesic helpers: \texttt{kwikqdrdist}
+        (quick bearing + distance), \texttt{kwikdist} (distance only),
+        \texttt{qdrpos} (project a point along a bearing).
+  \item \textbf{polygenerator} --- generates random convex polygons as vertex
+        lists, used to build the randomised sector boundary.
+  \item \textbf{shapely} --- computational geometry; used to scale the polygon
+        to the required area and to interpolate points on the boundary.
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+\subsection{Configuration dictionary}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={The \texttt{CONFIG} dictionary --- all tuneable parameters
+in one place. Lambda values are re-sampled fresh each episode.}]
+CONFIG = {
+    # Aircraft & sector
+    'ac_type':               'A320',
+    'ac_speed':              450.0,        # kt TAS, fixed throughout episode
+    'ac_mach':               0.78,
+    'altitude':              350,          # FL350
+    'center_ll':             (0.0, 0.0),   # flat-earth equatorial: cos(0)=1
+    'n_aircraft':            lambda: random.randint(10, 15),
+    'rho':                   lambda: random.uniform(1/15000, 1/5000),
+    'sep_nm':                5.0,          # ICAO horizontal separation standard
+    'buffer_nm':             10.0,         # extra clearance at spawn
+    'dest_dist_factor':      2.0,          # destination = 2 x sector diameters away
+    # Polygon
+    'n_vertices':            lambda: random.randint(5, 7),
+    'min_circularity':       0.65,         # reject very elongated polygons
+    'max_placement_tries':   50,
+    # Simulation
+    'sim_dt':                0.5,          # BlueSky physics timestep (s)
+    'action_freq':           10,           # RL step = 10 x 0.5 s = 5 s
+    'lookahead_s':           900.0,        # 15 min conflict detection horizon
+    't_warn':                600.0,        # 10 min warning horizon
+    'crossings_per_episode': 4.0,
+    # Focus selection
+    'focus_clear_steps':     5,
+    'focus_emergency_u':     0.8,
+    # Reward weights
+    'w_los':                 10.00,
+    'w_conflict':            3.00,
+    'w_drift':               0.60,
+    'w_work':                0.50,
+}
+\end{lstlisting}
+
+\paragraph{Density parameter $\rho$.}
+The sector area is computed as $A = N / \rho$, where $N$ is the number of aircraft
+and $\rho$ is the aircraft density in aircraft/km$^2$.
+The range $[1/15\,000,\, 1/5\,000]$ aircraft/km$^2$ corresponds to
+5\,000--15\,000\,km$^2$ per aircraft.
+Defining $\rho$ rather than area directly means the sector automatically scales
+with traffic count, keeping density constant across different $N$ draws.
+
+% -----------------------------------------------------------------------------
+\subsection{Global constants}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Module-level constants derived from \texttt{CONFIG}.}]
+N_NBR   = CONFIG['n_neighbours']   # 4 intruder slots in the observation
+OBS_DIM = 3 + N_NBR * 5           # 3 ownship + 4x5 intruder = 23 floats
+
+D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # 75 NM
+V_NOM  = CONFIG['ac_speed'] / 3600.0                      # NM/s
+
+TURN_DELTAS = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
+ACT_COST    = [1.0, 0.75, 0.5, 0.0, 0.5, 0.75, 1.0, None]
+\end{lstlisting}
+
+\texttt{D\_WARN} is the distance at which an aircraft moving at cruise speed
+would reach the warning horizon: $d_\text{warn} = T_\text{warn} \times v = 600\,\text{s}
+\times 450\,\text{kt} / 3600 = 75\,\text{NM}$.
+
+\texttt{ACT\_COST} encodes the workload cost of each action.
+The costs are proportional to $|\delta|/60^\circ$, so that the total cost depends
+only on the accumulated heading excursion, not on how many instructions achieved it.
+Action~3 (hold) is free; index~7 (fly direct) is \texttt{None} because its cost
+is computed dynamically.
+
+% -----------------------------------------------------------------------------
+\subsection{Coordinate helpers}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Flat-earth projection between geographic and NM coordinates.}]
+def latlon_to_nm(center_ll, lat, lon):
+    """Convert (lat, lon) to (east_nm, north_nm) relative to center_ll."""
+    ref_lat, ref_lon = center_ll
+    east_nm  = (lon - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
+    north_nm = (lat - ref_lat) * 60.0
+    return np.array([east_nm, north_nm])
+
+def nm_to_latlon(center_ll, east_nm, north_nm):
+    """Convert (east_nm, north_nm) offsets back to (lat, lon)."""
+    ref_lat, ref_lon = center_ll
+    return (ref_lat + north_nm / 60.0,
+            ref_lon + east_nm  / (60.0 * math.cos(math.radians(ref_lat))))
+
+def wrap_to_180(angle_deg):
+    """Wrap an angle in degrees to (-180, 180]."""
+    return (angle_deg + 180) % 360 - 180
+\end{lstlisting}
+
+Because \texttt{center\_ll = (0.0, 0.0)}, $\cos(\phi_\text{ref}) = 1$ and the
+longitude conversion simplifies to $\Delta\text{lon} \times 60$.
+One degree of latitude or longitude thus equals exactly 60\,NM, giving a
+pure flat-earth Cartesian projection.
+
+All geometry in the codebase --- CPA computations, separation checks, urgency ---
+works in NM east/north coordinates returned by \texttt{latlon\_to\_nm}.
+
+% -----------------------------------------------------------------------------
+\subsection{Sector polygon}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Generating a random convex sector polygon of the required area.}]
+def _make_polygon(area_km2):
+    target_nm2 = area_km2 * KM_TO_NM ** 2
+    scaled = None
+    for _ in range(1000):
+        raw   = ShapelyPolygon(random_convex_polygon(CONFIG['n_vertices']()))
+        scale = math.sqrt(target_nm2 / raw.area)
+        scaled = shapely_scale(raw, xfact=scale, yfact=scale, origin='centroid')
+        if 4 * math.pi * scaled.area / scaled.length ** 2 >= CONFIG['min_circularity']:
+            break
+    cx, cy = scaled.centroid.x, scaled.centroid.y
+    return ShapelyPolygon([(x - cx, y - cy) for x, y in scaled.exterior.coords])
+\end{lstlisting}
+
+The function:
+\begin{enumerate}[noitemsep]
+  \item Samples a random unit convex polygon using \texttt{polygenerator}.
+  \item Scales it uniformly so its area equals the target (in NM$^2$).
+  \item Rejects the polygon if its isoperimetric ratio $4\pi A / L^2 < 0.65$,
+        which would indicate a very elongated or spiky shape that would produce
+        unrealistic flight geometries.
+  \item Centres the accepted polygon at the origin by subtracting the centroid.
+\end{enumerate}
+
+% -----------------------------------------------------------------------------
+\subsection{Aircraft placement: \texttt{\_place\_one}}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Placing one aircraft on the sector boundary.}]
+def _place_one(polygon, sector, n_sectors):
+    minx, miny, maxx, maxy = polygon.bounds
+    dest_dist = math.sqrt((maxx-minx)**2 + (maxy-miny)**2) * CONFIG['dest_dist_factor']
+
+    t_spawn  = (sector + CONFIG['spawn_jitter']()) / n_sectors
+    t_ref    = (t_spawn + 0.5 + CONFIG['ref_jitter']()) % 1.0
+    spawn_pt = polygon.exterior.interpolate(t_spawn, normalized=True)
+    ref_pt   = polygon.exterior.interpolate(t_ref,   normalized=True)
+
+    spawn_ll    = nm_to_latlon(CONFIG['center_ll'], spawn_pt.x, spawn_pt.y)
+    ref_ll      = nm_to_latlon(CONFIG['center_ll'], ref_pt.x,   ref_pt.y)
+    spawn_hdg, _ = geo.kwikqdrdist(*[float(v) for v in (*spawn_ll, *ref_ll)])
+
+    dest_lat, dest_lon = geo.qdrpos(
+        float(spawn_ll[0]), float(spawn_ll[1]), spawn_hdg, dest_dist)
+
+    return {'sp_ll': spawn_ll, 'dest_ll': (dest_lat, dest_lon), 'heading': spawn_hdg}
+\end{lstlisting}
+
+The sector perimeter is parameterised as a normalised arc length $t \in [0,1)$.
+Aircraft $k$ of $N$ is assigned $t_\text{spawn} = (k + \epsilon_1) / N$ where
+$\epsilon_1 \sim \mathcal{U}(0.1, 0.9)$, distributing spawns evenly around the
+boundary while avoiding exact symmetry.
+The reference point that sets the initial heading is placed half-way around the
+perimeter ($t_\text{ref} = t_\text{spawn} + 0.5$) with a small jitter, so the
+aircraft initially points roughly across the sector.
+The destination is placed two sector diameters beyond the reference bearing,
+ensuring aircraft do not U-turn back into the sector.
+
+% -----------------------------------------------------------------------------
+\subsection{Pair urgency: \texttt{\_pair\_urgency}}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Computing the urgency $u_{ij}$ between two aircraft.}]
+def _pair_urgency(i, j):
+    pos_i  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[i], bs.traf.lon[i])
+    pos_j  = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[j], bs.traf.lon[j])
+    d_east  = pos_j[0] - pos_i[0]
+    d_north = pos_j[1] - pos_i[1]
+    dist_sq = d_east**2 + d_north**2
+    sep     = CONFIG['sep_nm']
+
+    # Branch 1: active loss of separation
+    if dist_sq < sep**2:
+        return 1.0 + 9.0 * (1.0 - math.sqrt(dist_sq) / sep)
+
+    # Relative velocity
+    ve_i = spd_i * math.sin(math.radians(bs.traf.hdg[i]))
+    vn_i = spd_i * math.cos(math.radians(bs.traf.hdg[i]))
+    ve_j = spd_j * math.sin(math.radians(bs.traf.hdg[j]))
+    vn_j = spd_j * math.cos(math.radians(bs.traf.hdg[j]))
+    dv_east  = ve_j - ve_i
+    dv_north = vn_j - vn_i
+
+    rel_spd_sq = dv_east**2 + dv_north**2
+    if rel_spd_sq < 1e-12:
+        return 0.0   # same velocity vector, never converge
+
+    # TCPA: time to closest point of approach
+    range_rate = d_east * dv_east + d_north * dv_north   # r.v; negative = converging
+    tcpa = -range_rate / rel_spd_sq
+    if tcpa < 0 or tcpa > CONFIG['lookahead_s']:
+        return 0.0   # diverging or beyond horizon
+
+    # DCPA: miss distance at CPA
+    dcpa_sq = max(0.0, dist_sq - range_rate**2 / rel_spd_sq)
+    if dcpa_sq >= sep**2:
+        return 0.0   # passes with safe margin
+
+    # Branch 2: predicted conflict
+    return min(1.0, max(0.0, (CONFIG['t_warn'] - tcpa) / CONFIG['t_warn']))
+\end{lstlisting}
+
+The urgency function implements the piecewise formula
+
+\begin{equation}
+u_{ij} =
+\begin{cases}
+1 + 9\!\left(1 - \dfrac{d_{ij}}{d_\text{sep}}\right)
+  & d_{ij} < d_\text{sep} \quad\text{(active LoS)} \\[8pt]
+\dfrac{T_\text{warn} - t_\text{CPA}}{T_\text{warn}}
+  & d_\text{CPA} < d_\text{sep},\; 0 \le t_\text{CPA} \le T_\text{look} \\[6pt]
+0 & \text{otherwise.}
+\end{cases}
+\end{equation}
+
+\paragraph{CPA geometry.}
+The time to closest approach is $t_\text{CPA} = -(\mathbf{r} \cdot \mathbf{v}) /
+|\mathbf{v}|^2$, where $\mathbf{r} = \mathbf{p}_j - \mathbf{p}_i$ is the relative
+position and $\mathbf{v} = \mathbf{v}_j - \mathbf{v}_i$ is the relative velocity.
+The miss distance at CPA is
+$d_\text{CPA}^2 = |\mathbf{r}|^2 - (\mathbf{r} \cdot \mathbf{v})^2 / |\mathbf{v}|^2$.
+Note that $\mathbf{r} \cdot \mathbf{v} < 0$ (negative \texttt{range\_rate}) means
+the aircraft are converging, giving $t_\text{CPA} > 0$.
+
+% =============================================================================
+\section{The \texttt{AirspaceEnv} class}
+% =============================================================================
+
+% -----------------------------------------------------------------------------
+\subsection{State variables (\texttt{\_\_init\_\_})}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Instance variables initialised in \texttt{\_\_init\_\_}.}]
+self.n_aircraft           = 0       # aircraft count for this episode
+self._slots               = []      # list of length n_ac; each entry is a callsign or None
+self._active_callsigns    = set()   # callsigns currently in the simulator
+self._destination_ll      = {}      # cs -> (dest_lat, dest_lon)
+self._commanded_heading   = {}      # cs -> current psi_cmd (deg)
+self._steps_since_urgency = {}      # cs -> steps since any conflict was active
+self._next_callsign_id    = 0       # monotonically increasing ID: AC00, AC01, ...
+self._step_count          = 0
+self._max_steps           = 0
+self._focus_cs            = None    # callsign that receives the next instruction
+self._pending_spawns      = {}      # slot -> countdown steps until respawn
+self._urgency_matrix      = np.zeros((0, 0))   # N x N urgency matrix
+self._urgency_cs_list     = []      # ordered list matching matrix rows/columns
+self._los_this_step       = False   # set True if any pair violates sep this step
+\end{lstlisting}
+
+The \textit{slot} concept is important: there are always exactly \texttt{n\_ac}
+slots, each either occupied by a callsign or \texttt{None}.
+When an aircraft exits the sector, its slot is freed and a replacement is queued
+in \texttt{\_pending\_spawns}.
+This keeps the total aircraft count constant throughout the episode.
+
+% -----------------------------------------------------------------------------
+\subsection{Episode reset (\texttt{reset})}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Key steps in \texttt{reset()}.}]
+def reset(self, seed=None, options=None):
+    # 1. Seed Python random and NumPy for reproducibility
+    effective_seed = seed if seed is not None else CONFIG['seed']
+    ...
+
+    # 2. Clear BlueSky state completely
+    _BsStack.cmdstack.clear()
+    bs.traf.reset()
+    bs.stack.stack(f"DT {CONFIG['sim_dt']};FF")   # set timestep; fast-forward
+
+    # 3. Sample episode parameters
+    n_ac     = CONFIG['n_aircraft']()   # e.g. 12
+    rho      = CONFIG['rho']()          # e.g. 1.2e-4 aircraft/km^2
+    area_km2 = float(n_ac / rho)        # e.g. 100,000 km^2
+
+    # 4. Build random sector polygon
+    poly = _make_polygon(area_km2)
+    ...
+
+    # 5. Compute episode length from sector diameter and crossing count
+    sector_diam_nm  = math.sqrt((maxx-minx)**2 + (maxy-miny)**2)
+    step_duration_s = CONFIG['action_freq'] * CONFIG['sim_dt']   # 5 s
+    self._max_steps = max(50, round(
+        CONFIG['crossings_per_episode'] * sector_diam_nm / CONFIG['ac_speed']
+        * 3600 / step_duration_s
+    ))
+
+    # 6. Register sector in BlueSky area filter; disable ASAS
+    bs.tools.areafilter.defineArea('SECTOR', 'POLY', self._flat_latlon())
+    bs.stack.stack('ASAS OFF')
+
+    # 7. Spawn n_ac aircraft with minimum separation
+    min_spawn_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']   # 15 NM
+    for slot in range(n_ac):
+        for _ in range(CONFIG['max_placement_tries']):
+            ac = _place_one(self._polygon_shape, slot, n_ac)
+            if clear_of_all:   # >= 15 NM from every already-spawned aircraft
+                self._spawn_aircraft(slot, ac)
+                break
+
+    # 8. Select initial focus aircraft and return first observation
+    self._focus_cs = self._select_focus_aircraft()
+    return self._get_observation(), {}
+\end{lstlisting}
+
+The episode length formula ensures an aircraft crossing the sector at cruise speed
+takes $\texttt{crossings\_per\_episode} = 4$ crossings worth of steps.
+For a typical sector diameter of 300\,NM at 450\,kt this gives
+$4 \times 300 / 450 \times 3600 / 5 \approx 1920$ steps $= 9600$\,s of simulation.
+
+% -----------------------------------------------------------------------------
+\subsection{RL step (\texttt{step})}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={The \texttt{step()} method --- executed once per RL decision.}]
+def step(self, action):
+    # 1. Process any aircraft waiting to re-enter the sector
+    self._process_pending_spawns()
+
+    # 2. Record focus aircraft and its current commanded heading
+    acting_cs   = self._focus_cs
+    pre_cmd_hdg = self._commanded_heading.get(acting_cs) if acting_cs else None
+
+    # 3. Apply the chosen action to the focus aircraft
+    if acting_cs:
+        self._apply_action(acting_cs, int(action))
+
+    # 4. Advance simulation by action_freq = 10 sub-steps (5 simulated seconds)
+    self._los_this_step = False
+    for _ in range(CONFIG['action_freq']):
+        bs.sim.step()
+    self._check_los_now()   # geometric LoS check on final positions
+    self._step_count += 1
+
+    # 5. Remove aircraft that left the sector, queue replacements
+    self._process_exits()
+
+    # 6. Recompute urgency matrix, select new focus aircraft
+    self._focus_cs = self._select_focus_aircraft()
+
+    # 7. Compute reward (for the acting_cs at its post-step position)
+    reward = self._compute_reward(acting_cs, int(action), pre_cmd_hdg)
+
+    # 8. Update episode statistics
+    if self._los_this_step:
+        self._ep_stats['los'] += 1
+
+    # 9. Build and return output tuple
+    truncated = self._step_count >= self._max_steps
+    return self._get_observation(), reward, False, truncated, info
+\end{lstlisting}
+
+The episode always ends by truncation (\texttt{truncated=True}); the
+\texttt{terminated} flag is always \texttt{False} because there is no
+terminal state --- the environment continues indefinitely within an episode.
+
+The order of operations inside \texttt{step} is significant:
+\texttt{\_check\_los\_now} runs \emph{before} \texttt{\_process\_exits} so that
+LoS between a departing aircraft and others is still captured, even if the
+departing aircraft is removed in the next line.
+
+% -----------------------------------------------------------------------------
+\subsection{Focus selection}
+% -----------------------------------------------------------------------------
+
+\subsubsection{\texttt{\_select\_focus\_aircraft}}
+
+\begin{lstlisting}[caption={Selecting which aircraft receives the next instruction.}]
+def _select_focus_aircraft(self):
+    active      = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
+    n_active    = len(active)
+    sim_indices = [bs.traf.id2idx(cs) for cs in active]
+
+    # Build N x N urgency matrix
+    urgency_mat = np.zeros((n_active, n_active))
+    for ii in range(n_active):
+        for jj in range(ii + 1, n_active):
+            u = _pair_urgency(sim_indices[ii], sim_indices[jj])
+            urgency_mat[ii, jj] = urgency_mat[jj, ii] = u
+
+    pair_max   = urgency_mat.max(axis=1)   # worst single conflict per aircraft
+    total_load = urgency_mat.sum(axis=1)   # total burden across all pairs
+
+    # Track how long each aircraft has been conflict-free
+    for i, cs in enumerate(active):
+        if pair_max[i] > 0:
+            self._steps_since_urgency[cs] = 0
+        else:
+            self._steps_since_urgency[cs] += 1
+
+    # Select: highest total burden, or most-drifted if no conflicts
+    best_cs = (active[int(np.argmax(total_load))]
+               if total_load.max() > 0 else self._drift_fallback(active))
+
+    # Hysteresis: keep current focus unless resolved or emergency
+    if self._focus_cs in active and best_cs != self._focus_cs:
+        focus_pair_max = pair_max[active.index(self._focus_cs)]
+        focus_resolved = self._steps_since_urgency[self._focus_cs] >= clear_steps
+        emergency      = pair_max.max() >= CONFIG['focus_emergency_u']
+        if (focus_pair_max > 0 or not focus_resolved) and not emergency:
+            return self._focus_cs   # stay locked on current focus
+
+    return best_cs
+\end{lstlisting}
+
+The selection criterion $f = \arg\max_i \sum_{j \ne i} u_{ij}$ prefers the
+aircraft most burdened across \emph{multiple} moderate conflicts over one
+involved in a single severe conflict --- important at high traffic densities.
+
+The hysteresis lock prevents the focus from switching away mid-resolution:
+as long as the current focus aircraft still has \emph{any} active urgency,
+or fewer than \texttt{focus\_clear\_steps = 5} steps have elapsed since its
+urgency cleared, the lock holds.
+The emergency threshold $u_\text{emerg} = 0.8$ (approximately 120\,s to
+predicted conflict) overrides the lock.
+
+\subsubsection{\texttt{\_drift\_fallback}}
+
+\begin{lstlisting}[caption={Fallback selection when no conflicts are active.}]
+def _drift_fallback(self, active):
+    for cs in sorted(active):
+        dest_bearing, _ = geo.kwikqdrdist(...)
+        hdg_err = wrap_to_180(dest_bearing - self._commanded_heading[cs])
+        drift   = (1 - math.cos(math.radians(hdg_err))) / 2
+        if drift > max_drift:
+            max_drift, best_cs = drift, cs
+    # hysteresis: only switch if best exceeds focus by more than margin
+    if max_drift <= focus_drift + CONFIG['drift_switch_margin']:
+        return self._focus_cs
+    return best_cs
+\end{lstlisting}
+
+When no pair has urgency $>0$, focus falls to the aircraft with the largest
+commanded-heading deviation $\delta = (1 - \cos\Delta\psi)/2 \in [0,1]$.
+A margin of 0.05 prevents rapid switching between aircraft with similar drift.
+
+% -----------------------------------------------------------------------------
+\subsection{Reward computation}
+% -----------------------------------------------------------------------------
+
+\subsubsection{\texttt{\_compute\_reward}}
+
+\begin{lstlisting}[caption={Reward function --- four additive negative terms.}]
+def _compute_reward(self, acting_cs, action_idx, pre_cmd_hdg=None):
+
+    # LoS penalty: heavy binary, sector-wide
+    r_los = -CONFIG['w_los'] if self._los_this_step else 0.0
+
+    # Conflict penalty: worst predicted collision course
+    r_conflict = -CONFIG['w_conflict'] * self._conflict_score(acting_cs)
+
+    # Drift penalty: per-step cost for off-route commanded heading
+    if acting_cs and acting_cs in self._destination_ll:
+        idx = bs.traf.id2idx(acting_cs)
+        if idx >= 0:
+            dest_bearing, _ = geo.kwikqdrdist(...)
+            hdg_err = wrap_to_180(dest_bearing - cmd_hdg)
+            r_drift = -CONFIG['w_drift'] * (1 - math.cos(math.radians(hdg_err))) / 2
+
+    # Workload penalty: one-time cost per instruction
+    if action_idx == 7 and pre_cmd_hdg is not None:
+        deviation = abs(wrap_to_180(dest_bearing - pre_cmd_hdg))
+        r_work = -CONFIG['w_work'] * min(deviation / 60.0, 1.0)
+    else:
+        r_work = -CONFIG['w_work'] * ACT_COST[action_idx]
+
+    return float(r_los + r_conflict + r_drift + r_work)
+\end{lstlisting}
+
+The four components and their design rationale:
+
+\begin{description}[noitemsep, leftmargin=0pt]
+  \item[$r_\text{LoS}$] Binary, sector-wide: any pair violating 5\,NM costs
+    $-w_\text{LoS} = -10$ regardless of the focus aircraft.
+  \item[$r_\text{conflict}$] Graduated: scales with both imminence and severity
+    of the \emph{worst} predicted conflict (see Section~\ref{sec:conflict_score}).
+  \item[$r_\text{drift}$] Charged every step the focus aircraft is held off-route,
+    creating a sustained pressure to execute fly-direct once the conflict is resolved.
+    Uses $(1-\cos\Delta\psi)/2$ so it is exactly zero on-route and 1 at 180$^\circ$.
+  \item[$r_\text{work}$] For turns (0--2, 4--6): cost $= |\delta|/60^\circ$ (fixed,
+    proportional to heading change).
+    For fly-direct (7): cost $= \min(|\psi_\text{dest} - \psi_\text{cmd}^-| / 60^\circ, 1)$,
+    charging more for aborting a large turn and less for completing one.
+\end{description}
+
+\subsubsection{\texttt{\_conflict\_score}}
+\label{sec:conflict_score}
+
+\begin{lstlisting}[caption={Computing the worst conflict score across all intruders.}]
+def _conflict_score(self, cs):
+    worst_score = 0.0
+    for other_cs in self._active_callsigns:
+        ...
+        if dist_nm < sep:
+            worst_score = 1.0   # active LoS -> maximum score
+            continue
+
+        range_rate = d_east * dv_east + d_north * dv_north
+        tcpa       = -range_rate / rel_spd_sq
+        if tcpa < 0 or tcpa > CONFIG['lookahead_s']:
+            continue
+
+        cpa_east  = d_east  + tcpa * dv_east
+        cpa_north = d_north + tcpa * dv_north
+        if cpa_east**2 + cpa_north**2 >= sep**2:
+            continue   # safe miss
+
+        dcpa  = math.sqrt(cpa_east**2 + cpa_north**2)
+        score = max(0.0, 1 - tcpa / t_warn) * max(0.0, 1 - dcpa / sep)
+        worst_score = max(worst_score, score)
+    return worst_score
+\end{lstlisting}
+
+The score $s_k = (1 - t_\text{CPA}/T_\text{warn}) \times (1 - d_\text{CPA}/d_\text{sep})$
+is the product of two factors, both in $[0,1]$:
+the first rises as the conflict becomes more imminent;
+the second rises as the miss distance shrinks.
+Only pairs with $d_\text{CPA} < d_\text{sep}$ (a true collision course) contribute.
+
+% -----------------------------------------------------------------------------
+\subsection{Loss-of-separation check: \texttt{\_check\_los\_now}}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Geometric LoS check run after each 5-second simulation window.}]
+def _check_los_now(self):
+    active  = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
+    sep_sq  = CONFIG['sep_nm'] ** 2
+
+    for ii in range(len(active)):
+        pos_i = latlon_to_nm(CONFIG['center_ll'], ...)
+        for jj in range(ii + 1, len(active)):
+            pos_j = latlon_to_nm(CONFIG['center_ll'], ...)
+            d_east  = pos_j[0] - pos_i[0]
+            d_north = pos_j[1] - pos_i[1]
+            if d_east**2 + d_north**2 < sep_sq:
+                self._los_this_step = True
+                return   # early exit on first violation
+\end{lstlisting}
+
+This is a brute-force $O(N^2)$ pairwise check.
+It runs on the positions after all 10 simulation sub-steps, setting the flag that
+drives the LoS penalty in \texttt{\_compute\_reward}.
+It returns immediately on the first violation since only the binary flag matters
+for the reward.
+
+% -----------------------------------------------------------------------------
+\subsection{Action application: \texttt{\_apply\_action}}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Applying a discrete action to the focus aircraft.}]
+def _apply_action(self, cs, action_idx):
+    idx = bs.traf.id2idx(cs)
+
+    if action_idx in TURN_DELTAS:
+        # Consecutive: add delta to current commanded heading (stackable)
+        current_cmd = self._commanded_heading.get(cs, bs.traf.hdg[idx])
+        self._commanded_heading[cs] = (current_cmd + TURN_DELTAS[action_idx]) % 360
+
+    elif action_idx == 7:
+        # Fly direct: reset to current bearing to destination
+        dest_bearing, _ = geo.kwikqdrdist(bs.traf.lat[idx], bs.traf.lon[idx], ...)
+        self._commanded_heading[cs] = float(dest_bearing) % 360
+
+    # Action 3 = hold: psi_cmd unchanged; just re-issue to BlueSky
+    bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+\end{lstlisting}
+
+The key design: turn instructions use \emph{consecutive} semantics ---
+$\psi_\text{cmd} \leftarrow \psi_\text{cmd} + \delta$.
+This differs from the earlier one-shot design ($\psi_\text{cmd} \leftarrow
+\psi_\text{dest} + \delta$) by allowing turns to stack.
+Two consecutive $-30^\circ$ turns produce $-60^\circ$ total deviation.
+
+The \texttt{HDG} command sends the heading instruction to the BlueSky simulator,
+which then smoothly turns the aircraft over the next simulation sub-steps.
+
+% -----------------------------------------------------------------------------
+\subsection{Observation construction: \texttt{\_get\_observation}}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Building the 23-element observation vector.}]
+def _get_observation(self):
+    # --- Ownship features (3) ---
+    hdg_err       = wrap_to_180(dest_bearing - cmd_hdg)
+    turn_progress = wrap_to_180(cmd_hdg - own_hdg) / 180.0   # [-1, 1]
+
+    obs = [
+        math.sin(math.radians(hdg_err)),   # sin/cos avoids +-180 discontinuity
+        math.cos(math.radians(hdg_err)),
+        turn_progress,
+    ]
+
+    # --- 4 intruder slots x 5 features each (20) ---
+    for other_cs in self._active_callsigns:
+        ...
+        # Rotate displacement to ego heading frame
+        ego_lat = d_east * cos_hdg - d_north * sin_hdg   # lateral (right)
+        ego_fwd = d_east * sin_hdg + d_north * cos_hdg   # forward
+
+        r_norm     = min(1.0, dist_nm / D_WARN)
+        theta_norm = math.atan2(ego_lat, ego_fwd) / math.pi
+
+        # CPA polar features
+        if dist_nm < sep:
+            tcpa_n, cpa_r_n, cpa_theta_n = 0.0, dist_nm/sep, atan2(ego_lat,ego_fwd)/pi
+        else:
+            # compute TCPA, CPA position, rotate to ego frame ...
+            tcpa_n      = tcpa / t_warn
+            cpa_r_n     = dcpa / sep
+            cpa_theta_n = atan2(cpa_ego_lat, cpa_ego_fwd) / pi
+
+        intruders.append((urgency, dist_nm, r_norm, theta_norm,
+                          cpa_r_n, cpa_theta_n, tcpa_n, other_cs))
+
+    # --- Fill slots: urgent first, then nearest ---
+    urgent  = sorted([r for r in intruders if r[0] > 0], key=lambda r: -r[0])
+    nearest = sorted(intruders, key=lambda r: r[1])
+    # merge, keeping only N_NBR = 4 unique entries
+    ...
+    for slot_k in range(N_NBR):
+        if slot_k < len(selected):
+            obs += [r_n, theta_n, cpa_r, cpa_th, t_cpa]
+        else:
+            obs += [1.0, 0.0, 0.0, 0.0, 1.0]   # empty slot sentinel
+\end{lstlisting}
+
+\paragraph{Ego heading frame.}
+All intruder positions and CPA offsets are rotated from geographic (east, north)
+to the focus aircraft's heading frame (forward, lateral):
+\begin{align}
+  \text{ego\_lat} &= \Delta e \cos\psi - \Delta n \sin\psi & (\text{lateral / right}) \\
+  \text{ego\_fwd} &= \Delta e \sin\psi + \Delta n \cos\psi & (\text{forward})
+\end{align}
+where $\psi$ is the focus aircraft's actual heading, $\Delta e$ and $\Delta n$ are
+east and north displacements.
+
+\paragraph{Polar encoding.}
+Each intruder position is expressed as
+$(r, \theta)$ where $r = d / d_\text{warn} \in [0,1]$ and
+$\theta = \operatorname{atan2}(\text{ego\_lat}, \text{ego\_fwd}) / \pi \in [-1,1]$.
+A value of $\theta = 0$ means directly ahead; $\theta = \pm 1$ means directly behind.
+This encoding is rotation-equivariant within the ego frame and preserves the
+sign of the lateral offset (negative = left, positive = right).
+
+\paragraph{Slot filling.}
+The four slots are filled by first inserting aircraft with active urgency
+($u_{fj} > 0$) in descending urgency order, then filling remaining slots with the
+nearest aircraft by current distance.
+Slots with no real aircraft are padded with the sentinel $(1, 0, 0, 0, 1)$:
+maximum range, no bearing, no CPA conflict, tcpa at horizon.
+
+\paragraph{Observation table.}
+
+\begin{table}[h]
+\centering
+\caption{Full 23-element observation vector.}
+\label{tab:obs}
+\smallskip
+\begin{tabular}{clll}
+\toprule
+\textbf{Index} & \textbf{Name} & \textbf{Definition} & \textbf{Range} \\
+\midrule
+0 & $\sin\Delta\psi$ & $\sin(\psi_\text{dest} - \psi_\text{cmd})$ & $[-1,1]$ \\
+1 & $\cos\Delta\psi$ & $\cos(\psi_\text{dest} - \psi_\text{cmd})$ & $[-1,1]$ \\
+2 & $p_\text{turn}$  & $(\psi_\text{cmd} - \psi_\text{act}) / 180^\circ$ & $[-1,1]$ \\
+\midrule
+$3{+}5k$ & $r$         & $d_{fj} / d_\text{warn}$ & $[0,1]$ \\
+$4{+}5k$ & $\theta$    & $\operatorname{atan2}(\text{ego\_lat}, \text{ego\_fwd})/\pi$ & $[-1,1]$ \\
+$5{+}5k$ & $r^\text{CPA}$ & $d^\text{CPA}_{fj} / d_\text{sep}$ & $[0,1]$ \\
+$6{+}5k$ & $\theta^\text{CPA}$ & CPA bearing in ego frame / $\pi$ & $[-1,1]$ \\
+$7{+}5k$ & $\hat{t}_\text{CPA}$ & $t_\text{CPA} / T_\text{warn}$ & $[0,1]$ \\
+\bottomrule
+\multicolumn{4}{l}{\small $k \in \{0,1,2,3\}$ indexes the four intruder slots.}
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsection{Traffic management: exits and spawning}
+% -----------------------------------------------------------------------------
+
+\subsubsection{\texttt{\_process\_exits} and \texttt{\_find\_exited}}
+
+\begin{lstlisting}[caption={Removing aircraft that have left the sector.}]
+def _find_exited(self):
+    exited = []
+    for cs in list(self._active_callsigns):
+        idx = bs.traf.id2idx(cs)
+        if idx < 0:              # aircraft deleted from BlueSky
+            exited.append(cs); continue
+        inside = bs.tools.areafilter.checkInside('SECTOR', ...)
+        if not inside[0]:        # aircraft outside sector polygon
+            exited.append(cs)
+    return exited
+
+def _process_exits(self):
+    for cs in self._find_exited():
+        slot = self._slots.index(cs)
+        bs.traf.delete(bs.traf.id2idx(cs))
+        self._active_callsigns.discard(cs)
+        self._slots[slot] = None
+        # clean up all per-aircraft dictionaries
+        self._destination_ll.pop(cs, None)
+        self._commanded_heading.pop(cs, None)
+        self._steps_since_urgency.pop(cs, None)
+        # queue slot for respawn
+        if slot not in self._pending_spawns:
+            self._pending_spawns[slot] = random.randint(*self._spawn_delay_range)
+\end{lstlisting}
+
+\subsubsection{\texttt{\_process\_pending\_spawns}}
+
+\begin{lstlisting}[caption={Countdown-based respawn logic.}]
+def _process_pending_spawns(self):
+    ready    = sorted(slot for slot, t in self._pending_spawns.items() if t <= 1)
+    requeued = set()
+
+    for slot in ready:
+        del self._pending_spawns[slot]
+        ac = self._generate_replacement(slot)
+        if ac is not None:
+            self._spawn_aircraft(slot, ac)
+        else:
+            self._pending_spawns[slot] = 5   # placement failed: retry in 5 steps
+            requeued.add(slot)
+
+    for slot in list(self._pending_spawns):
+        if slot not in requeued:
+            self._pending_spawns[slot] -= 1   # decrement countdown
+\end{lstlisting}
+
+Each pending slot carries an integer countdown.
+When the countdown reaches 1 the slot fires: a placement is attempted
+(\texttt{\_generate\_replacement} tries up to 50 random positions, requiring
+15\,NM clearance from all active aircraft).
+If placement fails, the slot is re-queued with a 5-step retry delay.
+All other pending slots are decremented.
+
+% =============================================================================
+\section{Training script: \texttt{Training/v3\_train.py}}
+% =============================================================================
+
+% -----------------------------------------------------------------------------
+\subsection{Settings and PPO configuration}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Top-level training constants and PPO hyperparameters.}]
+N_ENVS           = 4
+TOTAL_TIMESTEPS  = 100_000_000   # 100 M steps
+CHECKPOINT_EVERY = 100_000
+N_RUNS           = 3             # for --multi mode
+
+PPO_KWARGS = dict(
+    learning_rate = 3e-4,
+    n_steps       = 1024,     # rollout steps per environment before update
+    batch_size    = 64,
+    n_epochs      = 10,
+    gamma         = 0.99,
+    gae_lambda    = 0.95,
+    clip_range    = 0.2,
+    ent_coef      = 0.02,     # entropy bonus to encourage exploration
+    vf_coef       = 0.5,
+    policy_kwargs = dict(net_arch=[128, 128]),   # two hidden layers of 128 units
+)
+\end{lstlisting}
+
+\begin{description}[noitemsep]
+  \item[\texttt{N\_ENVS = 4}] Four environments run in parallel via
+    \texttt{SubprocVecEnv}, giving a total rollout buffer of
+    $4 \times 1024 = 4096$ transitions per update.
+  \item[\texttt{n\_steps = 1024}] With 5\,s per step and 4 envs, each update
+    uses $4 \times 1024 \times 5 = 20\,480$ seconds of simulated time.
+  \item[\texttt{ent\_coef = 0.02}] The entropy coefficient encourages the policy
+    to remain exploratory, reducing the risk of premature convergence to
+    a degenerate hold-only strategy.
+  \item[\texttt{norm\_obs=False}] Observation normalisation is disabled because
+    all 23 features are already bounded: ownship features in $[-1,1]$ and
+    intruder features in $[0,1]$ or $[-1,1]$.
+  \item[\texttt{norm\_reward=True}] Reward normalisation is enabled: the running
+    mean and variance of the per-environment rewards are tracked by
+    \texttt{VecNormalize}, and the reward passed to the value function is
+    $r / \sqrt{\hat\sigma^2_r + \epsilon}$.
+\end{description}
+
+% -----------------------------------------------------------------------------
+\subsection{Callbacks}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={Three callbacks attached to the training run.}]
+class EpisodeStatsCallback(BaseCallback):
+    def _on_step(self):
+        for info in self.locals.get('infos', []):
+            if 'mean_episode_reward' not in info:
+                continue
+            self.logger.record('episode/mean_reward', info['mean_episode_reward'])
+            self.logger.record('episode/los_steps',   info['ep_los_steps'])
+            self.logger.record('episode/length',       info['ep_length'])
+            dist  = info.get('action_distribution', [])
+            total = max(sum(dist), 1)
+            for label, count in zip(self._LABELS, dist):
+                self.logger.record(f'actions/{label}', count / total)
+        return True
+\end{lstlisting}
+
+The three callbacks and their roles:
+
+\begin{description}[noitemsep]
+  \item[\texttt{EpisodeStatsCallback}] Reads the \texttt{info} dict populated
+    by \texttt{step()} at truncation and logs per-episode metrics to TensorBoard:
+    mean reward, LoS step fraction, episode length, and the normalised frequency
+    of each action.
+    The action histogram is the primary diagnostic for whether the agent has
+    learned the turn $\to$ hold $\to$ fly-direct pattern.
+  \item[\texttt{CheckpointCallback}] Saves a \texttt{.zip} model checkpoint
+    (and the \texttt{VecNormalize} statistics as \texttt{\_vecnorm.pkl}) every
+    100\,000 timesteps.
+    Both files are needed to resume training or run evaluation.
+  \item[\texttt{ProgressCallback}] Prints step count, percentage, elapsed time,
+    and throughput (steps/s) to stdout every 10\,000 timesteps.
+\end{description}
+
+% -----------------------------------------------------------------------------
+\subsection{Training loop and multi-seed mode}
+% -----------------------------------------------------------------------------
+
+\begin{lstlisting}[caption={The \texttt{train()} function and \texttt{main()} entry point.}]
+def train(seed):
+    run_name = f"dalmau_8act_obs23_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir  = os.path.join(RUNS_ROOT, run_name)
+
+    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
+    env  = VecNormalize(VecMonitor(venv), norm_obs=False, norm_reward=True, gamma=0.99)
+    model = PPO('MlpPolicy', env, seed=seed, tensorboard_log=tb_dir, **PPO_KWARGS)
+
+    model.learn(TOTAL_TIMESTEPS, callback=callbacks, ...)
+
+    model.save(os.path.join(run_dir, 'final_model'))
+    env.save(os.path.join(run_dir, 'final_vecnorm.pkl'))
+
+def main():
+    if args.multi:
+        seeds = [random.randint(1, 99_999) for _ in range(N_RUNS)]
+        procs = [subprocess.Popen([sys.executable, __file__, '--seed', str(s)])
+                 for s in seeds]
+        for p in procs: p.wait()
+    else:
+        train(args.seed or random.randint(0, 99_999))
+\end{lstlisting}
+
+The \texttt{--multi} flag launches \texttt{N\_RUNS = 3} independent training
+processes as subprocesses, each with a different random seed.
+This is a lightweight form of parallel seed training: the subprocesses run
+independently on separate CPU cores and share no state.
+Each produces its own checkpoint directory under \texttt{Runs\_saved/v3/}.
+
+The environment wrapper stack is:
+\[
+  \underbrace{\texttt{AirspaceEnv}}_{\text{raw env}}
+  \xrightarrow{\texttt{SubprocVecEnv}}
+  \underbrace{\texttt{VecEnv}}_{\text{4 parallel}}
+  \xrightarrow{\texttt{VecMonitor}}
+  \underbrace{\texttt{VecMonitor}}_{\text{episode logging}}
+  \xrightarrow{\texttt{VecNormalize}}
+  \underbrace{\texttt{VecNormalize}}_{\text{reward normalisation}}
+  \xrightarrow{\texttt{PPO}} \text{policy}
+\]
+
+% =============================================================================
+\section{End-to-end data flow}
+% =============================================================================
+
+The following summarises the full data flow for a single RL step:
+
+\begin{enumerate}
+  \item \textbf{Agent selects action} $a \in \{0,\ldots,7\}$ based on current
+        observation $\mathbf{o}_t$.
+  \item \textbf{\texttt{step(a)} is called.}
+  \item Pending aircraft re-enter the sector if their countdown has reached 1.
+  \item The action is applied to the focus aircraft via a BlueSky \texttt{HDG}
+        command; for turn actions $a \in \{0\text{--}2, 4\text{--}6\}$ the
+        commanded heading is updated as
+        $\psi_\text{cmd} \leftarrow (\psi_\text{cmd} + \delta_a) \bmod 360^\circ$.
+  \item BlueSky advances 10 physics sub-steps ($5\,\text{s}$ simulated time);
+        aircraft turn smoothly toward their commanded headings.
+  \item Geometric LoS check: any pair within 5\,NM sets
+        \texttt{\_los\_this\_step = True}.
+  \item Exited aircraft are removed; their slots are queued for respawn.
+  \item The urgency matrix is rebuilt from the current aircraft positions and
+        the new focus aircraft is selected.
+  \item The reward $r_t = r_\text{LoS} + r_\text{conflict} + r_\text{drift}
+        + r_\text{work}$ is computed for the acting aircraft.
+  \item The observation $\mathbf{o}_{t+1}$ is constructed for the new focus
+        aircraft and returned together with $r_t$.
+\end{enumerate}
+
+\end{document}
