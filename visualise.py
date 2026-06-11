@@ -25,6 +25,7 @@ C_CPA  = '#7B1FA2'   # CPA point
 C_GREY = '#AAAAAA'
 C_BG   = '#F8F8F8'
 
+
 def _save(fig, name):
     path = os.path.join(FIGS, name)
     fig.savefig(path, dpi=150, bbox_inches='tight', facecolor='white')

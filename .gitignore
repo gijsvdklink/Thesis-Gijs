@@ -1,0 +1,6 @@
+# Videos
+*.mp4
+
+# Python cache
+__pycache__/
+*.pyc
