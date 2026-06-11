@@ -22,21 +22,24 @@ Observation space (23 floats, ego-centric from focus aircraft):
          empty/diverging slot: (1, 0, 0, 0, 1)
 
 Action space (Discrete 8) -- ATC-styled hybrid, consecutive:
-  0  delta=-60 deg   psi_cmd = psi_dest - 60   (cost 1.0)   turn wrt destination bearing
-  1  delta=-45 deg   psi_cmd = psi_dest - 45   (cost 0.75)  turn wrt destination bearing
-  2  delta=-30 deg   psi_cmd = psi_dest - 30   (cost 0.5)   turn wrt destination bearing
-  3  HOLD             psi_cmd unchanged          (free)       maintain current commanded heading
-  4  delta=+30 deg   psi_cmd = psi_dest + 30   (cost 0.5)   turn wrt destination bearing
-  5  delta=+45 deg   psi_cmd = psi_dest + 45   (cost 0.75)  turn wrt destination bearing
-  6  delta=+60 deg   psi_cmd = psi_dest + 60   (cost 1.0)   turn wrt destination bearing
+  0  delta=-60 deg   psi_cmd -= 60   (cost 1.0)   stacks on current commanded heading
+  1  delta=-45 deg   psi_cmd -= 45   (cost 0.75)  stacks on current commanded heading
+  2  delta=-30 deg   psi_cmd -= 30   (cost 0.5)   stacks on current commanded heading
+  3  HOLD             true no-op: no instruction is issued   (free)
+  4  delta=+30 deg   psi_cmd += 30   (cost 0.5)   stacks on current commanded heading
+  5  delta=+45 deg   psi_cmd += 45   (cost 0.75)  stacks on current commanded heading
+  6  delta=+60 deg   psi_cmd += 60   (cost 1.0)   stacks on current commanded heading
   7  FLY DIRECT       psi_cmd = psi_dest         (cost |delta_psi_cmd->dest| / 60, 0-1.0)
 
 Intended pattern: issue turn(s) (0-2 or 4-6, stackable) -> hold (3) -> fly direct (7).
-Hold is the only truly free action; turns stack on the current commanded heading.
+Hold is a true no-op (nothing is sent to the simulator); the aircraft simply continues
+executing its last instruction.  Turns stack on the current commanded heading.
 Fly-direct cost scales with the commanded deviation being corrected: free when already on track,
 up to 1.0 x w_work when correcting a full 60 deg deviation.
 
-Focus aircraft = aircraft with highest overall urgency (sum of pair urgencies).
+Focus aircraft = aircraft with highest single-pair urgency (total urgency burden as tiebreak).
+When the sector is conflict-free, focus falls back to the drifted aircraft with the best
+drift x clearance score, prioritising drifters in open airspace that can safely return.
 Density parameter rho = aircraft/km^2; sector area = n / rho.
 Flat-earth projection: center_ll = (0, 0) so cos(lat) = 1 everywhere.
 """
@@ -72,6 +75,7 @@ CONFIG = {
     'sep_nm':                5.0,
     'buffer_nm':             10.0,
     'dest_dist_factor':      2.0,
+    'arrival_tol_nm':        5.0,             # exit within this distance of t_ref counts as on-target
     # Polygon
     'n_vertices':            lambda: random.randint(5, 7),
     'min_circularity':       0.65,
@@ -92,6 +96,7 @@ CONFIG = {
     'focus_clear_steps':     5,
     'focus_emergency_u':     0.8,
     'drift_switch_margin':   0.05,
+    'return_clear_nm':       20.0,            # full clearance distance for the drift fallback score (4 x sep)
     # Reward weights
     'w_los':                 10.00,           # heavy: separation violation
     'w_conflict':            3.00,            # medium: imminence x miss-distance of worst conflict
@@ -181,7 +186,8 @@ def _place_one(polygon, sector, n_sectors):
     dest_lat, dest_lon = geo.qdrpos(
         float(spawn_ll[0]), float(spawn_ll[1]), spawn_hdg, dest_dist)
 
-    return {'sp_ll': spawn_ll, 'dest_ll': (dest_lat, dest_lon), 'heading': spawn_hdg}
+    return {'sp_ll': spawn_ll, 'dest_ll': (dest_lat, dest_lon),
+            'ref_ll': ref_ll, 'heading': spawn_hdg}
 
 # -- Pair urgency --------------------------------------------------------------
 
@@ -256,6 +262,7 @@ class AirspaceEnv(gym.Env):
         self._slots               = []
         self._active_callsigns    = set()
         self._destination_ll      = {}
+        self._ref_ll              = {}
         self._commanded_heading   = {}
         self._steps_since_urgency = {}
         self._next_callsign_id    = 0
@@ -305,14 +312,17 @@ class AirspaceEnv(gym.Env):
         self._slots               = [None] * n_ac
         self._active_callsigns    = set()
         self._destination_ll      = {}
+        self._ref_ll              = {}
         self._commanded_heading   = {}
         self._steps_since_urgency = {}
         self._next_callsign_id    = 0
         self._step_count          = 0
-        self._ep_stats            = {'reward': 0.0, 'steps': 0, 'los': 0, 'actions': []}
+        self._ep_stats            = {'reward': 0.0, 'steps': 0, 'los': 0, 'actions': [],
+                                     'exits': 0, 'arrivals': 0}
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._los_this_step       = False
+        self._focus_cs            = None   # clear stale focus: callsign IDs restart each episode
         self._focus_hold_steps    = 0
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_duration_s))
@@ -339,6 +349,9 @@ class AirspaceEnv(gym.Env):
                 if clear_of_all:
                     self._spawn_aircraft(slot, ac)
                     break
+            else:
+                # could not place this aircraft now: retry via the respawn queue
+                self._pending_spawns[slot] = 5
 
         self._focus_cs = self._select_focus_aircraft()
         return self._get_observation(), {}
@@ -379,6 +392,9 @@ class AirspaceEnv(gym.Env):
                 'mean_episode_reward': self._ep_stats['reward'] / n_steps,
                 'ep_los_steps':        self._ep_stats['los'],
                 'ep_length':           self._ep_stats['steps'],
+                'ep_exits':            self._ep_stats['exits'],
+                'ep_arrival_rate':     self._ep_stats['arrivals']
+                                       / max(self._ep_stats['exits'], 1),
                 'action_distribution': np.bincount(
                     self._ep_stats['actions'], minlength=8).tolist(),
             })
@@ -449,10 +465,26 @@ class AirspaceEnv(gym.Env):
         return best_cs
 
     def _drift_fallback(self, active):
-        """Return the active aircraft with the largest commanded-heading deviation."""
-        best_cs    = None
-        max_drift  = -1.0
-        focus_drift = 0.0
+        """
+        Return the drifted aircraft best placed to be sent back to its route.
+
+        Each aircraft is scored as drift x clearance, where clearance ramps
+        from 0 to 1 as the nearest-neighbour distance approaches
+        return_clear_nm.  Drifted aircraft in open airspace are prioritised:
+        they can turn back to their waypoint without creating a new conflict.
+        A hysteresis margin prevents rapid focus switching.
+        """
+        positions = {}
+        for cs in active:
+            idx = bs.traf.id2idx(cs)
+            if idx >= 0:
+                positions[cs] = latlon_to_nm(
+                    CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
+
+        clear_nm    = CONFIG['return_clear_nm']
+        best_cs     = None
+        best_score  = -1.0
+        focus_score = 0.0
 
         for cs in sorted(active):
             idx = bs.traf.id2idx(cs)
@@ -463,15 +495,21 @@ class AirspaceEnv(gym.Env):
                 *[float(v) for v in self._destination_ll[cs]])
             hdg_err = wrap_to_180(dest_bearing - self._commanded_heading.get(cs, bs.traf.hdg[idx]))
             drift   = (1 - math.cos(math.radians(hdg_err))) / 2
+
+            own     = positions[cs]
+            nearest = min((float(np.hypot(*(positions[o] - own)))
+                           for o in positions if o != cs), default=clear_nm)
+            score   = drift * min(1.0, nearest / clear_nm)
+
             if cs == self._focus_cs:
-                focus_drift = drift
-            if drift > max_drift:
-                max_drift, best_cs = drift, cs
+                focus_score = score
+            if score > best_score:
+                best_score, best_cs = score, cs
 
         margin = CONFIG['drift_switch_margin']
         if (self._focus_cs in active
                 and best_cs != self._focus_cs
-                and max_drift <= focus_drift + margin):
+                and best_score <= focus_score + margin):
             return self._focus_cs
         return best_cs
 
@@ -507,7 +545,7 @@ class AirspaceEnv(gym.Env):
                         *[float(v) for v in self._destination_ll[acting_cs]])
                     deviation = abs(wrap_to_180(float(dest_bearing) - pre_cmd_hdg))
                     r_work = -CONFIG['w_work'] * min(deviation / 60.0, 1.0)
-            else:
+            elif action_idx != 7:   # guard: ACT_COST[7] is None (computed dynamically above)
                 r_work = -CONFIG['w_work'] * ACT_COST[action_idx]
 
         return float(r_los + r_conflict + r_drift + r_work)
@@ -594,6 +632,9 @@ class AirspaceEnv(gym.Env):
     # -- Action ----------------------------------------------------------------
 
     def _apply_action(self, cs, action_idx):
+        if action_idx == 3:
+            return   # hold is a true no-op: no instruction reaches the simulator
+
         idx = bs.traf.id2idx(cs)
         if idx < 0:
             return
@@ -608,7 +649,6 @@ class AirspaceEnv(gym.Env):
                 bs.traf.lat[idx], bs.traf.lon[idx],
                 *[float(v) for v in self._destination_ll[cs]])
             self._commanded_heading[cs] = float(dest_bearing) % 360
-        # action 3 = hold: psi_cmd is unchanged; just re-issue the same heading to BlueSky
 
         bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
 
@@ -746,10 +786,20 @@ class AirspaceEnv(gym.Env):
             slot = self._slots.index(cs)
             idx  = bs.traf.id2idx(cs)
             if idx >= 0:
+                # on-target arrival: exit position within tolerance of the t_ref point
+                ref_ll = self._ref_ll.get(cs)
+                if ref_ll is not None:
+                    dist_nm = geo.kwikdist(
+                        float(bs.traf.lat[idx]), float(bs.traf.lon[idx]),
+                        float(ref_ll[0]), float(ref_ll[1]))
+                    self._ep_stats['exits'] += 1
+                    if dist_nm <= CONFIG['arrival_tol_nm']:
+                        self._ep_stats['arrivals'] += 1
                 bs.traf.delete(idx)
             self._active_callsigns.discard(cs)
             self._slots[slot] = None
             self._destination_ll.pop(cs, None)
+            self._ref_ll.pop(cs, None)
             self._commanded_heading.pop(cs, None)
             self._steps_since_urgency.pop(cs, None)
             if slot not in self._pending_spawns:
@@ -826,6 +876,7 @@ class AirspaceEnv(gym.Env):
         bs.stack.stack(f'ALT {cs} FL{CONFIG["altitude"]}')
 
         self._destination_ll[cs]      = ac['dest_ll']
+        self._ref_ll[cs]              = ac['ref_ll']
         self._commanded_heading[cs]   = float(ac['heading'])
         self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs

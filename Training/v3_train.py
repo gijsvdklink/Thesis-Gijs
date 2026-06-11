@@ -2,8 +2,8 @@
 PPO training for v3.
 
 Run:
-    python -m Training.v3_ATC_dalmau
-    python -m Training.v3_ATC_dalmau --multi   # 3 seeds in parallel
+    python -m Training.v3_train
+    python -m Training.v3_train --multi   # 3 seeds in parallel
 
 Monitor:
     tensorboard --logdir Runs_saved/v3
@@ -55,13 +55,17 @@ class EpisodeStatsCallback(BaseCallback):
         for info in self.locals.get('infos', []):
             if 'mean_episode_reward' not in info:
                 continue
-            self.logger.record('episode/mean_reward', info['mean_episode_reward'])
-            self.logger.record('episode/los_steps',   info['ep_los_steps'])
-            self.logger.record('episode/length',       info['ep_length'])
+            # record_mean averages across all episodes in the logging window
+            # (plain record would keep only the last episode per dump)
+            self.logger.record_mean('episode/mean_reward',  info['mean_episode_reward'])
+            self.logger.record_mean('episode/los_steps',    info['ep_los_steps'])
+            self.logger.record_mean('episode/length',       info['ep_length'])
+            self.logger.record_mean('episode/exits',        info['ep_exits'])
+            self.logger.record_mean('episode/arrival_rate', info['ep_arrival_rate'])
             dist  = info.get('action_distribution', [])
             total = max(sum(dist), 1)
             for label, count in zip(self._LABELS, dist):
-                self.logger.record(f'actions/{label}', count / total)
+                self.logger.record_mean(f'actions/{label}', count / total)
         return True
 
 
@@ -109,7 +113,7 @@ class ProgressCallback(BaseCallback):
 # ── Training run ──────────────────────────────────────────────────────────────
 
 def train(seed):
-    run_name = f"dalmau_8act_obs23_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"v3_8act_obs23_seed{seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
