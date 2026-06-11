@@ -87,7 +87,7 @@ CONFIG = {
     'sim_dt':                0.5,
     'action_freq':           10,              # RL step = 5 s simulated
     'lookahead_s':           900.0,
-    't_warn':                600.0,
+    't_warn':                360.0,
     'crossings_per_episode': 4.0,
     'spawn_delay_s':         (0, 0),
     # Observation
@@ -111,7 +111,7 @@ KM_TO_NM = 1.0 / NM_TO_KM
 N_NBR   = CONFIG['n_neighbours']
 OBS_DIM = 3 + N_NBR * 5       # 3 ownship + 20 intruder = 23
 
-D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (75 NM)
+D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (45 NM)
 V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s)
 
 # Heading offsets per turn action (actions 0-2 and 4-6); 3=hold, 7=fly-direct

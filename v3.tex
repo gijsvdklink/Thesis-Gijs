@@ -88,7 +88,7 @@ Equation~\ref{eq:urgency}: a placement is rejected when it would create a
 pair urgency above $u_\text{spawn} = 0.50$ with any active aircraft.
 Since urgency exceeds one inside the separation standard, this single rule
 excludes both spawns in violation of separation and spawns on a collision
-course with a predicted conflict closer than 300\,s, so no aircraft enters
+course with a predicted conflict closer than 180\,s, so no aircraft enters
 the sector in an immediate conflict.
 A rejected placement is retried at a different boundary position, and a
 slot for which no admissible placement is found is requeued for a later
@@ -128,7 +128,7 @@ u_{ij} =
 \label{eq:urgency}
 \end{equation}
 
-with $d_\text{sep} = 5$\,NM, $T_\text{warn} = 600$\,s, and
+with $d_\text{sep} = 5$\,NM, $T_\text{warn} = 360$\,s, and
 $T_\text{look} = 900$\,s.
 The active-violation branch scales linearly from $u_{ij} = 1$ at the
 separation boundary to $u_{ij} = 10$ at zero distance.
@@ -207,7 +207,7 @@ or fewer than $n_\text{clear} = 5$ steps have elapsed since the urgency
 last cleared.
 An emergency override releases the lock immediately when any other aircraft
 reaches $\max_{j} u_{ij} \geq u_\text{emerg} = 0.8$, corresponding to
-approximately 120\,s to predicted conflict.
+approximately 72\,s to predicted conflict.
 
 % -----------------------------------------------------------------------------
 \section{Action Space}
@@ -300,7 +300,7 @@ separate normalisation of east and north offsets.
 \begin{table}[h]
 \centering
 \caption{Observation vector ($\mathbf{o} \in \mathbb{R}^{23}$).
-$d_\text{warn} = T_\text{warn}\,v_\text{nom} = 75$\,NM.
+$d_\text{warn} = T_\text{warn}\,v_\text{nom} = 45$\,NM.
 CPA distance is normalised by $d_\text{sep}$, the correct scale for
 conflict geometry.}
 \label{tab:obs}
