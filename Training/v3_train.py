@@ -59,8 +59,6 @@ class EpisodeStatsCallback(BaseCallback):
             # (plain record would keep only the last episode per dump)
             self.logger.record_mean('episode/mean_reward',  info['mean_episode_reward'])
             self.logger.record_mean('episode/los_steps',    info['ep_los_steps'])
-            self.logger.record_mean('episode/length',       info['ep_length'])
-            self.logger.record_mean('episode/exits',        info['ep_exits'])
             self.logger.record_mean('episode/arrival_rate', info['ep_arrival_rate'])
             dist  = info.get('action_distribution', [])
             total = max(sum(dist), 1)

@@ -133,9 +133,10 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
     done      = False
     n         = 0
 
-    print(f'  seed={seed}  n_ac={env.n_aircraft}  max_steps={env._max_steps}  cap={max_frames}')
+    print(f'  seed={seed}  n_ac={env.n_aircraft}  max_steps={env._max_steps}  '
+          f'cap={max_frames if max_frames > 0 else "episode end"}')
 
-    while n < max_frames and not done:
+    while not done and (max_frames <= 0 or n < max_frames):
         if use_policy:
             obs_n = vecnorm.normalize_obs(obs[np.newaxis]) if vecnorm else obs[np.newaxis]
             action = int(model.predict(obs_n, deterministic=True)[0][0])
@@ -155,7 +156,7 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
             print(f'    frame {n:5d}  T={bs.sim.simt:.0f}s  '
                   f'r={reward:+.3f}  Sr={cum_r:+.2f}')
 
-    return polygon, frames
+    return polygon, frames, done
 
 # -- HTML template ------------------------------------------------------------
 
@@ -183,6 +184,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <button id="btn">Pause</button>
   <label>Speed <input type="range" id="spd" min="1" max="20" value="{fps}"></label>
   <span id="spd_val">{fps}x</span>
+  <label><input type="checkbox" id="loop"> Loop</label>
   <label>Frame <input type="range" id="scrub" min="0" max="{max_frame}" value="0" style="width:200px"></label>
   <span id="fnum">0/{max_frame}</span>
 </div>
@@ -190,6 +192,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const FRAMES   = {frames_json};
 const POLYGON  = {polygon_json};
+const ENDED    = {ended};      // true when the episode finished within the recording
 const SEP_NM   = {sep_nm};
 const CLEAR_ST = {focus_clear_steps};
 const EMERG_U  = {emerg_u};
@@ -367,6 +370,19 @@ function drawFrame(idx) {{
   let rcol = f.r < -1 ? C.red : C.dim;
   ctx.fillStyle = rcol;
   ctx.fillText('r=' + f.r.toFixed(3) + '   Sr=' + f.sr.toFixed(1), 10*S, H - 5*S);
+
+  // End-of-recording banner on the final frame
+  if (idx >= FRAMES.length - 1) {{
+    ctx.fillStyle = 'rgba(6,14,30,0.85)';
+    ctx.fillRect(W/2 - 260*S, 14*S, 520*S, 34*S);
+    ctx.fillStyle = ENDED ? C.green : C.yellow;
+    ctx.font      = 'bold ' + Math.round(15*S) + 'px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(ENDED ? 'EPISODE END'
+                       : 'RECORDING CAP REACHED - EPISODE CONTINUES BEYOND CAPTURE',
+                 W/2, 36*S);
+    ctx.textAlign = 'left';
+  }}
 }}
 
 // -- Playback
@@ -375,7 +391,8 @@ let playing  = true;
 let delay    = Math.round(1000 / {fps});
 let timer    = null;
 
-const btn    = document.getElementById('btn');
+const btn     = document.getElementById('btn');
+const loopBox = document.getElementById('loop');
 const spdIn  = document.getElementById('spd');
 const spdVal = document.getElementById('spd_val');
 const scrub  = document.getElementById('scrub');
@@ -386,6 +403,11 @@ function tick() {{
   scrub.value = frameIdx;
   fnum.textContent = (frameIdx+1) + '/' + FRAMES.length;
   if (frameIdx >= FRAMES.length - 1) {{
+    if (loopBox.checked) {{
+      frameIdx = 0;
+      if (playing) timer = setTimeout(tick, delay);
+      return;
+    }}
     playing = false;             // stop on the last frame instead of looping
     btn.textContent = 'Replay';
     return;
@@ -577,10 +599,11 @@ def write_mp4(polygon, frames, output_path, fps=8):
 
 # -- HTML writer --------------------------------------------------------------
 
-def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8):
+def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8, ended=True):
     spd_nms = float(CONFIG['ac_speed']) / 3600.0
     html = HTML_TEMPLATE.format(
         title             = mode_str,
+        ended             = 'true' if ended else 'false',
         mode_str          = mode_str,
         n_ac              = n_ac,
         sep_nm            = SEP_NM,
@@ -605,7 +628,8 @@ def main():
     parser.add_argument('--model',       default=DEFAULT_MODEL)
     parser.add_argument('--no-policy',   action='store_true')
     parser.add_argument('--mp4',         action='store_true', help='Also save as .mp4')
-    parser.add_argument('--frames',      type=int,   default=MAX_FRAMES)
+    parser.add_argument('--frames',      type=int,   default=0,
+                        help='Frame cap (0 = record until the episode ends)')
     parser.add_argument('--fps',         type=int,   default=8)
     parser.add_argument('--episodes',    type=int,   default=1)
     parser.add_argument('--n-aircraft',  type=int,   default=None)
@@ -663,9 +687,9 @@ def main():
         ep_tag  = f'_ep{ep}' if args.episodes > 1 else ''
         outpath = os.path.join(HERE, f'v3_{stem}{cond}{ep_tag}.html')
         print(f'-- Episode {ep}/{args.episodes} ---')
-        polygon, frames = run_episode(env, model, vecnorm, use_policy, seed, args.frames)
+        polygon, frames, ended = run_episode(env, model, vecnorm, use_policy, seed, args.frames)
         write_html(polygon, frames, outpath, mode_str,
-                   env.n_aircraft, fps=args.fps)
+                   env.n_aircraft, fps=args.fps, ended=ended)
         if args.mp4:
             mp4_path = outpath.replace('.html', '.mp4')
             print(f'  Rendering MP4 ...')
