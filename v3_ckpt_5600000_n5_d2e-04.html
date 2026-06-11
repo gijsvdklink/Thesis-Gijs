@@ -238,11 +238,17 @@ function tick() {
   drawFrame(frameIdx);
   scrub.value = frameIdx;
   fnum.textContent = (frameIdx+1) + '/' + FRAMES.length;
-  frameIdx = (frameIdx + 1) % FRAMES.length;
+  if (frameIdx >= FRAMES.length - 1) {
+    playing = false;
+    btn.textContent = 'Replay';
+    return;
+  }
+  frameIdx += 1;
   if (playing) timer = setTimeout(tick, delay);
 }
 
 btn.onclick = () => {
+  if (!playing && frameIdx >= FRAMES.length - 1) frameIdx = 0;
   playing = !playing;
   btn.textContent = playing ? 'Pause' : 'Play';
   if (playing) tick();
