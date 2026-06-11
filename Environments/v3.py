@@ -75,7 +75,7 @@ CONFIG = {
     'sep_nm':                5.0,
     'dest_dist_factor':      2.0,
     'arrival_tol_nm':        5.0,             # exit within this distance of t_ref counts as on-target
-    'max_spawn_urgency':     0.50,            # candidate spawn rejected above this urgency (tcpa < 300 s)
+    'buffer_nm':             10.0,            # spawn buffer: min distance to traffic = sep_nm + buffer_nm
     # Polygon
     'n_vertices':            lambda: random.randint(5, 7),
     'min_circularity':       0.65,
@@ -345,9 +345,8 @@ class AirspaceEnv(gym.Env):
         for slot in range(n_ac):
             for _ in range(CONFIG['max_placement_tries']):
                 ac = _place_one(self._polygon_shape, slot, n_ac)
-                # single spawn rule: no immediate or near-term conflict allowed
-                # (urgency > 1 inside sep_nm, so this also enforces separation)
-                if self._spawn_urgency(ac) <= CONFIG['max_spawn_urgency']:
+                # spawn rule: 15 NM buffer (sep_nm + buffer_nm) to all traffic
+                if self._spawn_ok(ac):
                     self._spawn_aircraft(slot, ac)
                     break
             else:
@@ -844,28 +843,26 @@ class AirspaceEnv(gym.Env):
             if slot not in requeued:
                 self._pending_spawns[slot] -= 1
 
-    def _spawn_urgency(self, ac):
-        """Worst pair urgency a candidate spawn would create against active traffic."""
+    def _spawn_ok(self, ac):
+        """Spawn admission: geometric buffer to all active traffic."""
         pos_c = latlon_to_nm(CONFIG['center_ll'],
                              float(ac['sp_ll'][0]), float(ac['sp_ll'][1]))
-        hdg_r = math.radians(float(ac['heading']))
-        vel_c = (V_NOM * math.sin(hdg_r), V_NOM * math.cos(hdg_r))
-
-        worst = 0.0
+        min_spawn_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']
         for cs in self._active_callsigns:
             idx = bs.traf.id2idx(cs)
             if idx < 0:
                 continue
-            pos_o, vel_o = _bs_state(idx)
-            worst = max(worst, _urgency_from_state(pos_c, vel_c, pos_o, vel_o))
-        return worst
+            pos_o, _ = _bs_state(idx)
+            if math.hypot(pos_c[0] - pos_o[0], pos_c[1] - pos_o[1]) < min_spawn_sep:
+                return False
+        return True
 
     def _generate_replacement(self, slot):
-        """Try to place a new aircraft that creates no near-term conflict."""
+        """Try to place a new aircraft that clears the spawn buffer to all traffic."""
         n_ac = self.n_aircraft
         for _ in range(CONFIG['max_placement_tries']):
             ac = _place_one(self._polygon_shape, random.randint(0, n_ac - 1), n_ac)
-            if self._spawn_urgency(ac) <= CONFIG['max_spawn_urgency']:
+            if self._spawn_ok(ac):
                 return ac
         return None
 

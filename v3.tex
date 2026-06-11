@@ -83,13 +83,12 @@ arc, and given a destination two sector diameters beyond the boundary.
 The reference point marks the intended boundary exit of the aircraft and is
 retained for the route-adherence metric described in
 Section~\ref{sec:validation}.
-Candidate spawns are screened by the urgency measure of
-Equation~\ref{eq:urgency}: a placement is rejected when it would create a
-pair urgency above $u_\text{spawn} = 0.50$ with any active aircraft.
-Since urgency exceeds one inside the separation standard, this single rule
-excludes both spawns in violation of separation and spawns on a collision
-course with a predicted conflict closer than 180\,s, so no aircraft enters
-the sector in an immediate conflict.
+Candidate spawns are screened by a geometric buffer rule: a placement is
+rejected when it lies within 15\,NM of any active aircraft, corresponding
+to the 5\,NM separation standard extended by a 10\,NM buffer.
+This rule guarantees that no aircraft enters the sector in violation of
+separation, and the buffer provides time for the agent to respond before
+a newly spawned aircraft can become involved in a conflict.
 A rejected placement is retried at a different boundary position, and a
 slot for which no admissible placement is found is requeued for a later
 attempt.
