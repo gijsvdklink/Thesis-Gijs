@@ -73,9 +73,9 @@ CONFIG = {
     'n_aircraft':            lambda: random.randint(10, 15),
     'rho':                   lambda: random.uniform(1/15000, 1/5000),  # aircraft/km^2; area = n/rho
     'sep_nm':                5.0,
-    'buffer_nm':             10.0,
     'dest_dist_factor':      2.0,
     'arrival_tol_nm':        5.0,             # exit within this distance of t_ref counts as on-target
+    'max_spawn_urgency':     0.50,            # candidate spawn rejected above this urgency (tcpa < 300 s)
     # Polygon
     'n_vertices':            lambda: random.randint(5, 7),
     'min_circularity':       0.65,
@@ -95,12 +95,12 @@ CONFIG = {
     # Focus selection
     'focus_clear_steps':     5,
     'focus_emergency_u':     0.8,
-    'drift_switch_margin':   0.05,
+    'drift_switch_margin':   0.01,
     'return_clear_nm':       20.0,            # full clearance distance for the drift fallback score (4 x sep)
     # Reward weights
     'w_los':                 10.00,           # heavy: separation violation
     'w_conflict':            3.00,            # medium: imminence x miss-distance of worst conflict
-    'w_drift':               0.60,            # accumulates during hold, motivates return to track
+    'w_drift':               1.00,            # accumulates during hold, motivates return to track
     'w_work':                1.00,            # charged once per turn instruction; hold and direct are free
     'seed':                  None,
 }
@@ -191,17 +191,17 @@ def _place_one(polygon, sector, n_sectors):
 
 # -- Pair urgency --------------------------------------------------------------
 
-def _pair_urgency(i, j):
+def _urgency_from_state(pos_i, vel_i, pos_j, vel_j):
     """
-    Urgency of the conflict between aircraft i and j (BlueSky indices).
+    Urgency of the conflict between two aircraft given their planar state.
+
+    Positions are (east, north) in NM; velocities are (east, north) in NM/s.
 
     Returns:
       > 1   active LoS    (scales 1 at sep boundary → 10 at d=0)
       0..1  predicted LoS (scales 0 at t_warn → 1 at t_CPA=0)
       0     safe / diverging
     """
-    pos_i   = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[i], bs.traf.lon[i])
-    pos_j   = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[j], bs.traf.lon[j])
     d_east  = pos_j[0] - pos_i[0]
     d_north = pos_j[1] - pos_i[1]
     dist_sq = d_east**2 + d_north**2
@@ -210,14 +210,8 @@ def _pair_urgency(i, j):
     if dist_sq < sep**2:
         return 1.0 + 9.0 * (1.0 - math.sqrt(dist_sq) / sep)
 
-    spd_i   = _speed_nms(i)
-    spd_j   = _speed_nms(j)
-    ve_i    = spd_i * math.sin(math.radians(bs.traf.hdg[i]))
-    vn_i    = spd_i * math.cos(math.radians(bs.traf.hdg[i]))
-    ve_j    = spd_j * math.sin(math.radians(bs.traf.hdg[j]))
-    vn_j    = spd_j * math.cos(math.radians(bs.traf.hdg[j]))
-    dv_east  = ve_j - ve_i
-    dv_north = vn_j - vn_i
+    dv_east  = vel_j[0] - vel_i[0]
+    dv_north = vel_j[1] - vel_i[1]
 
     rel_spd_sq = dv_east**2 + dv_north**2
     if rel_spd_sq < 1e-12:
@@ -235,6 +229,21 @@ def _pair_urgency(i, j):
         return 0.0
 
     return min(1.0, max(0.0, (CONFIG['t_warn'] - tcpa) / CONFIG['t_warn']))
+
+
+def _bs_state(idx):
+    """(pos, vel) of BlueSky aircraft idx in NM / NM/s, east-north."""
+    pos = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
+    spd = _speed_nms(idx)
+    hdg = math.radians(bs.traf.hdg[idx])
+    return pos, (spd * math.sin(hdg), spd * math.cos(hdg))
+
+
+def _pair_urgency(i, j):
+    """Urgency between BlueSky aircraft i and j (see _urgency_from_state)."""
+    pos_i, vel_i = _bs_state(i)
+    pos_j, vel_j = _bs_state(j)
+    return _urgency_from_state(pos_i, vel_i, pos_j, vel_j)
 
 # -- BlueSky screen stub -------------------------------------------------------
 
@@ -333,20 +342,12 @@ class AirspaceEnv(gym.Env):
         bs.tools.areafilter.defineArea('SECTOR', 'POLY', self._flat_latlon())
         bs.stack.stack('ASAS OFF')
 
-        min_spawn_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']
         for slot in range(n_ac):
             for _ in range(CONFIG['max_placement_tries']):
                 ac = _place_one(self._polygon_shape, slot, n_ac)
-                occupied = [
-                    (bs.traf.lat[bs.traf.id2idx(cs)], bs.traf.lon[bs.traf.id2idx(cs)])
-                    for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0
-                ]
-                clear_of_all = all(
-                    geo.kwikdist(float(ac['sp_ll'][0]), float(ac['sp_ll'][1]),
-                                 float(lat), float(lon)) >= min_spawn_sep
-                    for lat, lon in occupied
-                )
-                if clear_of_all:
+                # single spawn rule: no immediate or near-term conflict allowed
+                # (urgency > 1 inside sep_nm, so this also enforces separation)
+                if self._spawn_urgency(ac) <= CONFIG['max_spawn_urgency']:
                     self._spawn_aircraft(slot, ac)
                     break
             else:
@@ -843,23 +844,28 @@ class AirspaceEnv(gym.Env):
             if slot not in requeued:
                 self._pending_spawns[slot] -= 1
 
-    def _generate_replacement(self, slot):
-        """Try to place a new aircraft that clears all currently active aircraft."""
-        occupied = [
-            (bs.traf.lat[bs.traf.id2idx(cs)], bs.traf.lon[bs.traf.id2idx(cs)])
-            for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0
-        ]
-        min_spawn_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']
-        n_ac          = self.n_aircraft
+    def _spawn_urgency(self, ac):
+        """Worst pair urgency a candidate spawn would create against active traffic."""
+        pos_c = latlon_to_nm(CONFIG['center_ll'],
+                             float(ac['sp_ll'][0]), float(ac['sp_ll'][1]))
+        hdg_r = math.radians(float(ac['heading']))
+        vel_c = (V_NOM * math.sin(hdg_r), V_NOM * math.cos(hdg_r))
 
+        worst = 0.0
+        for cs in self._active_callsigns:
+            idx = bs.traf.id2idx(cs)
+            if idx < 0:
+                continue
+            pos_o, vel_o = _bs_state(idx)
+            worst = max(worst, _urgency_from_state(pos_c, vel_c, pos_o, vel_o))
+        return worst
+
+    def _generate_replacement(self, slot):
+        """Try to place a new aircraft that creates no near-term conflict."""
+        n_ac = self.n_aircraft
         for _ in range(CONFIG['max_placement_tries']):
             ac = _place_one(self._polygon_shape, random.randint(0, n_ac - 1), n_ac)
-            clear_of_all = all(
-                geo.kwikdist(float(ac['sp_ll'][0]), float(ac['sp_ll'][1]),
-                             float(lat), float(lon)) >= min_spawn_sep
-                for lat, lon in occupied
-            )
-            if clear_of_all:
+            if self._spawn_urgency(ac) <= CONFIG['max_spawn_urgency']:
                 return ac
         return None
 

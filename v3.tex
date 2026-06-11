@@ -83,7 +83,16 @@ arc, and given a destination two sector diameters beyond the boundary.
 The reference point marks the intended boundary exit of the aircraft and is
 retained for the route-adherence metric described in
 Section~\ref{sec:validation}.
-A minimum spawn separation of 15\,NM is enforced.
+Candidate spawns are screened by the urgency measure of
+Equation~\ref{eq:urgency}: a placement is rejected when it would create a
+pair urgency above $u_\text{spawn} = 0.50$ with any active aircraft.
+Since urgency exceeds one inside the separation standard, this single rule
+excludes both spawns in violation of separation and spawns on a collision
+course with a predicted conflict closer than 300\,s, so no aircraft enters
+the sector in an immediate conflict.
+A rejected placement is retried at a different boundary position, and a
+slot for which no admissible placement is found is requeued for a later
+attempt.
 Aircraft that exit the sector are replaced within one step, keeping traffic
 density approximately constant throughout each episode.
 Episode length corresponds to approximately 60 minutes of simulated time,
@@ -159,8 +168,7 @@ clearance factor,
     \label{eq:recovery}
 \end{equation}
 where $d^\text{\,nn}_i$ is the distance to the nearest other aircraft and
-$d_\text{clear} = 20$\,NM, four times the separation standard and above the
-15\,NM spawn separation.
+$d_\text{clear} = 20$\,NM, four times the separation standard.
 At the worst-case head-on closure rate of approximately 900\,kt, this
 distance corresponds to 80\,s to a potential separation violation, well
 beyond the roughly 20\,s required to execute a $60^\circ$ return turn.
@@ -181,9 +189,12 @@ boxed in by surrounding traffic is scaled down linearly, deferring its
 recovery until the local traffic has thinned out.
 
 The aircraft with the highest score receives focus, subject to a hysteresis
-margin of $0.05$: the current focus is retained unless another aircraft
+margin of $0.01$: the current focus is retained unless another aircraft
 exceeds its score by this margin, which prevents oscillation between
 similarly scored candidates.
+The margin is small relative to the score scale, a $30^\circ$ deviation
+scores $0.067$, so that mildly deviated aircraft can still take focus from
+an aircraft whose recovery has completed.
 Once selected, the commitment mechanism described below holds focus for at
 least $n_\text{clear}$ steps, giving the agent time to issue the correction
 and observe its effect before focus moves on.
@@ -487,7 +498,7 @@ accumulate from multiple consecutive turns.
 \midrule
 $w_\text{LoS}$      & Separation violation at step end                                        & $10.00$ \\
 $w_\text{conflict}$ & Worst-case imminence $\times$ miss-distance severity ($d_\text{CPA} < d_\text{sep}$) & $3.00$ \\
-$w_\text{drift}$    & Per-step deviation; accumulates during hold, motivates fly-direct        & $0.60$ \\
+$w_\text{drift}$    & Per-step deviation; accumulates during hold, motivates fly-direct        & $1.00$ \\
 $w_\text{work}$     & Per-turn cost $= w_\text{work}\cdot|\delta|/60^\circ$; fly-direct cost $= w_\text{work}\cdot\min(|\Delta\psi|/60^\circ,1)$; hold free & $1.00$ \\
 \bottomrule
 \end{tabular}

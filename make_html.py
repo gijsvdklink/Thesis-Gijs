@@ -58,7 +58,8 @@ import bluesky as bs
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from Environments.v3 import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180
+from gymnasium import spaces as gym_spaces
+from Environments.v3 import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180, OBS_DIM
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -166,7 +167,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
   body {{ margin:0; background:#060d1a; display:flex; flex-direction:column;
            align-items:center; padding:16px; font-family:monospace; color:#a0b8d8; }}
-  canvas {{ border:1px solid #1e3a5c; }}
+  canvas {{ border:1px solid #1e3a5c; width:760px; height:760px; }}
   #controls {{ margin-top:10px; display:flex; gap:12px; align-items:center; }}
   button {{ background:#1a2e4a; color:#a0b8d8; border:1px solid #2d5a8a;
              padding:5px 14px; cursor:pointer; border-radius:3px; font-family:monospace; }}
@@ -177,7 +178,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<canvas id="c" width="750" height="750"></canvas>
+<canvas id="c" width="2160" height="2160"></canvas>
 <div id="controls">
   <button id="btn">Pause</button>
   <label>Speed <input type="range" id="spd" min="1" max="20" value="{fps}"></label>
@@ -213,6 +214,7 @@ function urgColor(u) {{
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
+const S = W / 750;   // UI scale: geometry tuned at 750px, rendered at 4K
 
 function buildView(polygon) {{
   let xs = polygon.map(p => p[0] * NM2KM);
@@ -241,8 +243,8 @@ function nmToPx(nm) {{ return nm * NM2KM * view.sc; }}
 function dashedCircle(x, y, r, col, lw=1, dash=[5,5]) {{
   ctx.save();
   ctx.strokeStyle = col;
-  ctx.lineWidth   = lw;
-  ctx.setLineDash(dash);
+  ctx.lineWidth   = lw * S;
+  ctx.setLineDash(dash.map(d => d * S));
   ctx.beginPath(); ctx.arc(x, y, r, 0, 2*Math.PI); ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();
@@ -250,8 +252,8 @@ function dashedCircle(x, y, r, col, lw=1, dash=[5,5]) {{
 
 function dashedLine(x1, y1, x2, y2, col, lw=1, dash=[5,6]) {{
   ctx.save();
-  ctx.strokeStyle = col; ctx.lineWidth = lw;
-  ctx.setLineDash(dash);
+  ctx.strokeStyle = col; ctx.lineWidth = lw * S;
+  ctx.setLineDash(dash.map(d => d * S));
   ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();
@@ -268,7 +270,7 @@ function drawSector() {{
   ctx.fillStyle   = C.sector;
   ctx.fill();
   ctx.strokeStyle = C.border;
-  ctx.lineWidth   = 1.5;
+  ctx.lineWidth   = 1.5 * S;
   ctx.stroke();
 }}
 
@@ -302,8 +304,8 @@ function drawFrame(idx) {{
       let cxe = x + Math.sin(cr) * cLen;
       let cye = y - Math.cos(cr) * cLen;
       ctx.save();
-      ctx.strokeStyle = C.cmd; ctx.lineWidth = 1;
-      ctx.setLineDash([3,5]);
+      ctx.strokeStyle = C.cmd; ctx.lineWidth = S;
+      ctx.setLineDash([3*S, 5*S]);
       ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(cxe,cye); ctx.stroke();
       ctx.setLineDash([]);
       ctx.restore();
@@ -311,7 +313,7 @@ function drawFrame(idx) {{
 
     // 90-second velocity line (not arrow)
     let hr = ac.hdg * Math.PI / 180;
-    ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = col; ctx.lineWidth = 1.5 * S;
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(x + Math.sin(hr)*vecPx, y - Math.cos(hr)*vecPx);
@@ -322,26 +324,26 @@ function drawFrame(idx) {{
 
     // Focus ring (solid cyan)
     if (ac.focus) {{
-      ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+      ctx.strokeStyle = C.cyan; ctx.lineWidth = 2 * S;
       ctx.setLineDash([]);
       ctx.beginPath(); ctx.arc(x, y, sepPx + sepPx*0.15, 0, 2*Math.PI); ctx.stroke();
       // Cooldown ring
       if (ac.sc < CLEAR_ST && ac.u === 0) {{
-        ctx.strokeStyle = C.yellow; ctx.lineWidth = 1;
-        ctx.setLineDash([2,4]);
+        ctx.strokeStyle = C.yellow; ctx.lineWidth = S;
+        ctx.setLineDash([2*S, 4*S]);
         ctx.beginPath(); ctx.arc(x, y, sepPx + sepPx*0.3, 0, 2*Math.PI); ctx.stroke();
         ctx.setLineDash([]);
       }}
     }} else if (ac.u >= EMERG_U) {{
-      ctx.strokeStyle = C.purple; ctx.lineWidth = 1.2;
+      ctx.strokeStyle = C.purple; ctx.lineWidth = 1.2 * S;
       ctx.setLineDash([]);
       ctx.beginPath(); ctx.arc(x, y, sepPx + sepPx*0.22, 0, 2*Math.PI); ctx.stroke();
     }}
 
     // Aircraft dot
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(x, y, 5, 0, 2*Math.PI); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.arc(x, y, 5 * S, 0, 2*Math.PI); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 0.8 * S;
     ctx.stroke();
 
     // Label
@@ -350,36 +352,21 @@ function drawFrame(idx) {{
     if (drift > 3)  lbl += '  ' + drift.toFixed(0) + 'deg';
     if (ac.focus)   lbl += '  <<';
     ctx.fillStyle   = ac.focus ? C.cyan : col;
-    ctx.font        = '11px monospace';
-    ctx.fillText(lbl, x + 10, y - 6);
+    ctx.font        = Math.round(11 * S) + 'px monospace';
+    ctx.fillText(lbl, x + 10*S, y - 6*S);
   }});
-
-  // Conflict pair midpoint markers
-  for (let i = 0; i < f.ac.length; i++) {{
-    for (let j = i+1; j < f.ac.length; j++) {{
-      let ai = f.ac[i], aj = f.ac[j];
-      if (ai.u > 0 && aj.u > 0 && ai.u <= 1.0) {{
-        let [xi, yi] = toXY(ai.x, ai.y);
-        let [xj, yj] = toXY(aj.x, aj.y);
-        let mx = (xi+xj)/2, my = (yi+yj)/2, s = 5;
-        ctx.strokeStyle = C.orange; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(mx-s,my-s); ctx.lineTo(mx+s,my+s); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(mx+s,my-s); ctx.lineTo(mx-s,my+s); ctx.stroke();
-      }}
-    }}
-  }}
 
   // HUD — only reward counter, bottom strip
   ctx.fillStyle = '#060e1e';
-  ctx.fillRect(0, H-34, W, 34);
+  ctx.fillRect(0, H - 34*S, W, 34*S);
   ctx.fillStyle = C.dim;
-  ctx.font = '12px monospace';
+  ctx.font = Math.round(12 * S) + 'px monospace';
   ctx.fillText('T=' + f.t + 's   frame=' + (idx+1) + '/' + FRAMES.length
                + '   LoS=' + f.los + '   conf=' + f.conf
-               + '   LoS-steps=' + f.lst, 10, H-18);
+               + '   LoS-steps=' + f.lst, 10*S, H - 18*S);
   let rcol = f.r < -1 ? C.red : C.dim;
   ctx.fillStyle = rcol;
-  ctx.fillText('r=' + f.r.toFixed(3) + '   Sr=' + f.sr.toFixed(1), 10, H-5);
+  ctx.fillText('r=' + f.r.toFixed(3) + '   Sr=' + f.sr.toFixed(1), 10*S, H - 5*S);
 }}
 
 // -- Playback
@@ -398,11 +385,17 @@ function tick() {{
   drawFrame(frameIdx);
   scrub.value = frameIdx;
   fnum.textContent = (frameIdx+1) + '/' + FRAMES.length;
-  frameIdx = (frameIdx + 1) % FRAMES.length;
+  if (frameIdx >= FRAMES.length - 1) {{
+    playing = false;             // stop on the last frame instead of looping
+    btn.textContent = 'Replay';
+    return;
+  }}
+  frameIdx += 1;
   if (playing) timer = setTimeout(tick, delay);
 }}
 
 btn.onclick = () => {{
+  if (!playing && frameIdx >= FRAMES.length - 1) frameIdx = 0;   // replay
   playing = !playing;
   btn.textContent = playing ? 'Pause' : 'Play';
   if (playing) tick();
@@ -427,7 +420,8 @@ tick();
 
 # -- cv2 frame renderer (for MP4 export) -------------------------------------
 
-W_MP4, H_MP4 = 900, 900
+W_MP4, H_MP4 = 2160, 2160        # 4K UHD (square frame)
+SC_MP4       = H_MP4 / 900       # geometry was tuned at 900px
 
 # BGR colours matching the HTML palette
 _BGR = {
@@ -485,11 +479,12 @@ def _dashed_circle_cv(img, cx, cy, r, color, thickness=1, n_segs=40):
 def render_frame_cv2(frame, polygon, view):
     img = np.zeros((H_MP4, W_MP4, 3), dtype=np.uint8)
     img[:] = _BGR['bg']
+    s = SC_MP4   # pixel-value scale relative to the original 900px layout
 
     # Sector fill
     pts = np.array([view.to_px(p[0], p[1]) for p in polygon], np.int32)
     cv2.fillPoly(img, [pts], _BGR['sector'])
-    cv2.polylines(img, [pts], True, _BGR['border'], 2, cv2.LINE_AA)
+    cv2.polylines(img, [pts], True, _BGR['border'], round(2*s), cv2.LINE_AA)
 
     sep_px  = view.nm_px(SEP_NM / 2)
     vec_px  = view.nm_px(float(CONFIG['ac_speed']) / 3600.0 * 90)
@@ -505,7 +500,7 @@ def render_frame_cv2(frame, polygon, view):
         if ac['dest']:
             dx, dy = view.to_px(ac['dest'][0], ac['dest'][1])
             overlay = img.copy()
-            cv2.line(overlay, (px, py), (dx, dy), _BGR['route'], 1, cv2.LINE_AA)
+            cv2.line(overlay, (px, py), (dx, dy), _BGR['route'], round(s), cv2.LINE_AA)
             cv2.addWeighted(overlay, 0.5, img, 0.5, 0, img)
 
         # Commanded heading line when drifting
@@ -515,31 +510,31 @@ def render_frame_cv2(frame, polygon, view):
             clen = view.nm_px(SEP_NM * 2.5)
             cex  = int(px + math.sin(cr) * clen)
             cey  = int(py - math.cos(cr) * clen)
-            cv2.line(img, (px, py), (cex, cey), _BGR['cmd'], 1, cv2.LINE_AA)
+            cv2.line(img, (px, py), (cex, cey), _BGR['cmd'], round(s), cv2.LINE_AA)
 
         # Velocity line (90s track)
         hr  = math.radians(hdg)
         vex = int(px + math.sin(hr) * vec_px)
         vey = int(py - math.cos(hr) * vec_px)
-        cv2.line(img, (px, py), (vex, vey), col, 2, cv2.LINE_AA)
+        cv2.line(img, (px, py), (vex, vey), col, round(2*s), cv2.LINE_AA)
 
         # Separation ring (half-sep, dashed)
-        _dashed_circle_cv(img, px, py, sep_px, col, 1)
+        _dashed_circle_cv(img, px, py, sep_px, col, round(s))
 
         # Focus / cooldown / emergency rings
         if ac['focus']:
             cv2.circle(img, (px, py), sep_px + max(3, sep_px//6),
-                       _BGR['cyan'], 2, cv2.LINE_AA)
+                       _BGR['cyan'], round(2*s), cv2.LINE_AA)
             if ac['sc'] < clr_st and ac['u'] == 0:
                 _dashed_circle_cv(img, px, py, sep_px + max(5, sep_px//4),
-                                  _BGR['yellow'], 1)
+                                  _BGR['yellow'], round(s))
         elif ac['u'] >= emg_u:
             cv2.circle(img, (px, py), sep_px + max(4, sep_px//5),
-                       _BGR['purple'], 1, cv2.LINE_AA)
+                       _BGR['purple'], round(s), cv2.LINE_AA)
 
         # Aircraft dot
-        cv2.circle(img, (px, py), 5, col, -1, cv2.LINE_AA)
-        cv2.circle(img, (px, py), 5, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.circle(img, (px, py), round(5*s), col, -1, cv2.LINE_AA)
+        cv2.circle(img, (px, py), round(5*s), (200, 200, 200), round(s), cv2.LINE_AA)
 
         # Label
         parts = [ac['cs']]
@@ -547,30 +542,19 @@ def render_frame_cv2(frame, polygon, view):
         if drift > 3:      parts.append(f"{drift:.0f}d")
         if ac['focus']:    parts.append('<<')
         lbl_col = _BGR['cyan'] if ac['focus'] else col
-        cv2.putText(img, '  '.join(parts), (px + 10, py - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, lbl_col, 1, cv2.LINE_AA)
-
-    # Conflict pair markers
-    acs = frame['ac']
-    for i in range(len(acs)):
-        for j in range(i+1, len(acs)):
-            if 0 < acs[i]['u'] <= 1.0 and 0 < acs[j]['u'] <= 1.0:
-                xi, yi = view.to_px(acs[i]['x'], acs[i]['y'])
-                xj, yj = view.to_px(acs[j]['x'], acs[j]['y'])
-                mx, my, s = (xi+xj)//2, (yi+yj)//2, 6
-                cv2.line(img, (mx-s,my-s),(mx+s,my+s), _BGR['orange'],1,cv2.LINE_AA)
-                cv2.line(img, (mx+s,my-s),(mx-s,my+s), _BGR['orange'],1,cv2.LINE_AA)
+        cv2.putText(img, '  '.join(parts), (px + round(10*s), py - round(5*s)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35*s, lbl_col, round(s), cv2.LINE_AA)
 
     # HUD strip
-    cv2.rectangle(img, (0, H_MP4-40), (W_MP4, H_MP4), (14, 20, 6), -1)
+    cv2.rectangle(img, (0, H_MP4 - round(40*s)), (W_MP4, H_MP4), (14, 20, 6), -1)
     hud1 = (f"T={frame['t']:.0f}s   LoS={frame['los']}   conf={frame['conf']}"
             f"   LoS-steps={frame['lst']}")
     hud2 = f"r={frame['r']:+.3f}   Sr={frame['sr']:+.1f}"
-    cv2.putText(img, hud1, (10, H_MP4-22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, _BGR['dim'], 1, cv2.LINE_AA)
+    cv2.putText(img, hud1, (round(10*s), H_MP4 - round(22*s)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38*s, _BGR['dim'], round(s), cv2.LINE_AA)
     hud2_col = _BGR['red'] if frame['r'] < -1 else _BGR['dim']
-    cv2.putText(img, hud2, (10, H_MP4-7),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, hud2_col, 1, cv2.LINE_AA)
+    cv2.putText(img, hud2, (round(10*s), H_MP4 - round(7*s)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38*s, hud2_col, round(s), cv2.LINE_AA)
 
     return img
 
@@ -627,6 +611,8 @@ def main():
     parser.add_argument('--n-aircraft',  type=int,   default=None)
     parser.add_argument('--density',     type=float, default=None)
     parser.add_argument('--circularity', type=float, default=None)
+    parser.add_argument('--crossings',   type=float, default=None,
+                        help='Override crossings_per_episode (longer episodes)')
     args = parser.parse_args()
 
     use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
@@ -635,19 +621,31 @@ def main():
 
     if use_policy:
         print(f'Loading model   : {args.model}')
-        model = PPO.load(args.model)
+        # spaces passed explicitly: checkpoints saved with other numpy/SB3
+        # versions fail to deserialise them
+        model = PPO.load(args.model, custom_objects={
+            'observation_space': gym_spaces.Box(-np.inf, np.inf,
+                                                shape=(OBS_DIM,), dtype=np.float32),
+            'action_space':      gym_spaces.Discrete(8),
+        })
         vn = args.model.replace('.zip', '_vecnorm.pkl')
         if os.path.exists(vn):
             print(f'Loading vecnorm : {vn}')
-            with open(vn, 'rb') as fh:
-                vecnorm = _NumpyShim(fh).load()
-            vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
-            vecnorm.training    = False
-            vecnorm.norm_reward = False
+            try:
+                with open(vn, 'rb') as fh:
+                    vecnorm = _NumpyShim(fh).load()
+                vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
+                vecnorm.training    = False
+                vecnorm.norm_reward = False
+            except Exception as e:
+                # harmless with norm_obs=False: vecnorm never touches observations
+                print(f'  vecnorm skipped ({e})')
+                vecnorm = None
 
     if args.n_aircraft  is not None: CONFIG['n_aircraft']      = lambda n=args.n_aircraft: n
     if args.density     is not None: CONFIG['rho']             = lambda d=args.density: d
     if args.circularity is not None: CONFIG['min_circularity'] = args.circularity
+    if args.crossings   is not None: CONFIG['crossings_per_episode'] = args.crossings
 
     stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else 'no_policy'
     mode_str = f'{os.path.basename(args.model)}' if use_policy else 'no policy'
