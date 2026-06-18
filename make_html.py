@@ -59,7 +59,21 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from gymnasium import spaces as gym_spaces
-from Environments.v3 import AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180, OBS_DIM
+
+# Select the environment module before it is used (default v3). Pre-scan argv so
+# the module-level CONFIG/OBS_DIM below come from the chosen env; e.g.
+#   python make_html.py --env test_env --model ...
+import importlib
+_env_name = 'v3'
+for _i, _a in enumerate(sys.argv):
+    if _a == '--env' and _i + 1 < len(sys.argv):
+        _env_name = sys.argv[_i + 1]
+    elif _a.startswith('--env='):
+        _env_name = _a.split('=', 1)[1]
+_envmod = importlib.import_module(f'Environments.{_env_name}')
+AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180, OBS_DIM = (
+    _envmod.AirspaceEnv, _envmod.CONFIG, _envmod.NM_TO_KM,
+    _envmod.latlon_to_nm, _envmod.wrap_to_180, _envmod.OBS_DIM)
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -76,7 +90,7 @@ DEFAULT_MODEL = os.path.join(
 
 # -- Frame data collector -----------------------------------------------------
 
-def _collect_frame(env, reward, cum_reward, los_steps):
+def _collect_frame(env, reward, cum_reward, los_steps, action=None, obs=None):
     U       = env._urgency_matrix
     cs_list = env._urgency_cs_list
     urg     = {}
@@ -118,6 +132,8 @@ def _collect_frame(env, reward, cum_reward, los_steps):
         'los':  n_los,
         'conf': n_conf,
         'lst':  los_steps,
+        'a':    action if action is not None else -1,
+        'obs':  [round(float(v), 3) for v in obs] if obs is not None else None,
         'ac':   aircraft,
     }
 
@@ -143,6 +159,8 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
         else:
             action = env.action_space.sample()
 
+        obs_used = obs.tolist()   # the observation the agent acted on this step
+
         obs, reward, terminated, truncated, info = env.step(action)
         done   = terminated or truncated
         cum_r += float(reward)
@@ -150,7 +168,7 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
         if info.get('los_pairs', 0) > 0:
             los_steps += 1
 
-        frames.append(_collect_frame(env, reward, cum_r, los_steps))
+        frames.append(_collect_frame(env, reward, cum_r, los_steps, action, obs_used))
 
         if n % 100 == 0:
             print(f'    frame {n:5d}  T={bs.sim.simt:.0f}s  '
@@ -176,10 +194,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   label {{ font-size:12px; }}
   input[type=range] {{ width:120px; }}
   #info {{ font-size:12px; color:#6080a8; margin-top:6px; }}
+  #wrap {{ display:flex; gap:14px; align-items:flex-start; }}
+  #obspanel {{ font-size:12px; line-height:1.45; color:#9fc0e8; background:#0a1428;
+               border:1px solid #1e3a5c; border-radius:4px; padding:10px 12px;
+               margin:0; white-space:pre; min-width:230px; }}
+  #obspanel b {{ color:#c8daf0; }}
 </style>
 </head>
 <body>
+<div id="wrap">
 <canvas id="c" width="2160" height="2160"></canvas>
+<pre id="obspanel">observation</pre>
+</div>
 <div id="controls">
   <button id="btn">Pause</button>
   <label>Speed <input type="range" id="spd" min="1" max="20" value="{fps}"></label>
@@ -367,9 +393,11 @@ function drawFrame(idx) {{
   ctx.fillText('T=' + f.t + 's   frame=' + (idx+1) + '/' + FRAMES.length
                + '   LoS=' + f.los + '   conf=' + f.conf
                + '   LoS-steps=' + f.lst, 10*S, H - 18*S);
+  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
   let rcol = f.r < -1 ? C.red : C.dim;
   ctx.fillStyle = rcol;
-  ctx.fillText('r=' + f.r.toFixed(3) + '   Sr=' + f.sr.toFixed(1), 10*S, H - 5*S);
+  let actStr = (f.a >= 0) ? ('     action=' + ACT[f.a]) : '';
+  ctx.fillText('r=' + f.r.toFixed(3) + '   Sr=' + f.sr.toFixed(1) + actStr, 10*S, H - 5*S);
 
   // End-of-recording banner on the final frame
   if (idx >= FRAMES.length - 1) {{
@@ -383,6 +411,31 @@ function drawFrame(idx) {{
                  W/2, 36*S);
     ctx.textAlign = 'left';
   }}
+
+  updateObsPanel(f);
+}}
+
+// -- Observation panel (focus aircraft's obs vector the agent acted on)
+function fmtv(v) {{ return (v >= 0 ? ' ' : '') + v.toFixed(2); }}
+function updateObsPanel(f) {{
+  const el = document.getElementById('obspanel');
+  if (!f.obs) {{ el.textContent = 'observation: n/a'; return; }}
+  const o = f.obs;
+  const nOwn = o.length - 20;               // 4 intruders x 5 = 20; rest is ownship
+  const ownLbl = ['sin Dpsi ', 'cos Dpsi ', 'turn_prog', 'route_clr'];
+  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
+  let s = 'OBSERVATION  (focus aircraft)\n';
+  s += 'action = ' + (f.a >= 0 ? ACT[f.a] : '-') + '\n\n';
+  s += 'ownship\n';
+  for (let i = 0; i < nOwn; i++) s += '  ' + ownLbl[i] + '  ' + fmtv(o[i]) + '\n';
+  s += '\nintruders   r    th   cpaR cpaTh tcpa\n';
+  for (let k = 0; k < 4; k++) {{
+    const b = nOwn + k * 5;
+    s += '  I' + k + '   '
+       + fmtv(o[b]) + ' ' + fmtv(o[b+1]) + ' ' + fmtv(o[b+2]) + ' '
+       + fmtv(o[b+3]) + ' ' + fmtv(o[b+4]) + '\n';
+  }}
+  el.textContent = s;
 }}
 
 // -- Playback
@@ -625,6 +678,8 @@ def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8, ended=True):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--env',         default='v3',
+                        help='Environment module under Environments/ (e.g. test_env)')
     parser.add_argument('--model',       default=DEFAULT_MODEL)
     parser.add_argument('--no-policy',   action='store_true')
     parser.add_argument('--mp4',         action='store_true', help='Also save as .mp4')
@@ -635,22 +690,27 @@ def main():
     parser.add_argument('--n-aircraft',  type=int,   default=None)
     parser.add_argument('--density',     type=float, default=None)
     parser.add_argument('--circularity', type=float, default=None)
+    parser.add_argument('--n-vertices',  type=int,   default=None,
+                        help='Override sector polygon vertex count (higher = rounder)')
     parser.add_argument('--crossings',   type=float, default=None,
                         help='Override crossings_per_episode (longer episodes)')
+    parser.add_argument('--t_warn',      type=float, default=None,
+                        help='Warning horizon in seconds (default: 360 = 6 min)')
     args = parser.parse_args()
 
     use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
     model   = None
     vecnorm = None
 
+    env = AirspaceEnv()   # created up front so we can load the model with its exact spaces
+
     if use_policy:
         print(f'Loading model   : {args.model}')
-        # spaces passed explicitly: checkpoints saved with other numpy/SB3
-        # versions fail to deserialise them
+        # spaces passed explicitly (checkpoints from other numpy/SB3 versions fail to
+        # deserialise them); taken from the env so obs dim / action count always match
         model = PPO.load(args.model, custom_objects={
-            'observation_space': gym_spaces.Box(-np.inf, np.inf,
-                                                shape=(OBS_DIM,), dtype=np.float32),
-            'action_space':      gym_spaces.Discrete(8),
+            'observation_space': env.observation_space,
+            'action_space':      env.action_space,
         })
         vn = args.model.replace('.zip', '_vecnorm.pkl')
         if os.path.exists(vn):
@@ -669,7 +729,9 @@ def main():
     if args.n_aircraft  is not None: CONFIG['n_aircraft']      = lambda n=args.n_aircraft: n
     if args.density     is not None: CONFIG['rho']             = lambda d=args.density: d
     if args.circularity is not None: CONFIG['min_circularity'] = args.circularity
+    if args.n_vertices  is not None: CONFIG['n_vertices']      = lambda v=args.n_vertices: v
     if args.crossings   is not None: CONFIG['crossings_per_episode'] = args.crossings
+    if args.t_warn      is not None: CONFIG['t_warn'] = float(args.t_warn)
 
     stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else 'no_policy'
     mode_str = f'{os.path.basename(args.model)}' if use_policy else 'no policy'
@@ -678,7 +740,6 @@ def main():
     if args.n_aircraft is not None: cond += f'_n{args.n_aircraft}'
     if args.density    is not None: cond += f'_d{args.density:.0e}'
 
-    env = AirspaceEnv()
     print(f'Mode     : {mode_str}')
     print(f'Episodes : {args.episodes}\n')
 

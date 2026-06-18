@@ -1,0 +1,5 @@
+Reward weights rebalanced (you'd noticed aircraft preferred to keep drifting rather than risk a conflict by correcting course):
+
+w_conflict: 3.00 → 2.00
+w_drift: 1.00 → 1.50, and changed from linear (1-cosθ)/2 to squared ((1-cosθ)/2)² — keeps mild corrective drift about as cheap as before, but punishes extreme/near-reversal angles much more steeply (crosses over the old linear cost around ~100°, reaching 1.5 at 180° vs the old cap of 1.0).
+w_los: unchanged at 10.00 — still the dominant safety penalty.

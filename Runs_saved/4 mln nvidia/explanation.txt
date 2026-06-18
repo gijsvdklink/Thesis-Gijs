@@ -1,0 +1,15 @@
+works really well, everything perfect. Only problem is the drift. 
+Aircrafts resolve heavy drift but heading angle always stays at -30 degrees. 
+Also the cheating behaviour where the ac's oscillate between actions still apears.
+Proposed solution:
+look ahead time from 6 to 5 minutes (for less cheating behaviour)
+all action costs two times higher 
+free action 7 (back to WP is free to support this more)
+
+other improvements:
+- more logs in tensorboard
+- every 300K policy saved
+- route recovery - we now just select the aicraft from all drifting aircrafts who is furthest away in terms of tcpa and dcpa
+
+update:
+-there were some training issues with 96 envs every 96 * 1024 = ~100k steps we would only update and this resulted in poor learning. I fixed this with a new training setup.
