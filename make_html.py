@@ -75,6 +75,12 @@ AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180, OBS_DIM = (
     _envmod.AirspaceEnv, _envmod.CONFIG, _envmod.NM_TO_KM,
     _envmod.latlon_to_nm, _envmod.wrap_to_180, _envmod.OBS_DIM)
 
+# Per-env labels for the observation panel (fall back to the v4 polar layout)
+OBS_OWNSHIP_LABELS  = getattr(_envmod, 'OBS_OWNSHIP_LABELS',
+                              ['sin Dpsi', 'cos Dpsi', 'turn_prog', 'route_clr'])
+OBS_INTRUDER_LABELS = getattr(_envmod, 'OBS_INTRUDER_LABELS',
+                              ['r', 'theta', 'cpaR', 'cpaTh', 'tcpa'])
+
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
 
@@ -87,6 +93,19 @@ DEFAULT_MODEL = os.path.join(
     'dalmau_8act_obs23_seed96123_20260610_101451',
     'checkpoints', 'ckpt_400000.zip',
 )
+
+def _checkpoint_n_actions(model_path):
+    """Read the discrete action count from a saved policy (action_net rows),
+    so older checkpoints with a different action count still load."""
+    try:
+        import zipfile, io, torch
+        with zipfile.ZipFile(model_path) as z:
+            sd = torch.load(io.BytesIO(z.read('policy.pth')),
+                            map_location='cpu', weights_only=False)
+        return int(sd['action_net.weight'].shape[0])
+    except Exception:
+        return None
+
 
 # -- Frame data collector -----------------------------------------------------
 
@@ -422,13 +441,15 @@ function updateObsPanel(f) {{
   if (!f.obs) {{ el.textContent = 'observation: n/a'; return; }}
   const o = f.obs;
   const nOwn = o.length - 20;               // 4 intruders x 5 = 20; rest is ownship
-  const ownLbl = ['sin Dpsi ', 'cos Dpsi ', 'turn_prog', 'route_clr'];
+  const ownLbl = {own_labels_json};
+  const intrLbl = {intr_labels_json};
   const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
+  const pad = (t, w) => (t + ' '.repeat(w)).slice(0, w);
   let s = 'OBSERVATION  (focus aircraft)\n';
   s += 'action = ' + (f.a >= 0 ? ACT[f.a] : '-') + '\n\n';
   s += 'ownship\n';
-  for (let i = 0; i < nOwn; i++) s += '  ' + ownLbl[i] + '  ' + fmtv(o[i]) + '\n';
-  s += '\nintruders   r    th   cpaR cpaTh tcpa\n';
+  for (let i = 0; i < nOwn; i++) s += '  ' + pad(ownLbl[i] || ('o'+i), 9) + '  ' + fmtv(o[i]) + '\n';
+  s += '\nintruders ' + intrLbl.map(l => l.padStart(5).slice(0,5)).join(' ') + '\n';
   for (let k = 0; k < 4; k++) {{
     const b = nOwn + k * 5;
     s += '  I' + k + '   '
@@ -668,6 +689,8 @@ def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8, ended=True):
         max_frame         = len(frames) - 1,
         frames_json       = json.dumps(frames, separators=(',', ':')),
         polygon_json      = json.dumps(polygon, separators=(',', ':')),
+        own_labels_json   = json.dumps(OBS_OWNSHIP_LABELS,  separators=(',', ':')),
+        intr_labels_json  = json.dumps(OBS_INTRUDER_LABELS, separators=(',', ':')),
     )
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
@@ -706,11 +729,17 @@ def main():
 
     if use_policy:
         print(f'Loading model   : {args.model}')
-        # spaces passed explicitly (checkpoints from other numpy/SB3 versions fail to
-        # deserialise them); taken from the env so obs dim / action count always match
+        # Spaces passed explicitly (checkpoints from other numpy/SB3 versions fail to
+        # deserialise them). Obs dim comes from the env; the action count is read from
+        # the checkpoint itself, so an older policy with fewer actions (e.g. trained
+        # before fly-direct was added) still loads -- the env accepts the subset.
+        n_act = _checkpoint_n_actions(args.model) or env.action_space.n
+        if n_act != env.action_space.n:
+            print(f'  checkpoint has {n_act} actions (env has {env.action_space.n}); '
+                  f'loading with Discrete({n_act})')
         model = PPO.load(args.model, custom_objects={
             'observation_space': env.observation_space,
-            'action_space':      env.action_space,
+            'action_space':      gym_spaces.Discrete(n_act),
         })
         vn = args.model.replace('.zip', '_vecnorm.pkl')
         if os.path.exists(vn):

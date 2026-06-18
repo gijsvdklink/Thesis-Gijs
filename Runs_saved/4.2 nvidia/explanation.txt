@@ -1,7 +1,0 @@
-t_warn: 360s → 300s (6 min → 5 min conflict-detection horizon) — you wanted a shorter lookahead to reduce "cheating" oscillation behavior (per explanation.txt).
-
-Turn action costs doubled: [1.0, 0.75, 0.5, 0, 0.5, 0.75, 1.0] → [2.0, 1.5, 1.0, 0, 1.0, 1.5, 2.0] — make every turn instruction more expensive.
-
-Fly-direct (action 7) made free (was up to 1.0 × w_work, scaled by deviation) — explicitly support "free to support [route recovery]" per your note.
-
-Drift-fallback aircraft selection reworked: when the sector is conflict-free, the aircraft chosen to be sent back on track used to be picked by raw nearest-neighbor distance. Now it's 1 - conflict_score, i.e. the same dcpa/tcpa-based score used elsewhere — picks whichever drifter is furthest from any predicted near-miss in miss-distance/time terms, not just current spacing. Removed the now-unused return_clear_nm config.

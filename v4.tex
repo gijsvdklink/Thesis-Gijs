@@ -1,0 +1,152 @@
+%% v4.tex -- experimental environment specification (compact, ACAS Xu observation)
+% !TEX program = pdflatex
+\documentclass[11pt, a4paper]{article}
+\usepackage{amsmath, amssymb, booktabs, geometry, microtype}
+\usepackage[hidelinks]{hyperref}
+\geometry{margin=2.5cm}
+\title{\textbf{Experimental Environment --- ACAS Xu Observation (Compact Specification)}}
+\date{}
+\begin{document}
+\maketitle
+
+Single-sector air-traffic conflict-resolution MDP in BlueSky. A PPO agent issues one
+discrete heading instruction per step to the \emph{focus} aircraft. Flat-earth
+equatorial projection; positions in NM, velocities in NM/s. The observation follows the
+ACAS Xu pairwise state ($\rho,\theta,\psi,v,\tau$), extended to the 4 nearest/most-urgent
+intruders and normalised \emph{within the environment} to $[-1,1]/[0,1]$.
+
+% -----------------------------------------------------------------------------
+\section{Scenario}
+\begin{itemize}\itemsep1pt
+\item $N=2$ Airbus A320 at FL350, constant speed $v=450$\,kt ($M=0.78$); $v_\text{nom}=v/3600$\,NM/s.
+\item Sector: convex polygon, $80$ vertices, isoperimetric ratio $\ge 0.99$ (near-circular),
+      area $N/\rho$ with $\rho\sim\mathcal U(1/8000,\,1/4000)\,\text{km}^{-2}$
+      $\Rightarrow 8$--$16\times10^3$\,km$^2$, $\sim55$--$78$\,NM across.
+\item Each aircraft spawns on a perimeter arc (jittered) and heads to a reference/exit point on
+      the diametrically opposite arc, jittered by $\pm0.05$ of the perimeter
+      $\Rightarrow$ a near-straight chord through the sector centre. Destination set
+      $\sim20\times$ the sector span beyond the boundary (far field: the bearing to the
+      destination is near-constant, so a held heading stays on route).
+\item Spawn admitted iff $\ge d_\text{sep}+d_\text{buf}=15$\,NM from all traffic
+      ($d_\text{sep}=5$, $d_\text{buf}=10$\,NM); exits are replaced.
+\item RL step $=10\,\Delta t=5$\,s ($\Delta t=0.5$\,s); LoS checked at step end.
+      Episode $=4$ diameter-crossings ($\sim40$--$55$\,min).
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+\section{Focus selection}
+Pairwise urgency ($r=p_j-p_i$, $d=\lVert r\rVert$, $v_\text{rel}=v_j-v_i$,
+$t_\text{CPA}=-\,r\!\cdot\! v_\text{rel}/\lVert v_\text{rel}\rVert^2$, $d_\text{CPA}$ the miss distance):
+\[
+u_{ij}=
+\begin{cases}
+1+9\bigl(1-\tfrac{d}{d_\text{sep}}\bigr), & d<d_\text{sep},\\[1mm]
+\dfrac{T_\text{warn}-t_\text{CPA}}{T_\text{warn}}, & d_\text{CPA}<d_\text{sep},\ 0\le t_\text{CPA}\le T_\text{look},\\[1mm]
+0, & \text{otherwise,}
+\end{cases}
+\qquad
+\begin{aligned}
+&d_\text{sep}=5\,\text{NM},\\
+&T_\text{warn}=300\,\text{s},\\
+&T_\text{look}=900\,\text{s}.
+\end{aligned}
+\]
+Focus $f=\arg\max_i\max_{j\ne i}u_{ij}$, tiebreak $\sum_{j}u_{ij}$. Held while
+$\max_j u_{fj}>0$ or fewer than $n_\text{clear}=5$ steps since urgency last cleared;
+released immediately if any $u_{ij}\ge u_\text{emerg}=0.8$.
+When conflict-free, focus $=\arg\max_i s_i$ with
+$s_i=\tfrac{1-\cos(\psi^i_\text{dest}-\psi^i_\text{cmd})}{2}\cdot\min\!\bigl(1,\,d^i_\text{nn}/d_\text{clear}\bigr)$,
+where $d^i_\text{nn}$ is $i$'s nearest-neighbour distance and $d_\text{clear}=20$\,NM ($=4d_\text{sep}$):
+drifted aircraft in open airspace are prioritised for return. Hysteresis margin $0.01$.
+
+% -----------------------------------------------------------------------------
+\section{Action space (\texttt{Discrete(8)})}
+Turns stack on the commanded heading: $\psi_\text{cmd}\leftarrow(\psi_\text{cmd}+\delta)\bmod360^\circ$.
+Workload cost $c=2|\delta|/60^\circ$, $r_\text{work}=-w_\text{work}\,c$ with $w_\text{work}=0.30$.
+\begin{table}[h]\centering
+\begin{tabular}{cllcc}
+\toprule
+Idx & Action & Effect & $c$ & $r_\text{work}$\\
+\midrule
+0 & Turn       & $\delta=-60^\circ$ (stacks on $\psi_\text{cmd}$)              & $2.0$ & $-0.60$\\
+1 & Turn       & $\delta=-45^\circ$                                            & $1.5$ & $-0.45$\\
+2 & Turn       & $\delta=-30^\circ$                                            & $1.0$ & $-0.30$\\
+3 & Hold       & no instruction sent; aircraft holds last command             & $0$   & $0$\\
+4 & Turn       & $\delta=+30^\circ$                                            & $1.0$ & $-0.30$\\
+5 & Turn       & $\delta=+45^\circ$                                            & $1.5$ & $-0.45$\\
+6 & Turn       & $\delta=+60^\circ$                                            & $2.0$ & $-0.60$\\
+7 & Fly direct & direct mode: $\psi_\text{cmd}\!\to\!\psi_\text{dest}$ re-aimed every step until a turn cancels & $0.25$ & $-0.075$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\section{Observation $o\in\mathbb R^{24}$}
+Ego-centric to focus $f$ (forward axis $=\psi_\text{act}$). All features are normalised
+\emph{in-env} to $[-1,1]/[0,1]$ by fixed physical ranges, so training uses
+\texttt{norm\_obs=False}. Here $\Delta\psi=\psi_\text{dest}-\psi_\text{cmd}$,
+$v_\text{nom}=v/3600$\,NM/s, $d_\text{warn}=T_\text{warn}v_\text{nom}=37.5$\,NM.
+The 4 intruder slots ($m=0,\dots,3$, base index $4+5m$) are filled urgency-first then nearest;
+an empty or diverging slot is the sentinel $(1,0,0,0,1)$.
+\begin{table}[h]\centering
+\begin{tabular}{cllc}
+\toprule
+Index & Symbol & Definition & Range\\
+\midrule
+\multicolumn{4}{l}{\emph{Ownship}}\\
+$0$ & $\sin\Delta\psi$ & route-heading error, sin part & $[-1,1]$\\
+$1$ & $\cos\Delta\psi$ & route-heading error, cos part & $[-1,1]$\\
+$2$ & $v_\text{own}$ & own speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
+$3$ & $p_\text{turn}$ & $\mathrm{wrap}(\psi_\text{cmd}-\psi_\text{act})/180^\circ$ (turn-execution lag) & $[-1,1]$\\
+\multicolumn{4}{l}{\emph{Each intruder $j$ (slot $m$, indices $4{+}5m$ to $8{+}5m$)}}\\
+$+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
+$+1$ & $\theta$ & ego bearing to $j$, $/\pi$ ($0=$ ahead) & $[-1,1]$\\
+$+2$ & $\psi$ & intruder heading relative to ownship, $\mathrm{wrap}(\psi_j-\psi_\text{act})/180^\circ$ & $[-1,1]$\\
+$+3$ & $v_\text{int}$ & intruder speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
+$+4$ & $\tau$ & $t_\text{CPA}/T_\text{warn}$ (time to closest approach; $0$ in LoS, $1$ if diverging) & $[0,1]$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\emph{Note.} The horizontal sim has a single altitude, so $\tau$ is the horizontal
+analogue of the ACAS Xu time-to-loss-of-vertical-separation: it is the (normalised) time to
+closest approach and is \emph{not} gated on the miss distance $d_\text{CPA}$.
+
+% -----------------------------------------------------------------------------
+\section{Reward ($r=r_\text{LoS}+r_\text{conf}+r_\text{drift}+r_\text{work}\le 0$)}
+Conflict severity of intruder $k$ (gated on a predicted miss inside separation):
+\begin{equation}
+s_k=\max\!\Bigl(0,1-\tfrac{t_\text{CPA}^k}{T_\text{warn}}\Bigr)\,
+     \max\!\Bigl(0,1-\tfrac{d_\text{CPA}^k}{d_\text{sep}}\Bigr)\ \ \bigl[d_\text{CPA}^k<d_\text{sep}\bigr],
+\qquad s_k=1\ \text{in LoS.}
+\label{eq:score}
+\end{equation}
+\begin{table}[h]\centering
+\begin{tabular}{lllc}
+\toprule
+Term & Expression & Charged & Weight\\
+\midrule
+$r_\text{LoS}$  & $-w_\text{LoS}\,\mathbf 1[\text{LoS}]$              & step end; any pair $<d_\text{sep}$ (sector-wide) & $10$\\
+$r_\text{conf}$ & $-w_\text{conf}\,\max_k s_k$                        & every step; focus vs.\ all intruders             & $2$\\
+$r_\text{drift}$& $-w_\text{drift}\,\tfrac{1-\cos a}{2}$ (Eq.~\ref{eq:drift}) & every step; focus heading error $a$       & $2.0$\\
+$r_\text{work}$ & $-w_\text{work}\,c,\ \ c=2|\delta|/60^\circ$        & per instruction; hold free ($c{=}0$), fly-direct low ($c{=}0.25$) & $0.30$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Cosine route-deviation penalty, $a=\mathrm{wrap}(\psi_\text{dest}-\psi_\text{cmd})$
+(commanded heading error from route):
+\begin{equation}
+r_\text{drift}=-\,w_\text{drift}\,\frac{1-\cos a}{2}.
+\label{eq:drift}
+\end{equation}
+
+% -----------------------------------------------------------------------------
+\section{Training (PPO, Stable-Baselines3)}
+$48$ parallel envs (\texttt{SubprocVecEnv}); \texttt{VecNormalize} with
+\texttt{norm\_obs=False} (observations are normalised within the environment),
+\texttt{norm\_reward=True}.
+$\gamma=0.99$, $\lambda_\text{GAE}=0.95$, $n_\text{steps}=256$, batch $2048$, $10$ epochs,
+clip $0.2$, entropy coef.\ $0.02$, value coef.\ $0.5$, lr $3\times10^{-4}$, MLP $[128,128]$.
+
+\end{document}
