@@ -86,25 +86,24 @@ CONFIG = {
     'ac_mach_max':           0.82,
     'altitude':              350,
     'center_ll':             (0.0, 0.0),      # flat-earth equatorial: cos(0)=1
-    'n_aircraft':            lambda: 2,
-    'rho':                   lambda: random.uniform(1/8000, 1/4000),  # aircraft/km^2; area = n/rho
-                                                                        # -- high-density airspace (~8-16k km^2
-                                                                        # with n=2, ~55-78 NM across): frequent
-                                                                        # conflicts, short legs
+    'n_aircraft':            lambda: random.randint(8, 14),  # multi-aircraft: 8-14 per episode
+    'rho':                   lambda: random.uniform(1/20000, 1/6000),  # aircraft/km^2; area = n/rho.
+                                                                         # uniform over 6-20k km^2/ac: a
+                                                                         # continuous low->high density mix
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector: bearing-to-dest is
                                                # near-constant, so a held heading stays on route (turning
                                                # back is enough; no continuous re-aiming needed)
     'arrival_tol_nm':        5.0,             # exit within this distance of t_ref counts as on-target
     'buffer_nm':             10.0,            # spawn buffer: min distance to traffic = sep_nm + buffer_nm
-    # Polygon
-    'n_vertices':            lambda: 80,        # need ~80 to reach circ 0.99 (a 7-gon maxes ~0.91)
-    'min_circularity':       0.99,              # near-circular sector: symmetric, high-conflict geometry
+    # Polygon -- varied but reasonably round sectors (random convex shapes, circ >= 0.7)
+    'n_vertices':            lambda: random.randint(6, 12),  # varies per episode; enough vertices to reach 0.7
+    'min_circularity':       0.7,               # floor: rounder sectors, still some shape variation
     'max_placement_tries':   50,
     # Aircraft placement jitter
     'spawn_jitter':          lambda: random.uniform(0.1, 0.9),
-    'ref_jitter':            lambda: random.uniform(-0.05, 0.05),  # small: aircraft head ~straight across
-                                                                    # (through centre) with mild randomness
+    'ref_jitter':            lambda: random.uniform(-0.2, 0.2),  # wider spread of reference points -> more
+                                                                  # varied crossing angles / entry-exit geometry
     # Simulation
     'sim_dt':                0.5,
     'action_freq':           10,              # RL step = 5 s simulated

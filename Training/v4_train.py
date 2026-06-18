@@ -26,7 +26,7 @@ from Environments.v4 import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-N_ENVS           = 4   # tuned for this server's core count
+N_ENVS           = 48   # tuned for this server's core count
 TOTAL_TIMESTEPS  = 100_000_000
 CHECKPOINT_EVERY = 300_000
 N_RUNS           = 3
