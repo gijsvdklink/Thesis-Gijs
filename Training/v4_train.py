@@ -1,12 +1,15 @@
 """
-PPO training for v3.
+PPO training for the experimental ACAS Xu-state env (Environments/experimental.py).
+
+Observations are normalised in-env (fixed physical ranges), so VecNormalize
+only standardises the reward (norm_obs=False).
 
 Run:
-    python -m Training.v3_train
-    python -m Training.v3_train --multi   # 3 seeds in parallel
+    python -m Training.experimental_train
+    python -m Training.experimental_train --multi   # 3 seeds in parallel
 
 Monitor:
-    tensorboard --logdir Runs_saved/v3
+    tensorboard --logdir Runs_saved/experimental
 """
 
 import os, random, subprocess, sys, time, argparse
@@ -23,13 +26,13 @@ from Environments.v4 import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-N_ENVS           = 48   # tuned for this server's core count
+N_ENVS           = 4   # tuned for this server's core count
 TOTAL_TIMESTEPS  = 100_000_000
 CHECKPOINT_EVERY = 300_000
 N_RUNS           = 3
 
 RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'v3')
+    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'experimental')
 )
 
 PPO_KWARGS = dict(
@@ -57,6 +60,7 @@ PPO_KWARGS = dict(
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 class EpisodeStatsCallback(BaseCallback):
+    # 8 actions: turns +-60/45/30, hold (3), fly-direct/back-to-wp (7).
     _LABELS = ['-60°', '-45°', '-30°', 'hold', '+30°', '+45°', '+60°', 'direct']
 
     def _on_step(self):
@@ -73,7 +77,7 @@ class EpisodeStatsCallback(BaseCallback):
             for label, count in zip(self._LABELS, dist):
                 self.logger.record_mean(f'actions/{label}', count / total)
             # turn instructions issued per episode -- excludes hold (3) and
-            # fly-direct (7), which are free / not real ATC instructions
+            # fly-direct (7), which are free / not real heading-change instructions
             if len(dist) >= 8:
                 turn_count = sum(dist) - dist[3] - dist[7]
                 self.logger.record_mean('actions/turns_total', turn_count)
@@ -126,7 +130,7 @@ class ProgressCallback(BaseCallback):
 def train(seed, t_warn=None, resume=None):
     t_warn_tag = f"_twarn{int(t_warn)}s" if t_warn is not None else ""
     resume_tag = "_resumed" if resume else ""
-    run_name = f"v3_8act_obs24_seed{seed}{t_warn_tag}{resume_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"acasxu_7state_obs22_seed{seed}{t_warn_tag}{resume_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
@@ -138,14 +142,16 @@ def train(seed, t_warn=None, resume=None):
                         env_kwargs=env_kwargs)
     monitored = VecMonitor(venv)
 
-    # Reload reward-normalisation stats if a matching vecnorm sits next to the
-    # checkpoint, otherwise start them fresh (obs are not normalised either way).
+    # Standardise observations AND reward. Obs mix radians (angles, ~+-pi) with
+    # range-scaled states, so VecNormalize gives the network zero-mean/unit-var
+    # inputs. The saved *_vecnorm.pkl MUST be loaded at eval/visualisation time.
     vecnorm_path = resume.replace('.zip', '_vecnorm.pkl') if resume else None
     if vecnorm_path and os.path.exists(vecnorm_path):
         env = VecNormalize.load(vecnorm_path, monitored)
-        env.training, env.norm_reward = True, True
+        env.training, env.norm_obs, env.norm_reward = True, True, True
     else:
-        env = VecNormalize(monitored, norm_obs=False, norm_reward=True, gamma=0.99)
+        env = VecNormalize(monitored, norm_obs=True, norm_reward=True,
+                           clip_obs=10.0, clip_reward=10.0, gamma=0.99)
 
     if resume:
         # warm-start from an existing policy and keep training it

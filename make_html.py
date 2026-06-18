@@ -1,5 +1,5 @@
 """
-make_html.py -- HTML canvas visualisation of a v3 episode.
+make_html.py -- HTML canvas visualisation of a v4 episode.
 
 Runs the episode, captures lightweight JSON frame data, then writes a single
 self-contained HTML file that plays the animation in any browser.
@@ -60,11 +60,11 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from gymnasium import spaces as gym_spaces
 
-# Select the environment module before it is used (default v3). Pre-scan argv so
+# Select the environment module before it is used (default v4). Pre-scan argv so
 # the module-level CONFIG/OBS_DIM below come from the chosen env; e.g.
 #   python make_html.py --env test_env --model ...
 import importlib
-_env_name = 'v3'
+_env_name = 'v4'
 for _i, _a in enumerate(sys.argv):
     if _a == '--env' and _i + 1 < len(sys.argv):
         _env_name = sys.argv[_i + 1]
@@ -75,11 +75,13 @@ AirspaceEnv, CONFIG, NM_TO_KM, latlon_to_nm, wrap_to_180, OBS_DIM = (
     _envmod.AirspaceEnv, _envmod.CONFIG, _envmod.NM_TO_KM,
     _envmod.latlon_to_nm, _envmod.wrap_to_180, _envmod.OBS_DIM)
 
-# Per-env labels for the observation panel (fall back to the v4 polar layout)
+# Per-env labels for the observation panel (fall back to the v4 ACAS Xu layout:
+# 6 ownship states + 5 per-intruder states)
 OBS_OWNSHIP_LABELS  = getattr(_envmod, 'OBS_OWNSHIP_LABELS',
-                              ['sin Dpsi', 'cos Dpsi', 'turn_prog', 'route_clr'])
+                              ['sin Dpsi', 'cos Dpsi', 'v_own', 'turn_prog',
+                               'conf_now', 'retn_conf'])
 OBS_INTRUDER_LABELS = getattr(_envmod, 'OBS_INTRUDER_LABELS',
-                              ['r', 'theta', 'cpaR', 'cpaTh', 'tcpa'])
+                              ['rho', 'theta', 'psi', 'vint', 'tau'])
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -88,11 +90,9 @@ HERE        = os.path.dirname(os.path.abspath(__file__))
 MAX_FRAMES  = 1500
 SEP_NM      = float(CONFIG['sep_nm'])
 
-DEFAULT_MODEL = os.path.join(
-    HERE, 'Runs_saved', 'v3',
-    'dalmau_8act_obs23_seed96123_20260610_101451',
-    'checkpoints', 'ckpt_400000.zip',
-)
+# No canonical default checkpoint; pass --model explicitly. If left empty, the
+# episode runs with random actions (no-policy preview of the env).
+DEFAULT_MODEL = ''
 
 def _checkpoint_n_actions(model_path):
     """Read the discrete action count from a saved policy (action_net rows),
@@ -176,7 +176,7 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
             obs_n = vecnorm.normalize_obs(obs[np.newaxis]) if vecnorm else obs[np.newaxis]
             action = int(model.predict(obs_n, deterministic=True)[0][0])
         else:
-            action = env.action_space.sample()
+            action = int(env.action_space.sample())   # cast off np.int64 -> JSON-serialisable
 
         obs_used = obs.tolist()   # the observation the agent acted on this step
 
@@ -201,7 +201,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>v3 ATC — {title}</title>
+<title>v4 ATC — {title}</title>
 <style>
   body {{ margin:0; background:#060d1a; display:flex; flex-direction:column;
            align-items:center; padding:16px; font-family:monospace; color:#a0b8d8; }}
@@ -439,10 +439,12 @@ function fmtv(v) {{ return (v >= 0 ? ' ' : '') + v.toFixed(2); }}
 function updateObsPanel(f) {{
   const el = document.getElementById('obspanel');
   if (!f.obs) {{ el.textContent = 'observation: n/a'; return; }}
-  const o = f.obs;
-  const nOwn = o.length - 20;               // 4 intruders x 5 = 20; rest is ownship
-  const ownLbl = {own_labels_json};
+  const o       = f.obs;
+  const ownLbl  = {own_labels_json};
   const intrLbl = {intr_labels_json};
+  const nOwn    = ownLbl.length;                       // v4: 6 ownship states
+  const perIntr = intrLbl.length;                      // v4: 5 states per intruder
+  const nIntr   = Math.floor((o.length - nOwn) / perIntr);
   const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
   const pad = (t, w) => (t + ' '.repeat(w)).slice(0, w);
   let s = 'OBSERVATION  (focus aircraft)\n';
@@ -450,11 +452,11 @@ function updateObsPanel(f) {{
   s += 'ownship\n';
   for (let i = 0; i < nOwn; i++) s += '  ' + pad(ownLbl[i] || ('o'+i), 9) + '  ' + fmtv(o[i]) + '\n';
   s += '\nintruders ' + intrLbl.map(l => l.padStart(5).slice(0,5)).join(' ') + '\n';
-  for (let k = 0; k < 4; k++) {{
-    const b = nOwn + k * 5;
-    s += '  I' + k + '   '
-       + fmtv(o[b]) + ' ' + fmtv(o[b+1]) + ' ' + fmtv(o[b+2]) + ' '
-       + fmtv(o[b+3]) + ' ' + fmtv(o[b+4]) + '\n';
+  for (let k = 0; k < nIntr; k++) {{
+    const b = nOwn + k * perIntr;
+    let row = '  I' + k + '  ';
+    for (let j = 0; j < perIntr; j++) row += ' ' + fmtv(o[b+j]);
+    s += row + '\n';
   }}
   el.textContent = s;
 }}
@@ -701,8 +703,8 @@ def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8, ended=True):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env',         default='v3',
-                        help='Environment module under Environments/ (e.g. test_env)')
+    parser.add_argument('--env',         default='v4',
+                        help='Environment module under Environments/ (default: v4)')
     parser.add_argument('--model',       default=DEFAULT_MODEL)
     parser.add_argument('--no-policy',   action='store_true')
     parser.add_argument('--mp4',         action='store_true', help='Also save as .mp4')
@@ -775,7 +777,7 @@ def main():
     for ep in range(1, args.episodes + 1):
         seed    = int.from_bytes(os.urandom(4), 'big')
         ep_tag  = f'_ep{ep}' if args.episodes > 1 else ''
-        outpath = os.path.join(HERE, f'v3_{stem}{cond}{ep_tag}.html')
+        outpath = os.path.join(HERE, f'{_env_name}_{stem}{cond}{ep_tag}.html')
         print(f'-- Episode {ep}/{args.episodes} ---')
         polygon, frames, ended = run_episode(env, model, vecnorm, use_policy, seed, args.frames)
         write_html(polygon, frames, outpath, mode_str,

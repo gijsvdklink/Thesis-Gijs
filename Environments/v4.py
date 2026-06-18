@@ -10,20 +10,32 @@ Reward is purely negative (no positive components):
     turn 0/6 (+-60 deg): cost 2.0    turn 1/5 (+-45 deg): cost 1.5   turn 2/4 (+-30 deg): cost 1.0
     hold (3):             cost 0.0
 
-Observation space (24 floats, ego-centric from focus aircraft):
-  [0]   sin(delta_psi_dest)   heading error to destination   [-1, 1]
-  [1]   cos(delta_psi_dest)                                   [-1, 1]
-  [2]   turn_progress  (cmd_hdg - actual) / 180              [-1, 1]
-  [3]   route_clear   conflict score if flying dest bearing (0=clear) [0, 1]
-  [4:24] 4 intruders x 5 (urgency-desc, dist-asc), local polar:
-           r_norm   distance to intruder / D_WARN             [0,  1]
-           theta    relative bearing / pi                     [-1, 1]
-           cpa_r    CPA distance / sep                        [0,  1]
-           cpa_th   CPA bearing / pi                          [-1, 1]
-           tcpa_n   time to CPA / t_warn                      [0,  1]
-         empty/diverging slot: (1, 0, 1, 0, 1)   # cpa_r=1 (clean miss) at the safe end
+Observation space (26 floats) -- ACAS Xu states, ego-centric from the focus
+aircraft (ownship), extended to the 4 nearest/most-urgent intruders. Angles are
+in radians for unit consistency; the remaining states are scaled by their
+physical ranges. VecNormalize (norm_obs=True) standardises everything for the
+network, so the raw scales below need only be internally consistent:
+  ownship (shared, 6):
+    [0]  sin(dpsi_dest)      heading error (cmd vs bearing-to-destination), sin/cos
+    [1]  cos(dpsi_dest)      encoded to avoid the +-pi wrap discontinuity
+    [2]  v_own               ownship speed / nominal cruise (V_NOM)         ~[0, 1]
+    [3]  turn_progress       wrap(cmd_hdg - actual_hdg) in radians: outstanding
+                             turn (0 = settled onto the commanded heading)
+    [4]  conflict_now        conflict score on the CURRENT heading           [0, 1]
+                             (0 = clear, ->1 = in / heading into conflict)
+    [5]  conflict_if_return  conflict score if flying DIRECT to the waypoint  [0, 1]
+                             (0 = safe to return, ->1 = returning enters conflict)
+  per intruder (4 slots x 5), urgency-desc then nearest-asc:
+    rho    distance to intruder / D_WARN (warning horizon)              [0, 1]
+    theta  angle to intruder relative to ownship heading, radians       [-pi, pi]
+    psi    intruder heading relative to ownship heading, radians        [-pi, pi]
+    v_int  intruder speed / nominal cruise (V_NOM)                      ~[0, 1]
+    tau    time until loss of separation / t_warn. Horizontal sim (single
+           altitude), so tau is the horizontal analogue of the ACAS Xu
+           vertical-sep timer: time to CPA (0 if in LoS, 1 if diverging) [0, 1]
+  empty slot sentinel: (rho = 1, theta = 0, psi = 0, v_int = 0, tau = 1)
 
-Action space (Discrete 7) -- relative-turn only, consecutive:
+Action space (Discrete 8) -- consecutive turns + hold + fly-direct:
   0  delta=-60 deg   psi_cmd -= 60   (cost 2.0)   stacks on current commanded heading
   1  delta=-45 deg   psi_cmd -= 45   (cost 1.5)   stacks on current commanded heading
   2  delta=-30 deg   psi_cmd -= 30   (cost 1.0)   stacks on current commanded heading
@@ -31,12 +43,14 @@ Action space (Discrete 7) -- relative-turn only, consecutive:
   4  delta=+30 deg   psi_cmd += 30   (cost 1.0)   stacks on current commanded heading
   5  delta=+45 deg   psi_cmd += 45   (cost 1.5)   stacks on current commanded heading
   6  delta=+60 deg   psi_cmd += 60   (cost 2.0)   stacks on current commanded heading
+  7  FLY DIRECT       psi_cmd = bearing-to-destination, re-aimed every step  (cost 0.25, low)
 
-There is NO fly-direct action: the agent returns to route the same way it avoids, by
-turning back (e.g. -30 deg). Intended pattern: turn(s) to avoid -> hold -> turn back.
+Fly-direct (back to waypoint) is a persistent mode: once issued, the commanded heading
+is re-aimed at the destination every step so the aircraft converges on the waypoint
+rather than holding a stale one-shot bearing. It stays active through HOLD and is
+cancelled by any manual turn. Intended pattern: turn(s) to avoid -> hold -> fly direct.
 Hold is a true no-op (nothing is sent to the simulator); the aircraft continues executing
-its last instruction. The far destination (dest_dist_factor) keeps the bearing-to-waypoint
-near-constant, so holding the corrected heading stays on route.
+its last instruction.
 
 Focus aircraft = aircraft with highest single-pair urgency (total urgency burden as tiebreak).
 When the sector is conflict-free, focus falls back to the drifted aircraft with the best
@@ -118,23 +132,25 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 4 + N_NBR * 5       # 4 ownship + 20 intruder = 24
+OBS_DIM = 6 + N_NBR * 5       # 6 ownship (sin/cos dest, v_own, turn_progress, conflict_now,
+                              # conflict_if_return) + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 26
 
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (37.5 NM)
-V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s)
+V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s); speed-normalising reference
 
-# Heading offsets per turn action (actions 0-2 and 4-6); 3=hold, 7=fly-direct
+# Heading offsets per turn action (actions 0-2 and 4-6); 3=hold, 7=fly-direct (back to wp)
 TURN_DELTAS = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 
 # Workload cost = 2 x |delta| / 60 deg, so equal total deviation = equal total cost.
-# 2x(30 deg) = 2.0 = 1x(60 deg).  Index 7 (fly-direct) is free (see _reward()).
-ACT_COST = [2.0, 1.5, 1.0, 0.0, 1.0, 1.5, 2.0]
+# 2x(30 deg) = 2.0 = 1x(60 deg).  Hold (3) is free; fly-direct (7) carries a very low
+# cost so returning to route is cheap but not entirely free.
+ACT_COST = [2.0, 1.5, 1.0, 0.0, 1.0, 1.5, 2.0, 0.25]
 
 _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
-OBS_OWNSHIP_LABELS  = ['sin Dpsi', 'cos Dpsi', 'turn_prog', 'route_clr']
-OBS_INTRUDER_LABELS = ['r', 'theta', 'cpaR', 'cpaTh', 'tcpa']
+OBS_OWNSHIP_LABELS  = ['sin Dpsi', 'cos Dpsi', 'v_own', 'turn_prog', 'conf_now', 'retn_conf']
+OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 __all__ = ['AirspaceEnv', 'CONFIG', 'NM_TO_KM', 'latlon_to_nm', 'wrap_to_180', 'OBS_DIM',
            'OBS_OWNSHIP_LABELS', 'OBS_INTRUDER_LABELS']
@@ -276,7 +292,7 @@ class AirspaceEnv(gym.Env):
             CONFIG['t_warn'] = float(t_warn)
             D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space      = spaces.Discrete(7)
+        self.action_space      = spaces.Discrete(8)
 
         if not _bs_initialized:
             bs.init(mode='sim', detached=True)
@@ -290,6 +306,7 @@ class AirspaceEnv(gym.Env):
         self._destination_ll      = {}
         self._ref_ll              = {}
         self._commanded_heading   = {}
+        self._direct_mode         = {}           # fly-direct (back-to-wp) active per callsign
         self._steps_since_urgency = {}
         self._focus_hold_steps    = 0
         self._next_callsign_id    = 0
@@ -340,6 +357,7 @@ class AirspaceEnv(gym.Env):
         self._destination_ll      = {}
         self._ref_ll              = {}
         self._commanded_heading   = {}
+        self._direct_mode         = {}           # fly-direct (back-to-wp) active per callsign
         self._steps_since_urgency = {}
         self._focus_hold_steps    = 0
         self._next_callsign_id    = 0
@@ -379,6 +397,9 @@ class AirspaceEnv(gym.Env):
 
         if acting_cs:
             self._apply_action(acting_cs, int(action))
+
+        # re-aim every fly-direct aircraft at its destination before propagating
+        self._update_direct_headings()
 
         self._los_this_step = False
         for _ in range(CONFIG['action_freq']):
@@ -564,8 +585,8 @@ class AirspaceEnv(gym.Env):
                 drift_frac = (1.0 - math.cos(math.radians(hdg_err))) / 2.0
                 r_drift    = -CONFIG['w_drift'] * drift_frac
 
-        # Workload: one-time cost per turn instruction (hold is free). There is no
-        # fly-direct action -- the agent returns to route by turning back.
+        # Workload: one-time cost per instruction. Hold (3) is free (ACT_COST 0.0);
+        # fly-direct (7) carries a very low cost; turns scale with |delta|.
         r_work = 0.0
         if acting_cs:
             r_work = -CONFIG['w_work'] * ACT_COST[action_idx]
@@ -667,19 +688,58 @@ class AirspaceEnv(gym.Env):
             return
 
         if action_idx in TURN_DELTAS:
-            # consecutive: stack delta onto current commanded heading. The agent
-            # returns to route the same way it avoids -- by turning back (e.g. -30).
+            # consecutive: stack delta onto current commanded heading.
             current_cmd = self._commanded_heading.get(cs, bs.traf.hdg[idx])
             self._commanded_heading[cs] = (current_cmd + TURN_DELTAS[action_idx]) % 360
+            self._direct_mode[cs] = False   # a manual turn cancels fly-direct tracking
+        elif action_idx == 7:
+            # fly direct (back to waypoint): enter direct mode -- the heading is
+            # re-aimed at the destination every step (see _update_direct_headings)
+            # so the aircraft converges on the waypoint instead of holding a stale
+            # one-shot bearing. Persists through hold; cancelled by any manual turn.
+            self._direct_mode[cs] = True
+            dest_bearing, _ = geo.kwikqdrdist(
+                bs.traf.lat[idx], bs.traf.lon[idx],
+                *[float(v) for v in self._destination_ll[cs]])
+            self._commanded_heading[cs] = float(dest_bearing) % 360
 
         bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
 
+    def _update_direct_headings(self):
+        """Re-aim every fly-direct aircraft at its destination each step.
+
+        Fly-direct sets the bearing only once; while the aircraft turns onto it it
+        slides laterally off the straight line to the waypoint, and with LNAV off
+        that cross-track offset is never recovered. Re-issuing HDG toward the
+        current bearing turns it into a pursuit that converges on the waypoint.
+        Stays active through hold; cleared by any manual turn.
+        """
+        for cs, on in self._direct_mode.items():
+            if not on:
+                continue
+            idx = bs.traf.id2idx(cs)
+            if idx < 0 or cs not in self._destination_ll:
+                continue
+            dest_bearing, _ = geo.kwikqdrdist(
+                bs.traf.lat[idx], bs.traf.lon[idx],
+                *[float(v) for v in self._destination_ll[cs]])
+            self._commanded_heading[cs] = float(dest_bearing) % 360
+            bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+
     # -- Observation -----------------------------------------------------------
 
+    # ACAS Xu empty-slot sentinel (normalised): rho_n=1 (far), tau_n=1 (no imminent LoS)
+    _EMPTY_SLOT = [1.0, 0.0, 0.0, 0.0, 1.0]
+
     def _get_observation(self):
+        """ACAS Xu states for the focus aircraft (ownship) against its 4
+        nearest/most-urgent intruders, normalised in-env to [-1,1]/[0,1]
+        (so training needs no VecNormalize obs scaling). See module docstring."""
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
-            return np.zeros(OBS_DIM, dtype=np.float32)
+            # no controllable aircraft: on-route (dpsi=0), nominal speed, conflict-free
+            return np.array([0.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+                            + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
         own_hdg = bs.traf.hdg[idx]
@@ -690,29 +750,32 @@ class AirspaceEnv(gym.Env):
         sin_hdg = math.sin(math.radians(own_hdg))
         cos_hdg = math.cos(math.radians(own_hdg))
 
-        own_spd  = _speed_nms(idx)
-        own_ve   = own_spd * math.sin(math.radians(own_hdg))
-        own_vn   = own_spd * math.cos(math.radians(own_hdg))
+        own_spd = _speed_nms(idx)
+        own_ve  = own_spd * math.sin(math.radians(own_hdg))
+        own_vn  = own_spd * math.cos(math.radians(own_hdg))
 
+        # heading error to destination (commanded heading vs bearing-to-destination);
+        # matches the drift the reward penalises. sin/cos avoids the +-180 wrap jump.
         dest_bearing, _ = geo.kwikqdrdist(
             bs.traf.lat[idx], bs.traf.lon[idx],
             *[float(v) for v in self._destination_ll[cs]])
-        hdg_err      = wrap_to_180(dest_bearing - cmd_hdg)
-        turn_progress = wrap_to_180(cmd_hdg - own_hdg) / 180.0   # [-1, 1]
+        hdg_err = wrap_to_180(dest_bearing - cmd_hdg)
+        turn_progress = math.radians(wrap_to_180(cmd_hdg - own_hdg))   # rad; 0 = turn complete
 
-        # route_clear: conflict score the ownship WOULD face if it flew straight to its
-        # destination right now (own velocity rotated to the destination bearing).
-        # 0 = route clear / safe to turn back; ->1 = returning re-enters a conflict.
-        # The per-intruder features below use the CURRENT heading and read "all clear"
-        # while coasting away, so they cannot tell the agent whether returning is safe.
-        route_clear = self._conflict_score(cs, dest_bearing)
+        # conflict severity now (current heading) and if returning to route (flying the
+        # destination bearing). 0 = clear; ->1 = in / entering conflict. The per-intruder
+        # states read "all clear" while coasting away, so conflict_if_return is what tells
+        # the agent whether the fly-direct action is safe.
+        conflict_now    = self._conflict_score(cs)
+        conflict_return = self._conflict_score(cs, dest_bearing)
 
-        obs = [
-            math.sin(math.radians(hdg_err)),   # sin/cos encoding avoids +-180 discontinuity
-            math.cos(math.radians(hdg_err)),
-            turn_progress,
-            route_clear,                       # 0 = route clear (safe to return), ->1 = conflict
-        ]
+        # ownship-global states (shared across intruder slots)
+        obs = [math.sin(math.radians(hdg_err)),       # sin(dpsi_dest)
+               math.cos(math.radians(hdg_err)),       # cos(dpsi_dest)
+               own_spd / V_NOM,                       # v_own normalised by nominal cruise
+               turn_progress,                         # outstanding turn (cmd vs actual heading), rad
+               conflict_now,                          # currently in conflict (0 = clear)
+               conflict_return]                       # conflict if returning to route (0 = safe)
 
         # fetch this aircraft's urgency row for intruder prioritisation
         urgency_row = None
@@ -735,44 +798,30 @@ class AirspaceEnv(gym.Env):
             d_north  = int_pos[1] - own_pos[1]
             dist_nm  = math.sqrt(d_east**2 + d_north**2)
 
+            int_hdg  = bs.traf.hdg[int_idx]
             int_spd  = _speed_nms(int_idx)
-            int_ve   = int_spd * math.sin(math.radians(bs.traf.hdg[int_idx]))
-            int_vn   = int_spd * math.cos(math.radians(bs.traf.hdg[int_idx]))
-            dv_east  = int_ve - own_ve
-            dv_north = int_vn - own_vn
 
-            # project relative position into ego heading frame
-            ego_lat = d_east * cos_hdg - d_north * sin_hdg   # lateral (right)
-            ego_fwd = d_east * sin_hdg + d_north * cos_hdg   # forward
+            # project relative position into ego heading frame (0 = dead ahead, + = right)
+            ego_lat = d_east * cos_hdg - d_north * sin_hdg
+            ego_fwd = d_east * sin_hdg + d_north * cos_hdg
 
-            r_norm     = min(1.0, dist_nm / D_WARN)
-            theta_norm = math.atan2(ego_lat, ego_fwd) / math.pi   # 0=ahead, +-1=behind
+            # ACAS Xu states; angles in radians, others scaled by physical range:
+            rho   = min(1.0, dist_nm / D_WARN)                         # [0] distance / warning horizon
+            theta = math.atan2(ego_lat, ego_fwd)                      # [1] bearing to intruder, rad (0 = ahead)
+            psi   = math.radians(wrap_to_180(int_hdg - own_hdg))      # [2] intruder hdg rel. ownship, rad
+            v_int = int_spd / V_NOM                                    # [3] intruder speed / nominal cruise
 
-            # CPA polar features — filled only when dcpa < sep (true conflict course)
+            # tau: horizontal time-to-loss-of-separation / t_warn. 0 if already inside
+            # sep, time to CPA when converging, 1 (=t_warn cap) when diverging.
             if dist_nm < sep:
-                # active LoS: report current position as the CPA
-                tcpa_n      = 0.0
-                cpa_r_n     = min(1.0, dist_nm / sep)
-                cpa_theta_n = math.atan2(ego_lat, ego_fwd) / math.pi
+                tau = 0.0
             else:
+                dv_east    = int_spd * math.sin(math.radians(int_hdg)) - own_ve
+                dv_north   = int_spd * math.cos(math.radians(int_hdg)) - own_vn
                 rel_spd_sq = dv_east**2 + dv_north**2
-                range_rate = d_east * dv_east + d_north * dv_north   # r·v; negative = converging
+                range_rate = d_east * dv_east + d_north * dv_north     # negative = converging
                 tcpa       = (-range_rate / rel_spd_sq) if rel_spd_sq > 1e-12 else -1.0
-
-                if 0 < tcpa <= t_warn:
-                    cpa_east  = d_east  + tcpa * dv_east
-                    cpa_north = d_north + tcpa * dv_north
-                    if cpa_east**2 + cpa_north**2 < sep**2:
-                        dcpa         = math.sqrt(cpa_east**2 + cpa_north**2)
-                        cpa_ego_lat  = cpa_east  * cos_hdg - cpa_north * sin_hdg
-                        cpa_ego_fwd  = cpa_east  * sin_hdg + cpa_north * cos_hdg
-                        tcpa_n       = tcpa / t_warn
-                        cpa_r_n      = min(1.0, dcpa / sep)
-                        cpa_theta_n  = math.atan2(cpa_ego_lat, cpa_ego_fwd) / math.pi
-                    else:
-                        tcpa_n, cpa_r_n, cpa_theta_n = 1.0, 1.0, 0.0
-                else:
-                    tcpa_n, cpa_r_n, cpa_theta_n = 1.0, 1.0, 0.0
+                tau        = min(tcpa / t_warn, 1.0) if tcpa > 0 else 1.0
 
             # urgency for this pair from the pre-computed matrix
             urgency = 0.0
@@ -781,31 +830,22 @@ class AirspaceEnv(gym.Env):
                 if other_row_idx < len(urgency_row):
                     urgency = float(urgency_row[other_row_idx])
 
-            intruders.append((urgency, dist_nm, r_norm, theta_norm, cpa_r_n, cpa_theta_n, tcpa_n, other_cs))
+            intruders.append((urgency, dist_nm, [rho, theta, psi, v_int, tau], other_cs))
 
         # fill slots: urgent pairs first (descending urgency), then nearest (ascending distance)
         urgent  = sorted([r for r in intruders if r[0] > 0], key=lambda r: -r[0])
         nearest = sorted(intruders, key=lambda r: r[1])
 
         selected, seen = [], set()
-        for rec in urgent:
+        for rec in urgent + nearest:
             if len(selected) >= N_NBR:
                 break
-            selected.append(rec)
-            seen.add(rec[7])
-        for rec in nearest:
-            if len(selected) >= N_NBR:
-                break
-            if rec[7] not in seen:
+            if rec[3] not in seen:
                 selected.append(rec)
-                seen.add(rec[7])
+                seen.add(rec[3])
 
         for slot_k in range(N_NBR):
-            if slot_k < len(selected):
-                _, _, r_n, theta_n, cpa_r, cpa_th, t_cpa, _ = selected[slot_k]
-                obs += [r_n, theta_n, cpa_r, cpa_th, t_cpa]
-            else:
-                obs += [1.0, 0.0, 1.0, 0.0, 1.0]   # empty slot sentinel (cpa_r=1: clean miss)
+            obs += selected[slot_k][2] if slot_k < len(selected) else self._EMPTY_SLOT
 
         return np.array(obs, dtype=np.float32)
 
@@ -831,6 +871,7 @@ class AirspaceEnv(gym.Env):
             self._destination_ll.pop(cs, None)
             self._ref_ll.pop(cs, None)
             self._commanded_heading.pop(cs, None)
+            self._direct_mode.pop(cs, None)
             self._steps_since_urgency.pop(cs, None)
             if slot not in self._pending_spawns:
                 self._pending_spawns[slot] = random.randint(*self._spawn_delay_range)
@@ -911,6 +952,7 @@ class AirspaceEnv(gym.Env):
         self._destination_ll[cs]      = ac['dest_ll']
         self._ref_ll[cs]              = ac['ref_ll']
         self._commanded_heading[cs]   = float(ac['heading'])
+        self._direct_mode[cs]         = False
         self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs
         self._active_callsigns.add(cs)
