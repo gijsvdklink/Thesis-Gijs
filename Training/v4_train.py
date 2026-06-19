@@ -60,8 +60,9 @@ PPO_KWARGS = dict(
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 class EpisodeStatsCallback(BaseCallback):
-    # 8 actions: turns +-60/45/30, hold (3), fly-direct/back-to-wp (7).
-    _LABELS = ['-60°', '-45°', '-30°', 'hold', '+30°', '+45°', '+60°', 'direct']
+    # 10 actions: turns +-60/45/30, hold (3), fly-direct (7), speed up/down (8/9).
+    _LABELS = ['-60°', '-45°', '-30°', 'hold', '+30°', '+45°', '+60°', 'direct',
+               'spd+', 'spd-']
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
@@ -76,11 +77,12 @@ class EpisodeStatsCallback(BaseCallback):
             total = max(sum(dist), 1)
             for label, count in zip(self._LABELS, dist):
                 self.logger.record_mean(f'actions/{label}', count / total)
-            # turn instructions issued per episode -- excludes hold (3) and
-            # fly-direct (7), which are free / not real heading-change instructions
-            if len(dist) >= 8:
-                turn_count = sum(dist) - dist[3] - dist[7]
+            # turn instructions issued per episode -- excludes hold (3), fly-direct (7)
+            # and speed actions (8, 9): only real heading-change instructions
+            if len(dist) >= 10:
+                turn_count = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]
                 self.logger.record_mean('actions/turns_total', turn_count)
+                self.logger.record_mean('actions/speed_total', dist[8] + dist[9])
         return True
 
 

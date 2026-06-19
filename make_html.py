@@ -412,7 +412,7 @@ function drawFrame(idx) {{
   ctx.fillText('T=' + f.t + 's   frame=' + (idx+1) + '/' + FRAMES.length
                + '   LoS=' + f.los + '   conf=' + f.conf
                + '   LoS-steps=' + f.lst, 10*S, H - 18*S);
-  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
+  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT','SPD+','SPD-'];
   let rcol = f.r < -1 ? C.red : C.dim;
   ctx.fillStyle = rcol;
   let actStr = (f.a >= 0) ? ('     action=' + ACT[f.a]) : '';
@@ -445,7 +445,7 @@ function updateObsPanel(f) {{
   const nOwn    = ownLbl.length;                       // v4: 6 ownship states
   const perIntr = intrLbl.length;                      // v4: 5 states per intruder
   const nIntr   = Math.floor((o.length - nOwn) / perIntr);
-  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT'];
+  const ACT = ['-60','-45','-30','HOLD','+30','+45','+60','DIRECT','SPD+','SPD-'];
   const pad = (t, w) => (t + ' '.repeat(w)).slice(0, w);
   let s = 'OBSERVATION  (focus aircraft)\n';
   s += 'action = ' + (f.a >= 0 ? ACT[f.a] : '-') + '\n\n';
