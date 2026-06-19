@@ -4,33 +4,36 @@
 \usepackage{amsmath, amssymb, booktabs, geometry, microtype}
 \usepackage[hidelinks]{hyperref}
 \geometry{margin=2.5cm}
-\title{\textbf{Experimental Environment --- ACAS Xu Observation (Compact Specification)}}
+\title{\textbf{v4 Environment --- ACAS Xu Observation (Compact Specification)}}
 \date{}
 \begin{document}
 \maketitle
 
 Single-sector air-traffic conflict-resolution MDP in BlueSky. A PPO agent issues one
-discrete heading instruction per step to the \emph{focus} aircraft. Flat-earth
-equatorial projection; positions in NM, velocities in NM/s. The observation follows the
+discrete instruction per step (heading turn, speed change, hold, or fly-direct) to the
+\emph{focus} aircraft. Flat-earth equatorial projection; positions in NM, velocities in
+NM/s. The observation follows the
 ACAS Xu pairwise state ($\rho,\theta,\psi,v,\tau$), extended to the 4 nearest/most-urgent
-intruders and normalised \emph{within the environment} to $[-1,1]/[0,1]$.
+intruders, scaled by fixed physical ranges (angles in radians) and standardised for the
+network by \texttt{VecNormalize} (\texttt{norm\_obs=True}).
 
 % -----------------------------------------------------------------------------
 \section{Scenario}
 \begin{itemize}\itemsep1pt
-\item $N=2$ Airbus A320 at FL350, constant speed $v=450$\,kt ($M=0.78$); $v_\text{nom}=v/3600$\,NM/s.
-\item Sector: convex polygon, $80$ vertices, isoperimetric ratio $\ge 0.99$ (near-circular),
-      area $N/\rho$ with $\rho\sim\mathcal U(1/8000,\,1/4000)\,\text{km}^{-2}$
-      $\Rightarrow 8$--$16\times10^3$\,km$^2$, $\sim55$--$78$\,NM across.
-\item Each aircraft spawns on a perimeter arc (jittered) and heads to a reference/exit point on
-      the diametrically opposite arc, jittered by $\pm0.05$ of the perimeter
-      $\Rightarrow$ a near-straight chord through the sector centre. Destination set
-      $\sim20\times$ the sector span beyond the boundary (far field: the bearing to the
-      destination is near-constant, so a held heading stays on route).
+\item $N\in\{2,\dots,6\}$ Airbus A320 (sampled per episode) at FL350, nominal $M=0.78$
+      ($v\approx450$\,kt); $v_\text{nom}=450/3600$\,NM/s. Speed is controllable (see actions).
+\item Sector: convex polygon, $6$--$12$ vertices, isoperimetric ratio $\ge 0.7$ (varied, not near-circular),
+      area $N/\rho$ with $\rho\sim\mathcal U(1/20000,\,1/10000)\,\text{km}^{-2}$
+      $\Rightarrow 10$--$20\times10^3$\,km$^2$ per aircraft (medium-low density).
+\item Each aircraft spawns on a perimeter arc (jittered) and is assigned a fixed
+      \emph{route heading}: the bearing to a reference/exit point on the roughly opposite arc,
+      jittered by $\pm0.2$ of the perimeter $\Rightarrow$ a spread of crossing angles. The route
+      heading is computed in the flat NM frame and held fixed, so a held heading reads as exactly
+      zero drift (drift is the deviation of the commanded heading from this route heading).
 \item Spawn admitted iff $\ge d_\text{sep}+d_\text{buf}=15$\,NM from all traffic
       ($d_\text{sep}=5$, $d_\text{buf}=10$\,NM); exits are replaced.
 \item RL step $=10\,\Delta t=5$\,s ($\Delta t=0.5$\,s); LoS checked at step end.
-      Episode $=4$ diameter-crossings ($\sim40$--$55$\,min).
+      Episode $=4$ diameter-crossings (length scales with sector span).
 \end{itemize}
 
 % -----------------------------------------------------------------------------
@@ -47,7 +50,7 @@ u_{ij}=
 \qquad
 \begin{aligned}
 &d_\text{sep}=5\,\text{NM},\\
-&T_\text{warn}=300\,\text{s},\\
+&T_\text{warn}=360\,\text{s},\\
 &T_\text{look}=900\,\text{s}.
 \end{aligned}
 \]
@@ -55,27 +58,37 @@ Focus $f=\arg\max_i\max_{j\ne i}u_{ij}$, tiebreak $\sum_{j}u_{ij}$. Held while
 $\max_j u_{fj}>0$ or fewer than $n_\text{clear}=5$ steps since urgency last cleared;
 released immediately if any $u_{ij}\ge u_\text{emerg}=0.8$.
 When conflict-free, focus $=\arg\max_i s_i$ with
-$s_i=\tfrac{1-\cos(\psi^i_\text{dest}-\psi^i_\text{cmd})}{2}\cdot\min\!\bigl(1,\,d^i_\text{nn}/d_\text{clear}\bigr)$,
+$s_i=\tfrac{1-\cos(\psi^i_\text{route}-\psi^i_\text{cmd})}{2}\cdot\min\!\bigl(1,\,d^i_\text{nn}/d_\text{clear}\bigr)$,
 where $d^i_\text{nn}$ is $i$'s nearest-neighbour distance and $d_\text{clear}=20$\,NM ($=4d_\text{sep}$):
 drifted aircraft in open airspace are prioritised for return. Hysteresis margin $0.01$.
 
 % -----------------------------------------------------------------------------
-\section{Action space (\texttt{Discrete(8)})}
+\section{Action space (\texttt{Discrete(10)})}
 Turns stack on the commanded heading: $\psi_\text{cmd}\leftarrow(\psi_\text{cmd}+\delta)\bmod360^\circ$.
-Workload cost $c=2|\delta|/60^\circ$, $r_\text{work}=-w_\text{work}\,c$ with $w_\text{work}=0.30$.
+Speed actions step the commanded Mach $M\leftarrow\mathrm{clip}(M\pm0.04,\,0.74,\,0.82)$ (BlueSky \texttt{SPD});
+heading and speed are persistent selected values. Fly-direct locks $\psi_\text{cmd}$ onto the fixed
+route heading and holds it (persists through hold and speed; cancelled by any turn).
+
+Workload cost $r_\text{work}=-w_\text{work}\,c$ with $w_\text{work}=1$. A turn's cost equals the drift
+penalty it would accrue over $\sim30$\,s at the angle it creates:
+$c(\text{turn }\delta)=n_{30}\,w_\text{drift}\,\tfrac{1-\cos\delta}{2}$ with $n_{30}=6$ steps and
+$w_\text{drift}=1$. Hold is free; fly-direct is cheap ($\tfrac14$ of a $30^\circ$ turn); a speed change
+is half a $30^\circ$ turn.
 \begin{table}[h]\centering
 \begin{tabular}{cllcc}
 \toprule
 Idx & Action & Effect & $c$ & $r_\text{work}$\\
 \midrule
-0 & Turn       & $\delta=-60^\circ$ (stacks on $\psi_\text{cmd}$)              & $2.0$ & $-0.60$\\
-1 & Turn       & $\delta=-45^\circ$                                            & $1.5$ & $-0.45$\\
-2 & Turn       & $\delta=-30^\circ$                                            & $1.0$ & $-0.30$\\
-3 & Hold       & no instruction sent; aircraft holds last command             & $0$   & $0$\\
-4 & Turn       & $\delta=+30^\circ$                                            & $1.0$ & $-0.30$\\
-5 & Turn       & $\delta=+45^\circ$                                            & $1.5$ & $-0.45$\\
-6 & Turn       & $\delta=+60^\circ$                                            & $2.0$ & $-0.60$\\
-7 & Fly direct & direct mode: $\psi_\text{cmd}\!\to\!\psi_\text{dest}$ re-aimed every step until a turn cancels & $0.25$ & $-0.075$\\
+0 & Turn       & $\delta=-60^\circ$ (stacks on $\psi_\text{cmd}$)              & $1.50$ & $-1.50$\\
+1 & Turn       & $\delta=-45^\circ$                                            & $0.88$ & $-0.88$\\
+2 & Turn       & $\delta=-30^\circ$                                            & $0.40$ & $-0.40$\\
+3 & Hold       & no instruction sent; aircraft holds last command             & $0$    & $0$\\
+4 & Turn       & $\delta=+30^\circ$                                            & $0.40$ & $-0.40$\\
+5 & Turn       & $\delta=+45^\circ$                                            & $0.88$ & $-0.88$\\
+6 & Turn       & $\delta=+60^\circ$                                            & $1.50$ & $-1.50$\\
+7 & Fly direct & $\psi_\text{cmd}\!\to\!\psi_\text{route}$ (return to route); persistent & $0.10$ & $-0.10$\\
+8 & Speed up   & $M\mathrel{+}=0.04$ (clip $\le0.82$)                          & $0.20$ & $-0.20$\\
+9 & Speed down & $M\mathrel{-}=0.04$ (clip $\ge0.74$)                          & $0.20$ & $-0.20$\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -85,9 +98,10 @@ Idx & Action & Effect & $c$ & $r_\text{work}$\\
 Ego-centric to focus $f$ (forward axis $=\psi_\text{act}$). Angles are in \emph{radians}
 (unit consistency); the remaining states are scaled by their physical ranges.
 \texttt{VecNormalize} (\texttt{norm\_obs=True}) then standardises all features for the network.
-Here $\Delta\psi=\psi_\text{dest}-\psi_\text{cmd}$,
-$v_\text{nom}=v/3600$\,NM/s, $d_\text{warn}=T_\text{warn}v_\text{nom}=37.5$\,NM, and
-$S(\psi)$ is the conflict score \eqref{eq:score} evaluated with the ownship velocity at heading $\psi$.
+Here $\Delta\psi=\psi_\text{route}-\psi_\text{cmd}$,
+$v_\text{nom}=450/3600$\,NM/s, $d_\text{warn}=T_\text{warn}v_\text{nom}=45$\,NM, and
+$S(\psi)$ is the conflict score \eqref{eq:score} evaluated with the ownship velocity at heading $\psi$
+($S_\infty$ is the same with no time horizon: miss distance only, see \S Reward).
 The 4 intruder slots ($m=0,\dots,3$, base index $6+5m$) are filled urgency-first then nearest;
 an empty or diverging slot is the sentinel $(1,0,0,0,1)$.
 \begin{table}[h]\centering
@@ -100,8 +114,8 @@ $0$ & $\sin\Delta\psi$ & route-heading error, sin part & $[-1,1]$\\
 $1$ & $\cos\Delta\psi$ & route-heading error, cos part & $[-1,1]$\\
 $2$ & $v_\text{own}$ & own speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
 $3$ & $p_\text{turn}$ & $\mathrm{wrap}(\psi_\text{cmd}-\psi_\text{act})$ in rad (turn-execution lag) & $[-\pi,\pi]$\\
-$4$ & $S_\text{now}$ & $S(\psi_\text{act})$: conflict score on the current heading & $[0,1]$\\
-$5$ & $S_\text{ret}$ & $S(\psi_\text{dest})$: conflict score if flying direct to the waypoint ($0=$ safe to return) & $[0,1]$\\
+$4$ & $S_\text{now}$ & $S(\psi_\text{act})$: conflict score on the current heading (warning horizon) & $[0,1]$\\
+$5$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading, \emph{infinite} horizon ($0=$ safe to return) & $[0,1]$\\
 \multicolumn{4}{l}{\emph{Each intruder $j$ (slot $m$, indices $6{+}5m$ to $10{+}5m$)}}\\
 $+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
 $+1$ & $\theta$ & ego bearing to $j$, radians ($0=$ ahead) & $[-\pi,\pi]$\\
@@ -125,6 +139,11 @@ s_k=\max\!\Bigl(0,1-\tfrac{t_\text{CPA}^k}{T_\text{warn}}\Bigr)\,
 \qquad s_k=1\ \text{in LoS.}
 \label{eq:score}
 \end{equation}
+$S(\psi)=\max_k s_k$ is used for $r_\text{conf}$ and the $S_\text{now}$ observation (warning horizon).
+The $S_\text{ret}$ observation instead uses an \emph{infinite}-horizon variant
+$S_\infty(\psi)=\max_k\max(0,1-d_\text{CPA}^k/d_\text{sep})$ over all converging pairs ($t_\text{CPA}\ge0$),
+dropping the $T_\text{warn}$ time factor and the $T_\text{look}$ gate, so a conflict beyond the warning
+horizon still flags the return as unsafe.
 \begin{table}[h]\centering
 \begin{tabular}{lllc}
 \toprule
@@ -132,14 +151,14 @@ Term & Expression & Charged & Weight\\
 \midrule
 $r_\text{LoS}$  & $-w_\text{LoS}\,\mathbf 1[\text{LoS}]$              & step end; any pair $<d_\text{sep}$ (sector-wide) & $10$\\
 $r_\text{conf}$ & $-w_\text{conf}\,\max_k s_k$                        & every step; focus vs.\ all intruders             & $2$\\
-$r_\text{drift}$& $-w_\text{drift}\,\tfrac{1-\cos a}{2}$ (Eq.~\ref{eq:drift}) & every step; focus heading error $a$       & $2.0$\\
-$r_\text{work}$ & $-w_\text{work}\,c,\ \ c=2|\delta|/60^\circ$        & per instruction; hold free ($c{=}0$), fly-direct low ($c{=}0.25$) & $0.30$\\
+$r_\text{drift}$& $-w_\text{drift}\,\tfrac{1-\cos a}{2}$ (Eq.~\ref{eq:drift}) & every step; focus heading error $a$       & $1.0$\\
+$r_\text{work}$ & $-w_\text{work}\,\mathrm{ACT\_COST}[a]$              & per instruction; see Action space ($\sim30$\,s of the turn's drift) & $1.0$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Cosine route-deviation penalty, $a=\mathrm{wrap}(\psi_\text{dest}-\psi_\text{cmd})$
-(commanded heading error from route):
+Cosine route-deviation penalty, $a=\mathrm{wrap}(\psi_\text{route}-\psi_\text{cmd})$
+(commanded heading error from the fixed route heading):
 \begin{equation}
 r_\text{drift}=-\,w_\text{drift}\,\frac{1-\cos a}{2}.
 \label{eq:drift}
