@@ -129,17 +129,22 @@ class ProgressCallback(BaseCallback):
 
 # ── Training run ──────────────────────────────────────────────────────────────
 
-def train(seed, t_warn=None, resume=None):
+def train(seed, t_warn=None, resume=None, dummy_retn=False):
     t_warn_tag = f"_twarn{int(t_warn)}s" if t_warn is not None else ""
+    dummy_tag  = "_dummyretn" if dummy_retn else ""
     resume_tag = "_resumed" if resume else ""
-    run_name = f"acasxu_7state_obs22_seed{seed}{t_warn_tag}{resume_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"acasxu_7state_obs22_seed{seed}{t_warn_tag}{dummy_tag}{resume_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(tb_dir,   exist_ok=True)
 
-    env_kwargs = {} if t_warn is None else {'t_warn': t_warn}
+    env_kwargs = {}
+    if t_warn is not None:
+        env_kwargs['t_warn'] = t_warn
+    if dummy_retn:
+        env_kwargs['dummy_retn'] = True
     venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed,
                         env_kwargs=env_kwargs)
     monitored = VecMonitor(venv)
@@ -191,6 +196,9 @@ def main():
                         help='Warning horizon in seconds (default: 360 = 6 min)')
     parser.add_argument('--multi', action='store_true',
                         help=f'Launch {N_RUNS} seeds in parallel')
+    parser.add_argument('--dummy-retn', dest='dummy_retn', action='store_true',
+                        help='Ablation: hold the safe-to-return (retn_conf) obs at a '
+                             'constant 0 so the policy cannot use it')
     parser.add_argument('--resume', default=None,
                         help='Path to a checkpoint .zip to continue training from')
     args = parser.parse_args()
@@ -199,6 +207,8 @@ def main():
         seeds = [random.randint(1, 99_999) for _ in range(N_RUNS)]
         print(f'Launching {N_RUNS} runs — seeds: {seeds}')
         extra = ['--t_warn', str(args.t_warn)] if args.t_warn is not None else []
+        if args.dummy_retn:
+            extra.append('--dummy-retn')
         procs = [subprocess.Popen([sys.executable, __file__, '--seed', str(s)] + extra)
                  for s in seeds]
         try:
@@ -207,7 +217,7 @@ def main():
             for p in procs: p.terminate()
     else:
         train(args.seed if args.seed is not None else random.randint(0, 99_999),
-              t_warn=args.t_warn)
+              t_warn=args.t_warn, dummy_retn=args.dummy_retn)
 
 if __name__ == '__main__':
     main()

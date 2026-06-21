@@ -99,6 +99,7 @@ CONFIG = {
                                                # back is enough; no continuous re-aiming needed)
     'arrival_tol_nm':        5.0,             # exit within this distance of t_ref counts as on-target
     'buffer_nm':             10.0,            # spawn buffer: min distance to traffic = sep_nm + buffer_nm
+    'spawn_conflict_free':   True,            # reject spawns whose route trajectory hits CPA<sep within t_warn
     # Polygon -- varied but reasonably round sectors (random convex shapes, circ >= 0.7)
     'n_vertices':            lambda: random.randint(6, 12),  # varies per episode; enough vertices to reach 0.7
     'min_circularity':       0.7,               # floor: rounder sectors, still some shape variation
@@ -319,12 +320,16 @@ class _ScreenDummy(ScreenIO):
 class AirspaceEnv(gym.Env):
     metadata = {'render_modes': []}
 
-    def __init__(self, t_warn=None):
+    def __init__(self, t_warn=None, dummy_retn=False):
         super().__init__()
         global _bs_initialized, D_WARN
         if t_warn is not None:
             CONFIG['t_warn'] = float(t_warn)
             D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0
+        # ablation: when True, the retn_conf (safe-to-return) obs is held at a
+        # constant 0 so it carries no information (VecNormalize zeroes a constant
+        # feature). Lets an experiment measure the policy's reliance on it.
+        self._dummy_retn       = bool(dummy_retn)
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(len(ACT_COST))
 
@@ -853,7 +858,8 @@ class AirspaceEnv(gym.Env):
         # binary {0,1}: is returning to route blocked? Route-vs-route CPA (ownship and
         # each intruder on their own route headings) so it is not fooled by an intruder
         # transiently turned away from a head-on route pair. 0 = returning is free.
-        conflict_return = self._return_blocked(cs)
+        # Ablation: held at 0 (uninformative) when dummy_retn is set.
+        conflict_return = 0.0 if self._dummy_retn else self._return_blocked(cs)
 
         # ownship-global states (shared across intruder slots)
         obs = [dpsi_act,                              # actual heading deviation from route, rad
@@ -1002,17 +1008,51 @@ class AirspaceEnv(gym.Env):
                 self._pending_spawns[slot] -= 1
 
     def _spawn_ok(self, ac):
-        """Spawn admission: geometric buffer to all active traffic."""
+        """Spawn admission. Two gates:
+        (1) Static buffer: >= sep_nm + buffer_nm to every active aircraft.
+        (2) Conflict-free entry (if CONFIG['spawn_conflict_free']): the candidate,
+            flying its route heading at cruise, must NOT reach a CPA below sep_nm
+            against any active aircraft (on its current trajectory) within t_warn.
+            Prevents spawning an aircraft into an immediate, unavoidable LoS -- the
+            new aircraft used to be admitted on distance alone, so it could appear
+            15 NM away pointed straight at traffic (~1 min to LoS head-on)."""
         pos_c = latlon_to_nm(CONFIG['center_ll'],
                              float(ac['sp_ll'][0]), float(ac['sp_ll'][1]))
         min_spawn_sep = CONFIG['sep_nm'] + CONFIG['buffer_nm']
+        sep        = CONFIG['sep_nm']
+        horizon    = CONFIG['t_warn']
+        check_cpa  = CONFIG.get('spawn_conflict_free', True)
+
+        # candidate velocity: route heading at nominal cruise
+        rh  = math.radians(ac['heading'])
+        cve = V_NOM * math.sin(rh)
+        cvn = V_NOM * math.cos(rh)
+
         for cs in self._active_callsigns:
             idx = bs.traf.id2idx(cs)
             if idx < 0:
                 continue
-            pos_o, _ = _bs_state(idx)
-            if math.hypot(pos_c[0] - pos_o[0], pos_c[1] - pos_o[1]) < min_spawn_sep:
-                return False
+            pos_o, vel_o = _bs_state(idx)
+            d_east  = pos_o[0] - pos_c[0]
+            d_north = pos_o[1] - pos_c[1]
+            if math.hypot(d_east, d_north) < min_spawn_sep:
+                return False                                  # (1) static buffer
+
+            if not check_cpa:
+                continue
+            # (2) CPA of candidate (route hdg, cruise) vs this aircraft (current vel)
+            dv_east  = vel_o[0] - cve
+            dv_north = vel_o[1] - cvn
+            rel_sq   = dv_east * dv_east + dv_north * dv_north
+            if rel_sq < 1e-12:
+                continue
+            tcpa = -(d_east * dv_east + d_north * dv_north) / rel_sq
+            if tcpa < 0 or tcpa > horizon:
+                continue                                      # diverging or beyond t_warn
+            cpa_e = d_east  + tcpa * dv_east
+            cpa_n = d_north + tcpa * dv_north
+            if cpa_e * cpa_e + cpa_n * cpa_n < sep * sep:
+                return False                                  # predicted LoS within t_warn
         return True
 
     def _generate_replacement(self, slot):

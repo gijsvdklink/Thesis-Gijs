@@ -33,6 +33,30 @@ class _NumpyShim(pickle.Unpickler):
             module = module.replace('numpy._core', 'numpy.core')
         return super().find_class(module, name)
 
+
+# Robust unpickler for the VecNormalize .pkl. On top of the numpy._core rename,
+# it replaces the numpy.random subtree with a harmless dummy: the saved RNG state
+# (PCG64) fails to unpickle across numpy versions, but we never sample at eval --
+# only obs_rms (mean/var) is needed to normalise observations. Without this the
+# vecnorm silently fails to load and the policy is fed RAW obs, which (since it
+# was trained with norm_obs=True) collapses it onto HOLD -> "nothing happens".
+class _DummyRNG:
+    def __init__(self, *a, **k): pass
+    def __setstate__(self, s): pass
+    def __getstate__(self): return None
+    def __reduce__(self): return (_DummyRNG, ())
+
+def _dummy_rng(*a, **k):
+    return _DummyRNG()
+
+class _VecnormUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module.startswith('numpy._core'):
+            module = module.replace('numpy._core', 'numpy.core')
+        if module.startswith('numpy.random') or 'bit_generator' in module:
+            return _dummy_rng
+        return super().find_class(module, name)
+
 from stable_baselines3.common import save_util
 
 def _patched_json_to_data(json_string, custom_objects=None):
@@ -1059,13 +1083,15 @@ def main():
             print(f'Loading vecnorm : {vn}')
             try:
                 with open(vn, 'rb') as fh:
-                    vecnorm = _NumpyShim(fh).load()
+                    vecnorm = _VecnormUnpickler(fh).load()
                 vecnorm.set_venv(DummyVecEnv([AirspaceEnv]))
                 vecnorm.training    = False
                 vecnorm.norm_reward = False
+                print(f'  vecnorm loaded (norm_obs={vecnorm.norm_obs})')
             except Exception as e:
-                # harmless with norm_obs=False: vecnorm never touches observations
-                print(f'  vecnorm skipped ({e})')
+                # NOT harmless: policy was trained with norm_obs=True, so raw obs
+                # collapse it onto HOLD. Fail loudly rather than silently mislead.
+                print(f'  !! vecnorm FAILED to load ({e}) -- policy will see RAW obs!')
                 vecnorm = None
 
     stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else ('hold_only' if args.hold else 'no_policy')
