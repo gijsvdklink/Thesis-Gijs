@@ -96,15 +96,14 @@ Idx & Action & Effect & $c$ & $r_\text{work}$\\
 \end{table}
 
 % -----------------------------------------------------------------------------
-\section{Observation $o\in\mathbb R^{26}$}
+\section{Observation $o\in\mathbb R^{24}$}
 Ego-centric to focus $f$ (forward axis $=\psi_\text{act}$). Angles are in \emph{radians}
 (unit consistency); the remaining states are scaled by their physical ranges.
 \texttt{VecNormalize} (\texttt{norm\_obs=True}) then standardises all features for the network.
 Here $\Delta\psi=\psi_\text{route}-\psi_\text{cmd}$,
 $v_\text{nom}=450/3600$\,NM/s, $d_\text{warn}=T_\text{warn}v_\text{nom}=45$\,NM, and
-$S(\psi)$ is the conflict score \eqref{eq:score} evaluated with the ownship velocity at heading $\psi$
-($S_\infty$ is the same with no time horizon: miss distance only, see \S Reward).
-The 4 intruder slots ($m=0,\dots,3$, base index $6+5m$) are filled urgency-first then nearest;
+$S_\infty(\psi)$ is the infinite-horizon conflict score (miss distance only, see \S Reward).
+The 4 intruder slots ($m=0,\dots,3$, base index $4+5m$) are filled urgency-first then nearest;
 an empty or diverging slot is the sentinel $(1,0,0,0,1)$.
 \begin{table}[h]\centering
 \begin{tabular}{cllc}
@@ -112,18 +111,16 @@ an empty or diverging slot is the sentinel $(1,0,0,0,1)$.
 Index & Symbol & Definition & Range\\
 \midrule
 \multicolumn{4}{l}{\emph{Ownship}}\\
-$0$ & $\sin\Delta\psi$ & route-heading error, sin part & $[-1,1]$\\
-$1$ & $\cos\Delta\psi$ & route-heading error, cos part & $[-1,1]$\\
-$2$ & $v_\text{own}$ & own speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
-$3$ & $p_\text{turn}$ & $\mathrm{wrap}(\psi_\text{cmd}-\psi_\text{act})$ in rad (turn-execution lag) & $[-\pi,\pi]$\\
-$4$ & $S_\text{now}$ & $S(\psi_\text{act})$: conflict score on the current heading (warning horizon) & $[0,1]$\\
-$5$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading, \emph{infinite} horizon ($0=$ safe to return) & $[0,1]$\\
-\multicolumn{4}{l}{\emph{Each intruder $j$ (slot $m$, indices $6{+}5m$ to $10{+}5m$)}}\\
+$0$ & $\Delta\psi$ & route-heading error $(\psi_\text{route}-\psi_\text{cmd})$ & $[-\pi,\pi]$\\
+$1$ & $v_\text{own}$ & own speed $/ v_\text{nom}$ & ${\sim}[0,1]$\\
+$2$ & $a_\text{cmd}$ & cumulative stacked turn from route $(\psi_\text{cmd}-\psi_\text{route})$ & $[-\pi,\pi]$\\
+$3$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading & $[0,1]$\\
+\multicolumn{4}{l}{\emph{Four intruders $j$ (Conflicting AC first, then Nearest Neighbours)}}\\
 $+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
-$+1$ & $\theta$ & ego bearing to $j$, radians ($0=$ ahead) & $[-\pi,\pi]$\\
-$+2$ & $\psi$ & intruder heading relative to ownship, $\mathrm{wrap}(\psi_j-\psi_\text{act})$ rad & $[-\pi,\pi]$\\
-$+3$ & $v_\text{int}$ & intruder speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
-$+4$ & $\tau$ & $t_\text{CPA}/T_\text{warn}$ (time to closest approach; $0$ in LoS, $1$ if diverging) & $[0,1]$\\
+$+1$ & $\theta$ & ego bearing to $j$ & $[-\pi,\pi]$\\
+$+2$ & $\psi$ & intruder heading relative to ownship & $[-\pi,\pi]$\\
+$+3$ & $v_\text{int}$ & intruder speed $/ v_\text{nom}$ & ${\sim}[0,1]$\\
+$+4$ & $\tau$ & $t_\text{CPA}/T_\text{warn}$ (time to closest approach) & $[0,1]$\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -239,48 +236,70 @@ This constitutes a \emph{belief state} over the hidden variable $d$: the agent c
 \subsection{Information Flow}
 \label{sec:infoflow}
 
-Figure~\ref{fig:block} shows the per-step information flow. The dashed block represents state that is hidden from the agent: the sampled delay $d$ and the elapsed time $t_\text{el}$ are internal to the environment. The agent observes only the derived signals $\Delta\psi_\text{iss}$ and $r_\text{pend}$.
+Figure~\ref{fig:flows} shows how the three models differ in what sits between the agent's action and the simulator.
 
-\begin{figure}[h]
+\tikzset{
+  fbox/.style={draw, rounded corners=4pt, minimum width=2.4cm, minimum height=0.75cm,
+               align=center, font=\small, fill=white},
+  fhid/.style={fbox, dashed, fill=gray!10}
+}
+
+\begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[
-  box/.style  ={draw, rounded corners=4pt, minimum width=2.6cm, minimum height=0.75cm,
-                align=center, font=\small, fill=white},
-  hid/.style  ={box, dashed, fill=gray!10},
-  every path/.style={thick, -{Latex[length=2mm]}}
-]
-\node[box] (agent)  at (0,   0)    {Agent\\$\pi(a\mid o_k)$};
-\node[box] (iss)    at (3.5, 0)    {Issued\\$\psi_\text{iss}$};
-\node[hid] (delay)  at (7.0, 0)    {Delay model\\$d,\;t_\text{el}$};
-\node[box] (eff)    at (10.5,0)    {Effective\\$\psi_\text{eff}$};
-\node[box] (sim)    at (10.5,-2.2) {BlueSky\\(state $x_k$)};
-\node[box] (obs)    at (0,  -2.2)  {Observation\\$o_k\in\mathbb{R}^{28}$};
 
-\draw (agent) -- node[above,font=\scriptsize]{action $a_k$}     (iss);
-\draw (iss)   -- node[above,font=\scriptsize]{queued}           (delay);
-\draw (delay) -- node[above,font=\scriptsize]{when $t_\text{el}\!\ge\!d$} (eff);
-\draw (eff)   -- (sim);
-\draw (sim)   -- node[right,font=\scriptsize]{$x_k$}            (delay);
-\draw (sim)   to[bend right=20]
-              node[below,font=\scriptsize]{$o^{v4}_k$ (26 features)}    (obs);
-\draw (delay) to[bend left=10]
-              node[right,font=\scriptsize]{$r_\text{pend},\;\Delta\psi_\text{iss}$} (obs);
-\draw (obs)   -- node[left,font=\scriptsize]{$o_k$}             (agent);
+\textbf{(a) Immediate compliance}\par\smallskip
+\begin{tikzpicture}[>=Latex, thick]
+\node[fbox] (agent) at (0,   0) {Agent};
+\node[fbox] (sim)   at (8.5, 0) {BlueSky};
+\draw[->] (agent) -- node[above,font=\scriptsize]{action $a_k$} (sim);
+\draw[->] (sim.south) -- (8.5,-1.8)
+          -- node[below,font=\scriptsize]{$o_k$ (24 features),\quad$r_k$}
+          (0,-1.8) -- (agent.south);
 \end{tikzpicture}
-\caption{Per-step information flow in the experimental environment. Dashed box: hidden delay state $(d,\,t_\text{el})$ not directly observable by the agent. The two signals derived from the hidden state, $r_\text{pend}$ and $\Delta\psi_\text{iss}$, are the only information the agent receives about the pending instruction.}
-\label{fig:block}
+
+\bigskip
+\textbf{(b) Delay}\par\smallskip
+\begin{tikzpicture}[>=Latex, thick]
+\node[fbox] (agent) at (0,    0) {Agent};
+\node[fbox] (iss)   at (3.2,  0) {$\psi_\text{iss}$ issued};
+\node[fhid] (dly)   at (6.5,  0) {Delay};
+\node[fbox] (sim)   at (10.0, 0) {BlueSky};
+\draw[->] (agent) -- node[above,font=\scriptsize]{$a_k$} (iss);
+\draw[->] (iss)   -- (dly);
+\draw[->] (dly)   -- node[above,font=\scriptsize]{$t_\text{el}\ge d$} (sim);
+\draw[->] (sim.south) -- (10,-2.0)
+          -- node[below,font=\scriptsize]{$o_k$ (24 features),\quad$r_k$}
+          (0,-2.0) -- (agent.south);
+\draw[->] (dly.north) -- (6.5,1.0)
+          -- node[above,font=\scriptsize]{$\Delta\psi_\text{iss},\;r_\text{pend}$}
+          (0,1.0) -- (agent.north);
+\end{tikzpicture}
+
+\caption{Per-step information flow. \textbf{(a)}~Immediate compliance: action takes effect within the same step, standard 24-feature MDP loop. \textbf{(b)}~With delay (dashed block — hidden from the agent): the issued heading queues until $t_\text{el}\ge d$; two extra signals feed directly back to the agent.}
+\label{fig:flows}
 \end{figure}
 
-\subsection{Required Observations}
+\subsection{Observation Space}
+\label{sec:obs_exp}
 
-For the agent to reason about a pending instruction it requires two pieces of information:
+The experimental environment augments the v4 observation vector from 24 to 26 features by appending two signals derived from the delay block:
 
-\begin{enumerate}\itemsep2pt
-  \item \textbf{What is pending} ($\Delta\psi_\text{iss}$): the difference between the issued and currently effective heading indicates the direction and magnitude of the uncommitted turn. Without this, the agent cannot anticipate how the trajectory will change once the pilot responds.
-  \item \textbf{Whether it has been executed} ($r_\text{pend}$): the response-pending signal provides a calibrated belief over the hidden state $d$. Without this, the agent has no basis for distinguishing between a heading that is already settled and one that is about to change, leading to unstable or overly conservative policies.
-\end{enumerate}
+\begin{table}[h]\centering
+\begin{tabular}{cllc}
+\toprule
+Index & Symbol & Definition & Range\\
+\midrule
+\multicolumn{4}{l}{\emph{Inherited from v4 (ownship + 4 intruder slots)}}\\
+$0$--$23$ & --- & see v4 specification & ---\\[3pt]
+\multicolumn{4}{l}{\emph{New: pending-instruction state}}\\
+$24$ & $\Delta\psi_\text{iss}$ & pending turn angle (issued $-$ effective heading) & $[-\pi,\pi]$\\
+$25$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0       & $\{0,1\}$\\
+\bottomrule
+\end{tabular}
+\caption{Observation vector for the experimental environment ($o_k\in\mathbb{R}^{26}$). Features 0--23 are identical to v4; features 24--25 expose the pending-instruction state to the agent.}
+\end{table}
 
-Both features are necessary; neither alone is sufficient. In particular, $\Delta\psi_\text{iss} = 0$ and $r_\text{pend} = 0$ jointly signal that no instruction is outstanding and the aircraft is on its commanded heading — the same condition as in v4. Non-zero values of either feature indicate an outstanding manoeuvre and cause the agent to adjust its conflict assessment accordingly.
+\noindent$\Delta\psi_\text{iss}=0$ and $b_\text{exec}=0$ indicate no outstanding instruction. $b_\text{exec}=1$ signals that the pending instruction executed this step; the agent can infer the aircraft has begun the manoeuvre.
 
 \subsection{Comparison: v4 vs.\ Experimental}
 
@@ -299,11 +318,11 @@ Hidden state
   & Aircraft outside observation window; future intentions
   & Same, plus $(d,\,t_\text{el})$ per pending instruction\\[3pt]
 Observation dimension
-  & 26
-  & 28\\[3pt]
+  & 24
+  & 26\\[3pt]
 Additional features
   & ---
-  & $\Delta\psi_\text{iss}$,\; $r_\text{pend}$\\[3pt]
+  & $\Delta\psi_\text{iss}$,\; $b_\text{exec}$\\[3pt]
 Reward trajectory
   & Commanded ($\psi_\text{cmd}$)
   & Effective ($\psi_\text{eff}$); cost of delay is felt\\[3pt]

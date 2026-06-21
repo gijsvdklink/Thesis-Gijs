@@ -9,20 +9,17 @@ Reward is purely negative (no positive components):
   -w_work     x act_cost                                    instruction workload (see ACT_COST):
     a turn costs ~ 30 s of the drift it creates; hold free; fly-direct cheap; speed = half a 30-deg turn
 
-Observation space (26 floats) -- ACAS Xu states, ego-centric from the focus
+Observation space (24 floats) -- ACAS Xu states, ego-centric from the focus
 aircraft (ownship), extended to the 4 nearest/most-urgent intruders. Angles are
 in radians for unit consistency; the remaining states are scaled by their
 physical ranges. VecNormalize (norm_obs=True) standardises everything for the
 network, so the raw scales below need only be internally consistent:
-  ownship (shared, 6):
-    [0]  sin(dpsi_dest)      heading error (cmd vs bearing-to-destination), sin/cos
-    [1]  cos(dpsi_dest)      encoded to avoid the +-pi wrap discontinuity
-    [2]  v_own               ownship speed / nominal cruise (V_NOM)         ~[0, 1]
-    [3]  turn_progress       wrap(cmd_hdg - actual_hdg) in radians: outstanding
+  ownship (shared, 4):
+    [0]  sin(dpsi_dest)      heading error (cmd vs route heading), sin-encoded [-1, 1]
+    [1]  v_own               ownship speed / nominal cruise (V_NOM)         ~[0, 1]
+    [2]  turn_progress       wrap(cmd_hdg - actual_hdg) in radians: outstanding
                              turn (0 = settled onto the commanded heading)
-    [4]  conflict_now        conflict score on the CURRENT heading           [0, 1]
-                             (0 = clear, ->1 = in / heading into conflict)
-    [5]  conflict_if_return  conflict score if flying DIRECT back to route     [0, 1]
+    [3]  conflict_if_return  conflict score if flying DIRECT back to route     [0, 1]
                              (0 = safe to return, ->1 = returning enters conflict).
                              No time horizon: any future predicted conflict counts,
                              so a conflict beyond t_warn still flags the return unsafe.
@@ -140,7 +137,7 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 6 + N_NBR * 5       # 6 ownship (sin/cos dest, v_own, turn_progress, conflict_now,
+OBS_DIM = 4 + N_NBR * 5       # 4 ownship (sin dest, v_own, turn_progress,
                               # conflict_if_return) + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 26
 
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (45 NM)
@@ -179,7 +176,7 @@ ACT_COST = [
 _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
-OBS_OWNSHIP_LABELS  = ['sin Dpsi', 'cos Dpsi', 'v_own', 'turn_prog', 'conf_now', 'retn_conf']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'cmd_stack', 'retn_conf']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 __all__ = ['AirspaceEnv', 'CONFIG', 'NM_TO_KM', 'latlon_to_nm', 'wrap_to_180', 'OBS_DIM',
@@ -784,7 +781,7 @@ class AirspaceEnv(gym.Env):
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route (dpsi=0), nominal speed, conflict-free
-            return np.array([0.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+            return np.array([0.0, 1.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -804,21 +801,18 @@ class AirspaceEnv(gym.Env):
         # drift the reward penalises. sin/cos avoids the +-180 wrap jump.
         route_hdg = self._route_hdg[cs]
         hdg_err = wrap_to_180(route_hdg - cmd_hdg)
-        turn_progress = math.radians(wrap_to_180(cmd_hdg - own_hdg))   # rad; 0 = turn complete
+        cmd_stack = math.radians(wrap_to_180(cmd_hdg - route_hdg))  # cumulative stacked turn from route, rad
 
         # conflict severity now (current heading) and if returning to route (flying the
         # route heading). 0 = clear; ->1 = in / entering conflict. conflict_now uses the
         # warning horizon; conflict_return uses an INFINITE horizon (miss-distance only) so
         # the "safe to return" signal also catches conflicts beyond t_warn.
-        conflict_now    = self._conflict_score(cs)
         conflict_return = self._conflict_score(cs, route_hdg, infinite_horizon=True)
 
         # ownship-global states (shared across intruder slots)
-        obs = [math.sin(math.radians(hdg_err)),       # sin(dpsi_dest)
-               math.cos(math.radians(hdg_err)),       # cos(dpsi_dest)
+        obs = [math.radians(hdg_err),                 # dpsi: route-heading error, raw rad
                own_spd / V_NOM,                       # v_own normalised by nominal cruise
-               turn_progress,                         # outstanding turn (cmd vs actual heading), rad
-               conflict_now,                          # currently in conflict (0 = clear)
+               cmd_stack,                             # cumulative stacked turn from route, rad
                conflict_return]                       # conflict if returning to route (0 = safe)
 
         # fetch this aircraft's urgency row for intruder prioritisation

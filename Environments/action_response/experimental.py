@@ -177,7 +177,7 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 8 + N_NBR * 5       # 8 ownship (sin/cos dest, v_own, turn_progress, conflict_now,
+OBS_DIM = 6 + N_NBR * 5       # 6 ownship (sin dest, v_own, turn_progress,
                               # conflict_if_return, iss_dhdg, resp_pend) + 4 intruders x 5
                               # (rho, theta, psi, v_int, tau) = 28
 
@@ -217,8 +217,8 @@ ACT_COST = [
 _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
-OBS_OWNSHIP_LABELS  = ['sin Dpsi', 'cos Dpsi', 'v_own', 'turn_prog', 'conf_now', 'retn_conf',
-                       'iss_dhdg', 'resp_pend']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'cmd_stack', 'retn_conf',
+                       'iss_dhdg', 'b_exec']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 
@@ -463,6 +463,7 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._los_this_step       = False
+        self._exec_this_step      = {}      # cs -> True if instruction fired this RL step
         self._focus_cs            = None   # clear stale focus: callsign IDs restart each episode
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_duration_s))
@@ -499,7 +500,8 @@ class AirspaceEnv(gym.Env):
 
         # propagate, releasing each queued instruction at the sub-step its
         # response delay elapses (0.5 s resolution, decoupled from the 5 s RL step)
-        self._los_this_step = False
+        self._los_this_step  = False
+        self._exec_this_step = {}
         for _ in range(CONFIG['action_freq']):
             self._substep += 1
             self._release_due_commands()
@@ -841,6 +843,7 @@ class AirspaceEnv(gym.Env):
                     self._effective_heading[cs] = p['hdg']
                     self._direct_mode[cs]       = p['direct']
                     bs.stack.stack(f"HDG {cs} {p['hdg']:.1f}")
+            self._exec_this_step[cs] = True
             del self._pending[cs]
 
     def _update_direct_headings(self):
@@ -858,15 +861,6 @@ class AirspaceEnv(gym.Env):
             self._effective_heading[cs] = self._route_hdg[cs]
             bs.stack.stack(f'HDG {cs} {self._effective_heading[cs]:.1f}')
 
-    def _resp_pending_signal(self, cs):
-        """resp_pend observation in [0, 1]: 1 = surely still pending, 0 = settled.
-        The delay model maps elapsed time -> the perceived response progress."""
-        p = self._pending.get(cs)
-        if p is None:
-            return 0.0
-        elapsed_s = (self._substep - p['issue_sub']) * CONFIG['sim_dt']
-        return self._delay.pending_signal(elapsed_s, p['delay_s'])
-
     # -- Observation -----------------------------------------------------------
 
     # ACAS Xu empty-slot sentinel (normalised): rho_n=1 (far), tau_n=1 (no imminent LoS)
@@ -880,7 +874,7 @@ class AirspaceEnv(gym.Env):
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route (dpsi=0), nominal speed, conflict-free,
             # no pending advisory (iss_dhdg=0, resp_pend=0)
-            return np.array([0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            return np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -899,30 +893,27 @@ class AirspaceEnv(gym.Env):
         # heading error to route (commanded heading vs fixed route heading); matches the
         # drift the reward penalises. sin/cos avoids the +-180 wrap jump.
         route_hdg = self._route_hdg[cs]
-        hdg_err = wrap_to_180(route_hdg - cmd_hdg)
-        turn_progress = math.radians(wrap_to_180(cmd_hdg - own_hdg))   # rad; 0 = turn complete
+        hdg_err   = wrap_to_180(route_hdg - cmd_hdg)
+        cmd_stack = math.radians(wrap_to_180(cmd_hdg - route_hdg))  # cumulative stacked turn from route, rad
 
         # conflict severity now (current heading) and if returning to route (flying the
         # route heading). 0 = clear; ->1 = in / entering conflict. conflict_now uses the
         # warning horizon; conflict_return uses an INFINITE horizon (miss-distance only) so
         # the "safe to return" signal also catches conflicts beyond t_warn.
-        conflict_now    = self._conflict_score(cs)
         conflict_return = self._conflict_score(cs, route_hdg, infinite_horizon=True)
 
-        # response-delay (s_RA) features: pending advisory content + not-yet-executed signal
+        # response-delay features: pending turn angle + binary execution flag
         issued_hdg = self._issued_heading.get(cs, cmd_hdg)
         iss_dhdg   = math.radians(wrap_to_180(issued_hdg - cmd_hdg))
-        resp_pend  = self._resp_pending_signal(cs)
+        b_exec     = float(self._exec_this_step.get(cs, False))
 
         # ownship-global states (shared across intruder slots)
-        obs = [math.sin(math.radians(hdg_err)),       # sin(dpsi_dest)  (effective heading)
-               math.cos(math.radians(hdg_err)),       # cos(dpsi_dest)
+        obs = [math.radians(hdg_err),                 # dpsi: route-heading error, raw rad
                own_spd / V_NOM,                       # v_own normalised by nominal cruise
-               turn_progress,                         # outstanding turn (cmd vs actual heading), rad
-               conflict_now,                          # currently in conflict (0 = clear)
+               cmd_stack,                             # cumulative stacked turn from route, rad
                conflict_return,                       # conflict if returning to route (0 = safe)
-               iss_dhdg,                              # pending advisory: issued - effective, rad
-               resp_pend]                             # response not-yet-executed signal [0,1]
+               iss_dhdg,                              # pending turn angle: issued - effective, rad
+               b_exec]                                # 1 if instruction executed this step, else 0
 
         # fetch this aircraft's urgency row for intruder prioritisation
         urgency_row = None
