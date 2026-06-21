@@ -285,8 +285,8 @@ Index & Symbol & Definition & Range\\
 \multicolumn{4}{l}{\emph{Inherited from v4 (ownship + 4 intruder slots)}}\\
 $0$--$24$ & --- & see v4 specification & ---\\[3pt]
 \multicolumn{4}{l}{\emph{New: pending-instruction state}}\\
-$25$ & $\Delta\psi_\text{iss}$ & pending heading: issued $-$ effective & $[-\pi,\pi]$\\
-$26$ & $\Delta v_\text{iss}$   & pending speed: issued $-$ effective, $/\,v_\text{nom}$ & ${\sim}[-1,1]$\\
+$25$ & $\Delta\psi_\text{iss}$ & uncommitted turn angle: issued $-$ effective & $[-\pi,\pi]$\\
+$26$ & $\Delta v_\text{iss}$   & uncommitted speed change: issued $-$ effective, $/\,v_\text{nom}$ & ${\sim}[-1,1]$\\
 $27$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0 & $\{0,1\}$\\
 \bottomrule
 \end{tabular}
