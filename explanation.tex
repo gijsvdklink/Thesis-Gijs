@@ -264,18 +264,18 @@ Figure~\ref{fig:flows} shows how the three models differ in what sits between th
           -- node[below,font=\scriptsize]{$o_k$ (25 features),\quad$r_k$}
           (0,-2.0) -- (agent.south);
 \draw[->] (dly.north) -- (6.5,1.0)
-          -- node[above,font=\scriptsize]{$\Delta\psi_\text{iss},\;b_\text{exec}$}
+          -- node[above,font=\scriptsize]{$b_\text{exec}$}
           (0,1.0) -- (agent.north);
 \end{tikzpicture}
 
-\caption{Per-step information flow. \textbf{(a)}~Immediate compliance: action takes effect within the same step, standard 25-feature MDP loop. \textbf{(b)}~With delay (dashed block — hidden from the agent): the issued heading queues until $t_\text{el}\ge d$; two extra signals feed directly back to the agent.}
+\caption{Per-step information flow. \textbf{(a)}~Immediate compliance: action takes effect within the same step, standard 25-feature MDP loop. \textbf{(b)}~With delay (dashed block — hidden from the agent): the issued heading queues until $t_\text{el}\ge d$; one extra signal ($b_\text{exec}$) feeds directly back to the agent.}
 \label{fig:flows}
 \end{figure}
 
 \subsection{Observation Space}
 \label{sec:obs_exp}
 
-The experimental environment augments the v4 observation vector from 25 to 28 features by appending three signals derived from the delay block:
+The experimental environment augments the v4 observation vector from 25 to 26 features by appending one signal derived from the delay block:
 
 \begin{table}[h]\centering
 \begin{tabular}{cllc}
@@ -284,16 +284,14 @@ Index & Symbol & Definition & Range\\
 \midrule
 \multicolumn{4}{l}{\emph{Inherited from v4 (ownship + 4 intruder slots)}}\\
 $0$--$24$ & --- & see v4 specification & ---\\[3pt]
-\multicolumn{4}{l}{\emph{New: pending-instruction state}}\\
-$25$ & $\Delta\psi_\text{iss}$ & uncommitted turn angle: issued $-$ effective & $[-\pi,\pi]$\\
-$26$ & $\Delta v_\text{iss}$   & uncommitted speed change: issued $-$ effective, $/\,v_\text{nom}$ & ${\sim}[-1,1]$\\
-$27$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0 & $\{0,1\}$\\
+\multicolumn{4}{l}{\emph{New: execution signal}}\\
+$25$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0 & $\{0,1\}$\\
 \bottomrule
 \end{tabular}
-\caption{Observation vector for the experimental environment ($o_k\in\mathbb{R}^{28}$). Features 0--24 are identical to v4; features 25--27 expose the pending-instruction state to the agent.}
+\caption{Observation vector for the experimental environment ($o_k\in\mathbb{R}^{26}$). Features 0--24 are identical to v4; feature 25 signals when the pending instruction fires.}
 \end{table}
 
-\noindent$\Delta\psi_\text{iss}=0$ and $b_\text{exec}=0$ indicate no outstanding instruction. $b_\text{exec}=1$ signals that the pending instruction executed this step; the agent can infer the aircraft has begun the manoeuvre.
+\noindent$b_\text{exec}=0$ indicates no instruction executed this step. $b_\text{exec}=1$ signals that the pending instruction fired; the agent can infer the aircraft has begun the manoeuvre. The issued heading and speed are already encoded in $a_\text{cmd}$ and $v_\text{cmd}$ (features 2 and 3), which track the last-issued values regardless of delay.
 
 \subsection{Comparison: v4 vs.\ Experimental}
 
@@ -313,10 +311,10 @@ Hidden state
   & Same, plus $(d,\,t_\text{el})$ per pending instruction\\[3pt]
 Observation dimension
   & 25
-  & 28\\[3pt]
+  & 26\\[3pt]
 Additional features
   & ---
-  & $\Delta\psi_\text{iss}$,\; $\Delta v_\text{iss}$,\; $b_\text{exec}$\\[3pt]
+  & $b_\text{exec}$\\[3pt]
 Reward trajectory
   & Commanded ($\psi_\text{cmd}$)
   & Effective ($\psi_\text{eff}$); cost of delay is felt\\[3pt]
