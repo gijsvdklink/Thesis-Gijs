@@ -109,9 +109,9 @@ an empty or diverging slot is the sentinel $(1,0,0,0,1)$.
 Index & Symbol & Definition & Range\\
 \midrule
 \multicolumn{4}{l}{\emph{Ownship}}\\
-$0$ & $\Delta\psi_\text{act}$ & actual heading deviation from route $(\psi_\text{act}-\psi_\text{route})$ & $[-\pi,\pi]$\\
+$0$ & $\Delta\psi_\text{act}$ & route-heading error (actual, $\psi_\text{act}-\psi_\text{route}$) & $[-\pi,\pi]$\\
 $1$ & $v_\text{own}$ & own speed $/ v_\text{nom}$ & ${\sim}[0,1]$\\
-$2$ & $a_\text{cmd}$ & commanded deviation from route $(\psi_\text{cmd}-\psi_\text{route})$; persists through hold & $[-\pi,\pi]$\\
+$2$ & $a_\text{cmd}$ & issued heading offset $(\psi_\text{cmd}-\psi_\text{route})$; stacks on turns, held during hold & $[-\pi,\pi]$\\
 $3$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading & $[0,1]$\\
 \multicolumn{4}{l}{\emph{Four intruders $j$ (Conflicting AC first, then Nearest Neighbours)}}\\
 $+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
