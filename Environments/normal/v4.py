@@ -701,6 +701,52 @@ class AirspaceEnv(gym.Env):
 
         return worst_score
 
+    def _return_blocked(self, cs):
+        """Binary {0,1}: 1 if returning to route is NOT free, else 0.
+
+        Route-vs-route CPA: ownship on its own route heading vs every intruder on
+        ITS route heading, from current positions. Using each intruder's route
+        heading (not its transient one) makes this robust to in-progress avoidance
+        maneuvers -- a frozen current-velocity prediction wrongly reads 0 while an
+        intruder is momentarily turned away from a head-on route pair. 1 also if
+        already in LoS with anyone. Speeds are the current speeds (heading is what
+        matters for the corridor geometry)."""
+        idx = bs.traf.id2idx(cs)
+        if idx < 0:
+            return 0.0
+        sep    = CONFIG['sep_nm']
+        rh     = self._route_hdg[cs]
+        spd    = _speed_nms(idx)
+        pos    = self._pos_nm(idx)
+        own_ve = spd * math.sin(math.radians(rh))
+        own_vn = spd * math.cos(math.radians(rh))
+
+        for other_cs in self._active_callsigns:
+            j = bs.traf.id2idx(other_cs)
+            if other_cs == cs or j < 0:
+                continue
+            pos_j   = self._pos_nm(j)
+            d_east  = pos_j[0] - pos[0]
+            d_north = pos_j[1] - pos[1]
+            if d_east * d_east + d_north * d_north < sep * sep:
+                return 1.0                                    # already in LoS
+
+            jrh        = self._route_hdg.get(other_cs, bs.traf.hdg[j])
+            js         = _speed_nms(j)
+            dv_east    = js * math.sin(math.radians(jrh)) - own_ve
+            dv_north   = js * math.cos(math.radians(jrh)) - own_vn
+            rel_spd_sq = dv_east * dv_east + dv_north * dv_north
+            if rel_spd_sq < 1e-12:
+                continue
+            tcpa = -(d_east * dv_east + d_north * dv_north) / rel_spd_sq
+            if tcpa < 0:
+                continue                                       # routes diverge
+            cpa_east  = d_east  + tcpa * dv_east
+            cpa_north = d_north + tcpa * dv_north
+            if cpa_east * cpa_east + cpa_north * cpa_north < sep * sep:
+                return 1.0                                     # route corridors conflict
+        return 0.0
+
     def _check_los_now(self):
         """Set _los_this_step if any pair of active aircraft is within sep_nm."""
         active  = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
@@ -804,16 +850,17 @@ class AirspaceEnv(gym.Env):
         a_cmd     = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded heading; persists through hold
         v_cmd     = self._commanded_mach.get(cs, CONFIG['ac_mach']) / CONFIG['ac_mach']  # commanded speed / nominal
 
-        # conflict severity if returning to route (flying the route heading).
-        # Uses an INFINITE horizon (miss-distance only) so a conflict beyond t_warn still flags unsafe.
-        conflict_return = self._conflict_score(cs, route_hdg, infinite_horizon=True)
+        # binary {0,1}: is returning to route blocked? Route-vs-route CPA (ownship and
+        # each intruder on their own route headings) so it is not fooled by an intruder
+        # transiently turned away from a head-on route pair. 0 = returning is free.
+        conflict_return = self._return_blocked(cs)
 
         # ownship-global states (shared across intruder slots)
         obs = [dpsi_act,                              # actual heading deviation from route, rad
                own_spd / V_NOM,                       # v_own: actual speed / nominal
                a_cmd,                                 # commanded heading deviation from route, rad
                v_cmd,                                 # commanded speed / nominal
-               conflict_return]                       # conflict if returning to route (0 = safe)
+               conflict_return]                       # 1 = route corridor blocked, 0 = free to return
 
         # fetch this aircraft's urgency row for intruder prioritisation
         urgency_row = None
