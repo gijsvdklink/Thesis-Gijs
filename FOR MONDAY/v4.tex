@@ -94,7 +94,7 @@ Idx & Action & Effect & $c$ & $r_\text{work}$\\
 \end{table}
 
 % -----------------------------------------------------------------------------
-\section{Observation $o\in\mathbb R^{24}$}
+\section{Observation $o\in\mathbb R^{25}$}
 Ego-centric to focus $f$ (forward axis $=\psi_\text{act}$). Angles are in \emph{radians}
 (unit consistency); the remaining states are scaled by their physical ranges.
 \texttt{VecNormalize} (\texttt{norm\_obs=True}) then standardises all features for the network.
@@ -112,7 +112,8 @@ Index & Symbol & Definition & Range\\
 $0$ & $\Delta\psi_\text{act}$ & route-heading error (actual, $\psi_\text{act}-\psi_\text{route}$) & $[-\pi,\pi]$\\
 $1$ & $v_\text{own}$ & own speed $/ v_\text{nom}$ & ${\sim}[0,1]$\\
 $2$ & $a_\text{cmd}$ & issued heading offset $(\psi_\text{cmd}-\psi_\text{route})$; stacks on turns, held during hold & $[-\pi,\pi]$\\
-$3$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading & $[0,1]$\\
+$3$ & $v_\text{cmd}$ & commanded speed $/ v_\text{nom}$; held during hold & ${\sim}[0,1]$\\
+$4$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading & $[0,1]$\\
 \multicolumn{4}{l}{\emph{Four intruders $j$ (Conflicting AC first, then Nearest Neighbours)}}\\
 $+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
 $+1$ & $\theta$ & ego bearing to $j$ & $[-\pi,\pi]$\\

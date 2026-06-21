@@ -137,8 +137,8 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 4 + N_NBR * 5       # 4 ownship (sin dest, v_own, turn_progress,
-                              # conflict_if_return) + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 26
+OBS_DIM = 5 + N_NBR * 5       # 5 ownship (dpsi_act, v_own, a_cmd, v_cmd, S_ret)
+                              # + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 25
 
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (45 NM)
 V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s); speed-normalising reference
@@ -176,7 +176,7 @@ ACT_COST = [
 _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'cmd_stack', 'retn_conf']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 __all__ = ['AirspaceEnv', 'CONFIG', 'NM_TO_KM', 'latlon_to_nm', 'wrap_to_180', 'OBS_DIM',
@@ -780,8 +780,8 @@ class AirspaceEnv(gym.Env):
         physical range; VecNormalize standardises everything. See module docstring."""
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
-            # no controllable aircraft: on-route (dpsi=0), nominal speed, conflict-free
-            return np.array([0.0, 1.0, 0.0, 0.0]
+            # no controllable aircraft: on-route, nominal speed, no cmd offset, conflict-free
+            return np.array([0.0, 1.0, 0.0, 1.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -801,7 +801,8 @@ class AirspaceEnv(gym.Env):
         # drift the reward penalises. sin/cos avoids the +-180 wrap jump.
         route_hdg = self._route_hdg[cs]
         dpsi_act  = math.radians(wrap_to_180(own_hdg - route_hdg))   # actual heading deviation, rad
-        a_cmd     = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded deviation; persists through hold
+        a_cmd     = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded heading; persists through hold
+        v_cmd     = self._commanded_mach.get(cs, CONFIG['ac_mach']) / CONFIG['ac_mach']  # commanded speed / nominal
 
         # conflict severity if returning to route (flying the route heading).
         # Uses an INFINITE horizon (miss-distance only) so a conflict beyond t_warn still flags unsafe.
@@ -809,8 +810,9 @@ class AirspaceEnv(gym.Env):
 
         # ownship-global states (shared across intruder slots)
         obs = [dpsi_act,                              # actual heading deviation from route, rad
-               own_spd / V_NOM,                       # v_own normalised by nominal cruise
+               own_spd / V_NOM,                       # v_own: actual speed / nominal
                a_cmd,                                 # commanded heading deviation from route, rad
+               v_cmd,                                 # commanded speed / nominal
                conflict_return]                       # conflict if returning to route (0 = safe)
 
         # fetch this aircraft's urgency row for intruder prioritisation
