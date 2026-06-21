@@ -22,7 +22,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from Environments.v4 import AirspaceEnv
+from Environments.normal.v4 import AirspaceEnv
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ CHECKPOINT_EVERY = 300_000
 N_RUNS           = 3
 
 RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'experimental')
+    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'normal')
 )
 
 PPO_KWARGS = dict(
