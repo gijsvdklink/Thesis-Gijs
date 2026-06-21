@@ -893,13 +893,11 @@ class AirspaceEnv(gym.Env):
         # heading error to route (commanded heading vs fixed route heading); matches the
         # drift the reward penalises. sin/cos avoids the +-180 wrap jump.
         route_hdg = self._route_hdg[cs]
-        hdg_err   = wrap_to_180(route_hdg - cmd_hdg)
-        cmd_stack = math.radians(wrap_to_180(cmd_hdg - route_hdg))  # cumulative stacked turn from route, rad
+        dpsi_act = math.radians(wrap_to_180(own_hdg - route_hdg))   # actual heading deviation, rad
+        a_cmd    = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded deviation; persists through hold
 
-        # conflict severity now (current heading) and if returning to route (flying the
-        # route heading). 0 = clear; ->1 = in / entering conflict. conflict_now uses the
-        # warning horizon; conflict_return uses an INFINITE horizon (miss-distance only) so
-        # the "safe to return" signal also catches conflicts beyond t_warn.
+        # conflict severity if returning to route (flying the route heading).
+        # Uses an INFINITE horizon (miss-distance only) so a conflict beyond t_warn still flags unsafe.
         conflict_return = self._conflict_score(cs, route_hdg, infinite_horizon=True)
 
         # response-delay features: pending turn angle + binary execution flag
@@ -908,9 +906,9 @@ class AirspaceEnv(gym.Env):
         b_exec     = float(self._exec_this_step.get(cs, False))
 
         # ownship-global states (shared across intruder slots)
-        obs = [math.radians(hdg_err),                 # dpsi: route-heading error, raw rad
+        obs = [dpsi_act,                              # actual heading deviation from route, rad
                own_spd / V_NOM,                       # v_own normalised by nominal cruise
-               cmd_stack,                             # cumulative stacked turn from route, rad
+               a_cmd,                                 # commanded heading deviation from route, rad
                conflict_return,                       # conflict if returning to route (0 = safe)
                iss_dhdg,                              # pending turn angle: issued - effective, rad
                b_exec]                                # 1 if instruction executed this step, else 0
