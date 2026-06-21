@@ -158,7 +158,7 @@ def _collect_frame(env, reward, cum_reward, los_steps, action=None, obs=None):
 
 # -- Episode runner -----------------------------------------------------------
 
-def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
+def run_episode(env, model, vecnorm, use_policy, seed, max_frames, hold_only=False):
     obs, _ = env.reset(seed=seed)
     polygon = [[round(float(v[0]), 3), round(float(v[1]), 3)] for v in env.polygon]
 
@@ -172,7 +172,9 @@ def run_episode(env, model, vecnorm, use_policy, seed, max_frames):
           f'cap={max_frames if max_frames > 0 else "episode end"}')
 
     while not done and (max_frames <= 0 or n < max_frames):
-        if use_policy:
+        if hold_only:
+            action = 3   # HOLD — true no-op, no heading instruction issued
+        elif use_policy:
             obs_n = vecnorm.normalize_obs(obs[np.newaxis]) if vecnorm else obs[np.newaxis]
             action = int(model.predict(obs_n, deterministic=True)[0][0])
         else:
@@ -255,7 +257,7 @@ const C = {{
 function urgColor(u) {{
   if (u > 1.0) return C.red;
   if (u > 0.0) return C.orange;
-  return C.grey;
+  return C.green;
 }}
 
 // -- View transform
@@ -542,7 +544,7 @@ _BGR = {
 def _uc_bgr(u):
     if u > 1.0: return _BGR['red']
     if u > 0.0: return _BGR['orange']
-    return _BGR['grey']
+    return _BGR['green']
 
 
 class _ViewCV:
@@ -699,6 +701,119 @@ def write_html(polygon, frames, output_path, mode_str, n_ac, fps=8, ended=True):
     size_mb = os.path.getsize(output_path) / 1e6
     print(f'  Saved -> {output_path}  ({size_mb:.1f} MB)')
 
+# -- Urgency matrix visualisation --------------------------------------------
+
+def render_urgency_matrix_png(matrix, cs_list, focus_cs, output_path):
+    """Save a styled heatmap of the urgency matrix with the ownship highlighted."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # Sort by callsign so axes always read AC00, AC01, AC02 …
+    order    = sorted(range(len(cs_list)), key=lambda i: cs_list[i])
+    cs_list  = [cs_list[i] for i in order]
+    matrix   = matrix[np.ix_(order, order)]
+
+    n         = len(cs_list)
+    focus_idx = cs_list.index(focus_cs) if focus_cs in cs_list else -1
+
+    # Academic green → yellow → orange → red (matches reference style)
+    cmap = LinearSegmentedColormap.from_list('conflict_urg', [
+        '#1a7a3c',   # u=0.00  deep green  (no threat)
+        '#5ab758',   # u=0.25  light green
+        '#f5e642',   # u=0.50  yellow
+        '#f5a623',   # u=0.75  orange
+        '#c0392b',   # u=1.00  red         (near-LoS)
+    ])
+
+    # Diagonal → NaN so it renders as grey (masked)
+    disp = np.clip(matrix, 0.0, 1.0).astype(float)
+    np.fill_diagonal(disp, np.nan)
+    masked = np.ma.array(disp, mask=np.isnan(disp))
+    cmap.set_bad('#d8d8d8')   # diagonal cell colour
+
+    fig_sz = max(6, n * 0.85)
+    fig, ax = plt.subplots(figsize=(fig_sz + 1.8, fig_sz + 0.6))
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('#f0f0f0')
+
+    im = ax.imshow(masked, cmap=cmap, vmin=0, vmax=1,
+                   aspect='equal', interpolation='nearest')
+
+    # Faint blue tint on ownship row and column
+    if focus_idx >= 0:
+        for i in range(n):
+            for r, c in [(focus_idx, i), (i, focus_idx)]:
+                if r == c:
+                    continue
+                ax.add_patch(mpatches.FancyBboxPatch(
+                    (c - 0.5, r - 0.5), 1, 1,
+                    boxstyle='square,pad=0', linewidth=0,
+                    facecolor='#1a6ed8', alpha=0.13))
+
+    # Cell text — skip zeros and diagonal; dark/light based on urgency
+    fs = max(8, 12 - n)
+    for i in range(n):
+        for j in range(n):
+            u = matrix[i, j]
+            if i == j or u <= 0:
+                continue
+            txt_col = 'white' if u > 0.55 else '#1a1a1a'
+            ax.text(j, i, f'{u:.2f}', ha='center', va='center',
+                    fontsize=fs, color=txt_col, fontweight='bold')
+
+    # Bold blue border around ownship row and column
+    if focus_idx >= 0:
+        lw, bc = 3.2, '#1a6ed8'
+        ax.add_patch(mpatches.FancyBboxPatch(   # column
+            (focus_idx - 0.5, -0.5), 1, n,
+            boxstyle='square,pad=0', lw=lw, edgecolor=bc, facecolor='none'))
+        ax.add_patch(mpatches.FancyBboxPatch(   # row
+            (-0.5, focus_idx - 0.5), n, 1,
+            boxstyle='square,pad=0', lw=lw, edgecolor=bc, facecolor='none'))
+
+    # Axis labels — ownship in blue, rest in dark grey
+    labels     = [f'{cs} ◀' if cs == focus_cs else cs for cs in cs_list]
+    lbl_colors = ['#1a6ed8' if cs == focus_cs else '#222222' for cs in cs_list]
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=40, ha='right', fontsize=10)
+    ax.set_yticklabels(labels, fontsize=10)
+    for tl, col in zip(ax.get_xticklabels(), lbl_colors):
+        tl.set_color(col)
+    for tl, col in zip(ax.get_yticklabels(), lbl_colors):
+        tl.set_color(col)
+
+    ax.tick_params(axis='both', length=0)
+    for sp in ax.spines.values():
+        sp.set_edgecolor('#aaaaaa')
+
+    # White grid lines between cells
+    ax.set_xticks(np.arange(n) - 0.5, minor=True)
+    ax.set_yticks(np.arange(n) - 0.5, minor=True)
+    ax.grid(which='minor', color='white', linewidth=1.8)
+    ax.tick_params(which='minor', length=0)
+
+    ax.set_title('Urgency Matrix  (ownship highlighted)', color='#111111',
+                 fontsize=13, pad=14)
+    ax.set_xlabel('Aircraft  (column)', color='#444444', fontsize=10)
+    ax.set_ylabel('Aircraft  (row)',    color='#444444', fontsize=10)
+
+    cbar = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label('Urgency  u', color='#444444', fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.outline.set_edgecolor('#aaaaaa')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches='tight', facecolor='white')
+    plt.close()
+    size_mb = os.path.getsize(output_path) / 1e6
+    print(f'  Saved -> {output_path}  ({size_mb:.1f} MB)')
+
+
 # -- Main ---------------------------------------------------------------------
 
 def main():
@@ -707,6 +822,8 @@ def main():
                         help='Environment module under Environments/ (default: v4)')
     parser.add_argument('--model',       default=DEFAULT_MODEL)
     parser.add_argument('--no-policy',   action='store_true')
+    parser.add_argument('--hold',        action='store_true',
+                        help='Always send HOLD (action 3) — true no-op baseline')
     parser.add_argument('--mp4',         action='store_true', help='Also save as .mp4')
     parser.add_argument('--frames',      type=int,   default=0,
                         help='Frame cap (0 = record until the episode ends)')
@@ -721,9 +838,203 @@ def main():
                         help='Override crossings_per_episode (longer episodes)')
     parser.add_argument('--t_warn',      type=float, default=None,
                         help='Warning horizon in seconds (default: 360 = 6 min)')
+    parser.add_argument('--seed',        type=int,   default=None,
+                        help='Fix episode seed for reproducibility')
+    parser.add_argument('--compare-twarn', action='store_true',
+                        help='Save two PNGs comparing T_warn=600s vs T_warn=300s (same scenario)')
+    parser.add_argument('--matrix-viz',      action='store_true',
+                        help='Save airspace PNG + urgency matrix PNG (8 aircraft, hold actions)')
+    parser.add_argument('--matrix-min-conf', type=int,   default=3,
+                        help='Min conflict pairs to capture (default 3)')
+    parser.add_argument('--matrix-max-conf', type=int,   default=None,
+                        help='Max conflict pairs to capture (default: no limit)')
+    parser.add_argument('--matrix-min-u',    type=float, default=0.3,
+                        help='Min urgency for capture (default 0.3)')
+    parser.add_argument('--matrix-frame-at', type=int,   default=None,
+                        help='Capture exactly this step number (ignores conf/urgency thresholds)')
     args = parser.parse_args()
 
-    use_policy = (not args.no_policy) and args.model and os.path.exists(args.model)
+    # Apply CONFIG overrides (read by env.reset(), so must be set before any episode)
+    if args.n_aircraft  is not None: CONFIG['n_aircraft']           = lambda n=args.n_aircraft: n
+    if args.density     is not None: CONFIG['rho']                  = lambda d=args.density: d
+    if args.circularity is not None: CONFIG['min_circularity']      = args.circularity
+    if args.n_vertices  is not None: CONFIG['n_vertices']           = lambda v=args.n_vertices: v
+    if args.crossings   is not None: CONFIG['crossings_per_episode']= args.crossings
+    if args.t_warn      is not None: CONFIG['t_warn']               = float(args.t_warn)
+
+    # ------------------------------------------------------------------ #
+    # --compare-twarn: two PNGs of the same scenario, different T_warn   #
+    # ------------------------------------------------------------------ #
+    if args.compare_twarn:
+        fixed_seed = args.seed  # None → search across random seeds
+
+        def _run_pair(seed):
+            res = {}
+            for tw in (600.0, 300.0):
+                env_tw = AirspaceEnv(t_warn=tw)
+                poly_tw, frames_tw, _ = run_episode(
+                    env_tw, None, None, False, seed, 0, hold_only=True)
+                res[tw] = (poly_tw, frames_tw)
+            return res
+
+        def _best_frame(results):
+            """Return (fidx, diff) where diff = conf_600 - conf_300 is maximised,
+            preferring frames where conf_600 >= 1 and conf_300 == 0."""
+            frames_600 = results[600.0][1]
+            frames_300 = results[300.0][1]
+            n = min(len(frames_600), len(frames_300))
+            # Ideal: 600s sees conflict, 300s does not
+            ideal = [(i, frames_600[i]['conf'] - frames_300[i]['conf'])
+                     for i in range(n)
+                     if frames_600[i]['conf'] >= 1 and frames_300[i]['conf'] == 0]
+            if ideal:
+                return max(ideal, key=lambda x: x[1])[0], True
+            # Fall back: largest gap in conf count
+            diffs = [(i, frames_600[i]['conf'] - frames_300[i]['conf'])
+                     for i in range(n) if frames_600[i]['conf'] >= 1]
+            if diffs:
+                return max(diffs, key=lambda x: x[1])[0], False
+            return len(frames_600) // 2, False
+
+        # Search up to 8 seeds for the ideal (T600=conflict, T300=clear) frame
+        results = None
+        seed    = fixed_seed if fixed_seed is not None else int.from_bytes(os.urandom(4), 'big')
+        for attempt in range(8):
+            print(f'Attempt {attempt+1}: seed={seed}')
+            results = _run_pair(seed)
+            fidx, is_ideal = _best_frame(results)
+            if is_ideal:
+                print(f'  -> Good seed found!\n')
+                break
+            if fixed_seed is not None:
+                break   # user pinned a seed; use it regardless
+            seed = int.from_bytes(os.urandom(4), 'big')
+
+        frames_600 = results[600.0][1]
+        polygon    = results[600.0][0]
+        ref_frame  = frames_600[fidx]
+        print(f'Target frame : {fidx}  T={ref_frame["t"]}s  '
+              f'conf(600s)={ref_frame["conf"]}  '
+              f'conf(300s)={results[300.0][1][fidx]["conf"]}')
+
+        view = _ViewCV(polygon)
+        for tw in (600.0, 300.0):
+            poly, frames = results[tw]
+            # Patch cosmetics so both images share the same episode timestamp
+            # and the same focus aircraft (determined by the 600s run)
+            f = dict(frames[fidx])
+            f['t'] = ref_frame['t']          # align HUD time to 600s run
+            # Sync focus flag: use 600s run's focus aircraft
+            focus_cs_600 = next((ac['cs'] for ac in ref_frame['ac'] if ac['focus']), None)
+            f['ac'] = [dict(ac, focus=(ac['cs'] == focus_cs_600)) for ac in f['ac']]
+            img  = render_frame_cv2(f, poly, view)
+            path = os.path.join(HERE,
+                                f'{_env_name}_twarn{int(tw)}_seed{seed}.png')
+            cv2.imwrite(path, img)
+            print(f'Saved -> {path}  ({os.path.getsize(path)/1e6:.1f} MB)')
+        return
+
+    # ------------------------------------------------------------------ #
+    # --matrix-viz: airspace PNG + urgency matrix heatmap                 #
+    # ------------------------------------------------------------------ #
+    if args.matrix_viz:
+        n_ac    = args.n_aircraft if args.n_aircraft is not None else 8
+        density = args.density    if args.density    is not None else 1/5000  # high density default
+        CONFIG['n_aircraft'] = lambda _n=n_ac: _n
+        CONFIG['rho']        = lambda _d=density: _d
+
+        seed = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), 'big')
+        captured = None
+
+        for attempt in range(12):
+            print(f'Attempt {attempt+1}: seed={seed}')
+            env_mv = AirspaceEnv()
+            obs, _ = env_mv.reset(seed=seed)
+            polygon = [[round(float(v[0]), 3), round(float(v[1]), 3)]
+                       for v in env_mv.polygon]
+            done, step = False, 0
+            cum_r = 0.0
+            best  = None   # (n_conf, u_max, step, capture)
+
+            while not done and step < (args.frames or 1500):
+                obs, reward, terminated, truncated, info = env_mv.step(3)  # HOLD
+                done   = terminated or truncated
+                cum_r += float(reward)
+                step  += 1
+
+                U      = env_mv._urgency_matrix
+                n_conf = int((U > 0).sum()) // 2 if U.size > 0 else 0
+                u_max  = float(U.max()) if U.size > 0 else 0.0
+
+                min_conf   = args.matrix_min_conf
+                max_conf   = args.matrix_max_conf if args.matrix_max_conf is not None else 9999
+                min_u      = args.matrix_min_u
+                frame_at   = args.matrix_frame_at
+
+                hit = (frame_at is not None and step == frame_at and env_mv._focus_cs is not None)
+                hit = hit or (frame_at is None
+                              and min_conf <= n_conf <= max_conf
+                              and u_max >= min_u
+                              and env_mv._focus_cs is not None)
+
+                if hit:
+                    captured = {
+                        'frame':    _collect_frame(env_mv, reward, cum_r, 0, 3,
+                                                   obs.tolist()),
+                        'matrix':   U.copy(),
+                        'cs_list':  list(env_mv._urgency_cs_list),
+                        'focus_cs': env_mv._focus_cs,
+                        'polygon':  polygon,
+                        'seed':     seed,
+                    }
+                    break
+                # Keep best fallback within the conf range
+                if n_conf >= 1 and env_mv._focus_cs is not None:
+                    if best is None or (n_conf, u_max) > (best[0], best[1]):
+                        best = (n_conf, u_max, step, {
+                            'frame':    _collect_frame(env_mv, reward, cum_r, 0, 3,
+                                                       obs.tolist()),
+                            'matrix':   U.copy(),
+                            'cs_list':  list(env_mv._urgency_cs_list),
+                            'focus_cs': env_mv._focus_cs,
+                            'polygon':  polygon,
+                            'seed':     seed,
+                        })
+
+            if captured is None and best is not None:
+                captured = best[3]
+                n_conf, u_max, step = best[0], best[1], best[2]
+
+            if captured is not None:
+                print(f'  -> frame at step {step}  '
+                      f'n_conf={n_conf}  u_max={u_max:.3f}  focus={captured["focus_cs"]}\n')
+                break
+            seed = int.from_bytes(os.urandom(4), 'big')
+
+        if captured is None:
+            print('No suitable frame found after 12 attempts.')
+            return
+
+        tag  = f'{_env_name}_n{n_ac}_seed{captured["seed"]}_step{step}'
+        view = _ViewCV(captured['polygon'])
+
+        # Airspace PNG
+        path_ac = os.path.join(HERE, f'{tag}_airspace.png')
+        cv2.imwrite(path_ac, render_frame_cv2(
+            captured['frame'], captured['polygon'], view))
+        print(f'  Saved -> {path_ac}  ({os.path.getsize(path_ac)/1e6:.1f} MB)')
+
+        # Urgency matrix PNG
+        path_mx = os.path.join(HERE, f'{tag}_urgency_matrix.png')
+        render_urgency_matrix_png(
+            captured['matrix'], captured['cs_list'],
+            captured['focus_cs'], path_mx)
+        return
+
+    # ------------------------------------------------------------------ #
+    # Normal episode mode                                                  #
+    # ------------------------------------------------------------------ #
+    use_policy = (not args.no_policy) and (not args.hold) and args.model and os.path.exists(args.model)
     model   = None
     vecnorm = None
 
@@ -757,15 +1068,8 @@ def main():
                 print(f'  vecnorm skipped ({e})')
                 vecnorm = None
 
-    if args.n_aircraft  is not None: CONFIG['n_aircraft']      = lambda n=args.n_aircraft: n
-    if args.density     is not None: CONFIG['rho']             = lambda d=args.density: d
-    if args.circularity is not None: CONFIG['min_circularity'] = args.circularity
-    if args.n_vertices  is not None: CONFIG['n_vertices']      = lambda v=args.n_vertices: v
-    if args.crossings   is not None: CONFIG['crossings_per_episode'] = args.crossings
-    if args.t_warn      is not None: CONFIG['t_warn'] = float(args.t_warn)
-
-    stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else 'no_policy'
-    mode_str = f'{os.path.basename(args.model)}' if use_policy else 'no policy'
+    stem     = os.path.splitext(os.path.basename(args.model))[0] if use_policy else ('hold_only' if args.hold else 'no_policy')
+    mode_str = f'{os.path.basename(args.model)}' if use_policy else ('HOLD only (no actions)' if args.hold else 'no policy (random)')
 
     cond = ''
     if args.n_aircraft is not None: cond += f'_n{args.n_aircraft}'
@@ -775,11 +1079,11 @@ def main():
     print(f'Episodes : {args.episodes}\n')
 
     for ep in range(1, args.episodes + 1):
-        seed    = int.from_bytes(os.urandom(4), 'big')
+        seed    = args.seed if args.seed is not None else int.from_bytes(os.urandom(4), 'big')
         ep_tag  = f'_ep{ep}' if args.episodes > 1 else ''
         outpath = os.path.join(HERE, f'{_env_name}_{stem}{cond}{ep_tag}.html')
         print(f'-- Episode {ep}/{args.episodes} ---')
-        polygon, frames, ended = run_episode(env, model, vecnorm, use_policy, seed, args.frames)
+        polygon, frames, ended = run_episode(env, model, vecnorm, use_policy, seed, args.frames, hold_only=args.hold)
         write_html(polygon, frames, outpath, mode_str,
                    env.n_aircraft, fps=args.fps, ended=ended)
         if args.mp4:

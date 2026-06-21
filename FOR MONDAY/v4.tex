@@ -113,15 +113,15 @@ Index & Symbol & Definition & Range\\
 $0$ & $\sin\Delta\psi$ & route-heading error, sin part & $[-1,1]$\\
 $1$ & $\cos\Delta\psi$ & route-heading error, cos part & $[-1,1]$\\
 $2$ & $v_\text{own}$ & own speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
-$3$ & $p_\text{turn}$ & $\mathrm{wrap}(\psi_\text{cmd}-\psi_\text{act})$ in rad (turn-execution lag) & $[-\pi,\pi]$\\
-$4$ & $S_\text{now}$ & $S(\psi_\text{act})$: conflict score on the current heading (warning horizon) & $[0,1]$\\
-$5$ & $S_\text{ret}$ & $S_\infty(\psi_\text{route})$: conflict score on the route heading, \emph{infinite} horizon ($0=$ safe to return) & $[0,1]$\\
-\multicolumn{4}{l}{\emph{Each intruder $j$ (slot $m$, indices $6{+}5m$ to $10{+}5m$)}}\\
-$+0$ & $\rho$ & $d_{fj}/d_\text{warn}$ (range to intruder) & $[0,1]$\\
-$+1$ & $\theta$ & ego bearing to $j$, radians ($0=$ ahead) & $[-\pi,\pi]$\\
-$+2$ & $\psi$ & intruder heading relative to ownship, $\mathrm{wrap}(\psi_j-\psi_\text{act})$ rad & $[-\pi,\pi]$\\
+$3$ & $p_\text{turn}$ & $\psi_\text{cmd}-\psi_\text{act}$: turn-execution lag (rad) & $[-\pi,\pi]$\\
+$4$ & $S_\text{now}$ & conflict score on current heading & $[0,1]$\\
+$5$ & $S_\text{ret}$ & conflict score on route heading, infinite horizon & $[0,1]$\\
+\multicolumn{4}{l}{\emph{Conflicting aircraft and nearest intruders $j$}}\\
+$+0$ & $\rho$ & $d_{fj}/d_\text{warn}$: distance to intruder, normalised & $[0,1]$\\
+$+1$ & $\theta$ & angle to intruder relative to ownship heading (rad) & $[-\pi,\pi]$\\
+$+2$ & $\psi_j$ & heading angle of intruder relative to ownship heading (rad) & $[-\pi,\pi]$\\
 $+3$ & $v_\text{int}$ & intruder speed $/\,v_\text{nom}$ & ${\sim}[0,1]$\\
-$+4$ & $\tau$ & $t_\text{CPA}/T_\text{warn}$ (time to closest approach; $0$ in LoS, $1$ if diverging) & $[0,1]$\\
+$+4$ & $\tau$ & $t_\text{CPA}/T_\text{warn}$: time to closest approach; $0$ in LoS, $1$ if diverging & $[0,1]$\\
 \bottomrule
 \end{tabular}
 \end{table}

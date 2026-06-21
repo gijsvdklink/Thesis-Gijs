@@ -121,7 +121,7 @@ CONFIG = {
     'n_neighbours':          4,
     # Focus selection
     'focus_clear_steps':     5,
-    'focus_emergency_u':     0.8,
+    'focus_emergency_u':     0.67,   # ≈ 2 min before CPA at t_warn=360 s
     'drift_switch_margin':   0.01,
     'return_clear_nm':       20.0,            # full clearance distance for the drift fallback score (4 x sep)
     # Reward weights
@@ -488,9 +488,12 @@ class AirspaceEnv(gym.Env):
 
     def _select_focus_aircraft(self):
         """
-        Rebuild the urgency matrix, then select the aircraft with the highest
-        total urgency burden (sum across all pairs) as the focus aircraft.
-        Applies a hysteresis lock to avoid premature switching mid-resolution.
+        Rebuild the urgency matrix and select the focus aircraft.
+
+        Selection: highest pair_max (worst single-pair urgency), tiebreak by total_load.
+        Ties go to the current focus to prevent oscillation in symmetric conflicts.
+        Hysteresis keeps the current focus while it is still active; an emergency
+        (pair_max >= focus_emergency_u) overrides hysteresis and forces a switch.
         """
         active = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
         if not active:
@@ -520,28 +523,30 @@ class AirspaceEnv(gym.Env):
             else:
                 self._steps_since_urgency[cs] = self._steps_since_urgency.get(cs, clear_steps) + 1
 
-        # primary: highest single-pair urgency; tiebreak: highest total load
+        # Current-focus state (computed once, used in both candidate selection and hysteresis)
+        focus_idx      = active.index(self._focus_cs) if self._focus_cs in active else -1
+        focus_pm       = pair_max[focus_idx] if focus_idx >= 0 else 0.0
+        focus_resolved = self._steps_since_urgency.get(self._focus_cs, clear_steps) >= clear_steps
+        emergency      = pair_max.max() >= CONFIG['focus_emergency_u']
+        drift_locked   = focus_pm == 0 and self._focus_hold_steps < clear_steps
+
+        # Candidate: highest pair_max, tiebreak by total_load; ties go to current focus
         if pair_max.max() > 0:
-            tied = np.where(pair_max == pair_max.max())[0]
-            winner = tied[int(np.argmax(total_load[tied]))]
-            best_cs = active[winner]
+            tied = np.where(pair_max >= pair_max.max() - 1e-9)[0]
+            if focus_idx >= 0 and np.any(tied == focus_idx):
+                best_cs = self._focus_cs
+            else:
+                best_cs = active[tied[int(np.argmax(total_load[tied]))]]
         else:
             best_cs = self._drift_fallback(active)
 
-        # hysteresis: keep current focus unless it is resolved or an emergency arises
-        if self._focus_cs in active and best_cs != self._focus_cs:
-            focus_pair_max = pair_max[active.index(self._focus_cs)]
-            focus_resolved = (self._steps_since_urgency.get(self._focus_cs, clear_steps)
-                              >= clear_steps)
-            emergency      = pair_max.max() >= CONFIG['focus_emergency_u']
-            # drift case: also require minimum hold time before switching
-            drift_locked   = (focus_pair_max == 0 and
-                              self._focus_hold_steps < clear_steps)
-            if (focus_pair_max > 0 or not focus_resolved or drift_locked) and not emergency:
-                self._focus_hold_steps += 1
-                return self._focus_cs
+        # Hysteresis: keep current focus while it is still active,
+        # unless it is fully resolved or an emergency forces a switch
+        if focus_idx >= 0 and best_cs != self._focus_cs:
+            keep_focus = (focus_pm > 0 or not focus_resolved or drift_locked) and not emergency
+            if keep_focus:
+                best_cs = self._focus_cs
 
-        # switching to a new aircraft: reset hold counter
         if best_cs != self._focus_cs:
             self._focus_hold_steps = 0
         else:

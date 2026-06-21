@@ -1,0 +1,29 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Scenario}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Focus selection}{1}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Action space (\texttt  {Discrete(10)})}{2}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Observation $o\in \mathbb  R^{26}$}{2}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Reward ($r=r_\text  {LoS}+r_\text  {conf}+r_\text  {drift}+r_\text  {work}\le 0$)}{3}{section.5}\protected@file@percent }
+\newlabel{eq:score}{{1}{3}{Reward ($r=r_\text {LoS}+r_\text {conf}+r_\text {drift}+r_\text {work}\le 0$)}{equation.1}{}}
+\newlabel{eq:drift}{{2}{3}{Reward ($r=r_\text {LoS}+r_\text {conf}+r_\text {drift}+r_\text {work}\le 0$)}{equation.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Training (PPO, Stable-Baselines3)}{3}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Experimental Environment: Action-Response Delay}{3}{section.7}\protected@file@percent }
+\newlabel{sec:experimental}{{7}{3}{Experimental Environment: Action-Response Delay}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Background and Motivation}{3}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}POMDP Formulation}{4}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Delay Models}{4}{subsection.7.3}\protected@file@percent }
+\newlabel{sec:delay_models}{{7.3}{4}{Delay Models}{subsection.7.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Deterministic model.}{4}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Probabilistic model.}{4}{section*.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Response-pending signal $r_\text  {pend}(t)$ for the deterministic (blue) and probabilistic (red) delay models, for a first instruction (left column) and a superseding instruction (right column, mean $= 12.3$\,s). In the deterministic case $r_\text  {pend}$ is an exact linear countdown; in the probabilistic case it is the lognormal survival function, i.e.\ a calibrated belief that the pilot has not yet responded.}}{5}{figure.1}\protected@file@percent }
+\newlabel{fig:delay}{{1}{5}{Response-pending signal $r_\text {pend}(t)$ for the deterministic (blue) and probabilistic (red) delay models, for a first instruction (left column) and a superseding instruction (right column, mean $= 12.3$\,s). In the deterministic case $r_\text {pend}$ is an exact linear countdown; in the probabilistic case it is the lognormal survival function, i.e.\ a calibrated belief that the pilot has not yet responded}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.4}Information Flow}{5}{subsection.7.4}\protected@file@percent }
+\newlabel{sec:infoflow}{{7.4}{5}{Information Flow}{subsection.7.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Per-step information flow in the experimental environment. Dashed box: hidden delay state $(d,\,t_\text  {el})$ not directly observable by the agent. The two signals derived from the hidden state, $r_\text  {pend}$ and $\Delta \psi _\text  {iss}$, are the only information the agent receives about the pending instruction.}}{5}{figure.2}\protected@file@percent }
+\newlabel{fig:block}{{2}{5}{Per-step information flow in the experimental environment. Dashed box: hidden delay state $(d,\,t_\text {el})$ not directly observable by the agent. The two signals derived from the hidden state, $r_\text {pend}$ and $\Delta \psi _\text {iss}$, are the only information the agent receives about the pending instruction}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.5}Required Observations}{5}{subsection.7.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.6}Comparison: v4 vs.\ Experimental}{6}{subsection.7.6}\protected@file@percent }
+\gdef \@abspage@last{6}
