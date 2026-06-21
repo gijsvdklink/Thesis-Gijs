@@ -275,7 +275,7 @@ Figure~\ref{fig:flows} shows how the three models differ in what sits between th
 \subsection{Observation Space}
 \label{sec:obs_exp}
 
-The experimental environment augments the v4 observation vector from 25 to 27 features by appending two signals derived from the delay block:
+The experimental environment augments the v4 observation vector from 25 to 28 features by appending three signals derived from the delay block:
 
 \begin{table}[h]\centering
 \begin{tabular}{cllc}
@@ -285,11 +285,12 @@ Index & Symbol & Definition & Range\\
 \multicolumn{4}{l}{\emph{Inherited from v4 (ownship + 4 intruder slots)}}\\
 $0$--$24$ & --- & see v4 specification & ---\\[3pt]
 \multicolumn{4}{l}{\emph{New: pending-instruction state}}\\
-$25$ & $\Delta\psi_\text{iss}$ & pending turn angle (issued $-$ effective heading) & $[-\pi,\pi]$\\
-$26$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0       & $\{0,1\}$\\
+$25$ & $\Delta\psi_\text{iss}$ & pending heading: issued $-$ effective & $[-\pi,\pi]$\\
+$26$ & $\Delta v_\text{iss}$   & pending speed: issued $-$ effective, $/\,v_\text{nom}$ & ${\sim}[-1,1]$\\
+$27$ & $b_\text{exec}$         & 1 if instruction executed this step, else 0 & $\{0,1\}$\\
 \bottomrule
 \end{tabular}
-\caption{Observation vector for the experimental environment ($o_k\in\mathbb{R}^{27}$). Features 0--24 are identical to v4; features 25--26 expose the pending-instruction state to the agent.}
+\caption{Observation vector for the experimental environment ($o_k\in\mathbb{R}^{28}$). Features 0--24 are identical to v4; features 25--27 expose the pending-instruction state to the agent.}
 \end{table}
 
 \noindent$\Delta\psi_\text{iss}=0$ and $b_\text{exec}=0$ indicate no outstanding instruction. $b_\text{exec}=1$ signals that the pending instruction executed this step; the agent can infer the aircraft has begun the manoeuvre.
@@ -312,10 +313,10 @@ Hidden state
   & Same, plus $(d,\,t_\text{el})$ per pending instruction\\[3pt]
 Observation dimension
   & 25
-  & 27\\[3pt]
+  & 28\\[3pt]
 Additional features
   & ---
-  & $\Delta\psi_\text{iss}$,\; $b_\text{exec}$\\[3pt]
+  & $\Delta\psi_\text{iss}$,\; $\Delta v_\text{iss}$,\; $b_\text{exec}$\\[3pt]
 Reward trajectory
   & Commanded ($\psi_\text{cmd}$)
   & Effective ($\psi_\text{eff}$); cost of delay is felt\\[3pt]

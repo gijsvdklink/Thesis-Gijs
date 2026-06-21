@@ -177,8 +177,8 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 7 + N_NBR * 5       # 7 ownship (dpsi_act, v_own, a_cmd, v_cmd, S_ret, iss_dhdg, b_exec)
-                              # + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 27
+OBS_DIM = 8 + N_NBR * 5       # 8 ownship (dpsi_act, v_own, a_cmd, v_cmd, S_ret, iss_dhdg, iss_dspd, b_exec)
+                              # + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 28
 
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (45 NM)
 V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s); speed-normalising reference
@@ -217,7 +217,7 @@ _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
 OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf',
-                       'iss_dhdg', 'b_exec']
+                       'iss_dhdg', 'iss_dspd', 'b_exec']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 
@@ -872,7 +872,7 @@ class AirspaceEnv(gym.Env):
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route, nominal speed, no cmd offset, conflict-free, no pending
-            return np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+            return np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -899,9 +899,12 @@ class AirspaceEnv(gym.Env):
         # Uses an INFINITE horizon (miss-distance only) so a conflict beyond t_warn still flags unsafe.
         conflict_return = self._conflict_score(cs, route_hdg, infinite_horizon=True)
 
-        # response-delay features: pending turn angle + binary execution flag
+        # response-delay features: pending heading/speed angles + binary execution flag
         issued_hdg = self._issued_heading.get(cs, cmd_hdg)
         iss_dhdg   = math.radians(wrap_to_180(issued_hdg - cmd_hdg))
+        issued_mch = self._issued_mach.get(cs, CONFIG['ac_mach'])
+        eff_mch    = self._effective_mach.get(cs, CONFIG['ac_mach'])
+        iss_dspd   = (issued_mch - eff_mch) / CONFIG['ac_mach']
         b_exec     = float(self._exec_this_step.get(cs, False))
 
         # ownship-global states (shared across intruder slots)
@@ -910,7 +913,8 @@ class AirspaceEnv(gym.Env):
                a_cmd,                                 # commanded heading deviation from route, rad
                v_cmd,                                 # commanded speed / nominal
                conflict_return,                       # conflict if returning to route (0 = safe)
-               iss_dhdg,                              # pending turn angle: issued - effective, rad
+               iss_dhdg,                              # pending heading: issued - effective, rad
+               iss_dspd,                              # pending speed: issued - effective, / nominal
                b_exec]                                # 1 if instruction executed this step, else 0
 
         # fetch this aircraft's urgency row for intruder prioritisation
