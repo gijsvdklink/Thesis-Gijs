@@ -395,6 +395,7 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._los_this_step       = False
+        self._last_intruder_cs    = [None] * N_NBR   # callsign per obs intruder slot (viz only)
 
     # -- Gym interface ---------------------------------------------------------
 
@@ -442,6 +443,7 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix      = np.zeros((0, 0))
         self._urgency_cs_list     = []
         self._los_this_step       = False
+        self._last_intruder_cs    = [None] * N_NBR
         self._focus_cs            = None   # clear stale focus: callsign IDs restart each episode
 
         delay_min = max(1, round(CONFIG['spawn_delay_s'][0] / step_duration_s))
@@ -860,6 +862,7 @@ class AirspaceEnv(gym.Env):
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route, nominal speed, no cmd offset, conflict-free
+            self._last_intruder_cs = [None] * N_NBR
             return np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
@@ -968,6 +971,10 @@ class AirspaceEnv(gym.Env):
             if rec[3] not in seen:
                 selected.append(rec)
                 seen.add(rec[3])
+
+        # remember which callsign fills each intruder slot (for the viz obs panel)
+        self._last_intruder_cs = [selected[k][3] if k < len(selected) else None
+                                  for k in range(N_NBR)]
 
         for slot_k in range(N_NBR):
             obs += selected[slot_k][2] if slot_k < len(selected) else self._EMPTY_SLOT

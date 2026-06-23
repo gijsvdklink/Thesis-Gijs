@@ -8,18 +8,18 @@ ownship (focus aircraft the agent controls this step) gets a blue ring. Conflict
 the aircraft orange, loss of separation red. Cumulative reward and the per-step selected
 action are shown in the HUD, with an episode action tally bottom-left.
 
-OBSERVATION NORMALISATION: this model is trained with norm_obs=False, so RAW in-env
-observations are fed to the policy by default (the correct input for it). The argmax
-(best) policy is used by default. Pass --normalize to instead estimate the observation
-mean/std from a short warm-up rollout and standardise observations before the policy --
-needed only for models trained with norm_obs=True (no vecnorm.pkl required).
+OBSERVATION NORMALISATION: the v4 policy is trained with VecNormalize(norm_obs=True),
+so the policy expects STANDARDISED observations. By default this script loads the exact
+training stats from best_model_vecnorm.pkl (--vecnorm) and applies them -- the faithful
+input for the model. Pass --vecnorm "" to feed raw obs instead (only correct for a
+norm_obs=False checkpoint), or --normalize to estimate stats from a warm-up rollout when
+no vecnorm .pkl is available. The argmax (best) policy is used by default.
 
-Run:
-    python visualise.py                              # best policy, raw obs, 5 ac
-    python visualise.py --n_ac 6 --density 0.0001    # busier example
+Run (defaults match the v4 training setup: best_model.zip + best_model_vecnorm.pkl):
+    python visualise.py                              # 14 ac, density 1/10000, vecnorm obs
+    python visualise.py --n_ac 10 --density 0.00005  # sparser example
     python visualise.py --mp4 episode.mp4            # render one episode to mp4
     python visualise.py --stochastic                 # sample instead of argmax
-    python visualise.py --normalize                  # for norm_obs=True checkpoints
 
 Controls (interactive):  SPACE pause   R new episode   ESC/Q quit
 """
@@ -71,7 +71,7 @@ GREEN  = (60, 220, 120)
 DIM    = (28, 90, 55)
 ORANGE = (255, 140, 0)
 RED    = (255, 60, 55)
-BLUE   = (70, 150, 255)
+BLUE   = (140, 205, 255)        # light blue -- ownship ring
 CYAN   = (90, 220, 255)
 WP     = (40, 120, 70)
 KT     = 1.94384
@@ -193,7 +193,7 @@ def dashed_line(surf, color, p1, p2, dash=6, gap=7, width=1):
         s += dash + gap
 
 
-def draw_obs_panel(screen, font, font_hud, obs, focus_cs):
+def draw_obs_panel(screen, font, font_hud, obs, focus_cs, intruder_cs):
     """Right-hand panel: the focus aircraft's raw observation vector, labelled."""
     pygame.draw.rect(screen, (8, 16, 12), (PANEL_X, 0, WIN_W - PANEL_X, WIN_H))
     pygame.draw.line(screen, DIM, (PANEL_X, 0), (PANEL_X, WIN_H), 1)
@@ -210,10 +210,10 @@ def draw_obs_panel(screen, font, font_hud, obs, focus_cs):
     rest, n_int = obs[n_own:], len(OBS_INTRUDER_LABELS)
     for k in range(len(rest) // n_int):
         seg = rest[k * n_int:(k + 1) * n_int]
-        # empty-slot sentinel: rho=1, theta=0, tau=1
-        empty = abs(seg[0] - 1) < 1e-3 and abs(seg[1]) < 1e-3 and abs(seg[-1] - 1) < 1e-3
-        screen.blit(font.render(f'INTRUDER {k}' + ('  (empty)' if empty else ''), True,
-                                DIM if empty else CYAN), (x, y)); y += 16
+        cs_k = intruder_cs[k] if k < len(intruder_cs) else None
+        empty = cs_k is None
+        head = f'INTRUDER {k}  (empty)' if empty else f'INTRUDER {k}: {cs_k}'
+        screen.blit(font.render(head, True, DIM if empty else CYAN), (x, y)); y += 16
         for lbl, val in zip(OBS_INTRUDER_LABELS, seg):
             screen.blit(font.render(f'{lbl:>9} {val:+.2f}', True,
                                     DIM if empty else GREEN), (x + 10, y)); y += 15
@@ -249,18 +249,16 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
                 dashed_line(screen, WP, (px, py),
                             (px + sdx / sn * DIAG, py + sdy / sn * DIAG))
 
-        # 2.5 NM protected-zone ring: two rings overlapping == intrusion (LoS)
-        aa_ring(screen, px, py, prot_px, col)
-        if cs == env._focus_cs:                           # ownship -> blue ring
-            aa_ring(screen, px, py, prot_px + 6, BLUE)
-            aa_ring(screen, px, py, prot_px + 7, BLUE)
+        # 2.5 NM protected-zone ring (two overlapping == intrusion / LoS). The ownship
+        # (focus) ring is blue, drawn at the same 2.5 NM radius.
+        aa_ring(screen, px, py, prot_px, BLUE if cs == env._focus_cs else col)
 
         h = math.radians(hdg_deg)                          # current-heading leader
         lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale
         pygame.draw.line(screen, col, (px, py),
                          (px + math.sin(h) * lead, py - math.cos(h) * lead), 2)
 
-        pygame.draw.rect(screen, col, (px - 4, py - 4, 8, 8), 1)
+        pygame.draw.circle(screen, col, (int(px), int(py)), 2)   # radar blip (no square)
         screen.blit(font.render(f'{cs} {hdg_deg:03.0f}', True, col), (px + 10, py - 18))
         screen.blit(font.render(f'{gs_kt:3.0f}kt', True, col), (px + 10, py - 5))
 
@@ -283,7 +281,8 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
     recent = '  '.join(f'{cs}:{ACTION_LABELS[a]}' for cs, a in list(st['recent'])[:6])
     screen.blit(font.render(recent, True, DIM), (150, y0))
 
-    draw_obs_panel(screen, font, font_hud, obs, env._focus_cs)
+    draw_obs_panel(screen, font, font_hud, obs, env._focus_cs,
+                   getattr(env, '_last_intruder_cs', []))
 
 
 def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
@@ -306,20 +305,21 @@ def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', default='model.zip')
+    ap.add_argument('--model', default='best_model.zip')
     ap.add_argument('--env', default='Environments.normal.v4',
                     help='env module exposing AirspaceEnv / CONFIG / latlon_to_nm')
     ap.add_argument('--seed', type=int, default=None)
-    ap.add_argument('--n_ac', type=int, default=5, help='aircraft count')
-    ap.add_argument('--density', type=float, default=1 / 15000, help='density (ac/km^2)')
+    ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')
+    ap.add_argument('--density', type=float, default=1 / 10000, help='density (ac/km^2)')
     ap.add_argument('--mp4', default=None, metavar='PATH',
                     help='render a single episode to this mp4 file and exit')
     ap.add_argument('--fps', type=int, default=10, help='interactive / mp4 frame rate')
     ap.add_argument('--stochastic', action='store_true',
                     help='sample actions instead of the argmax (best) policy')
-    ap.add_argument('--vecnorm', default=None, metavar='PATH',
+    ap.add_argument('--vecnorm', default='best_model_vecnorm.pkl', metavar='PATH',
                     help='load the real VecNormalize obs stats from this .pkl '
-                         '(norm_obs=True models -- the faithful way to normalise)')
+                         '(norm_obs=True models -- the faithful way to normalise). '
+                         'Pass "" to disable and feed raw obs.')
     ap.add_argument('--normalize', action='store_true',
                     help='estimate & apply obs normalisation from a warm-up rollout '
                          '(use when no vecnorm .pkl is available)')
