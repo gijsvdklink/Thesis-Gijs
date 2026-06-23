@@ -1,15 +1,17 @@
 """
-PPO training for the experimental ACAS Xu-state env (Environments/experimental.py).
+PPO training for the v4 ACAS Xu-state env (Environments/normal/v4.py).
 
-Observations are normalised in-env (fixed physical ranges), so VecNormalize
-only standardises the reward (norm_obs=False).
+VecNormalize standardises both observations and reward (norm_obs=True,
+norm_reward=True). The *_vecnorm.pkl saved alongside each model holds these stats
+and MUST be loaded at eval/visualisation time (feeding raw obs to a norm_obs=True
+policy collapses it).
 
 Run:
-    python -m Training.experimental_train
-    python -m Training.experimental_train --multi   # 3 seeds in parallel
+    python -m Training.v4_train
+    python -m Training.v4_train --multi   # 3 seeds in parallel
 
 Monitor:
-    tensorboard --logdir Runs_saved/experimental
+    tensorboard --logdir Runs_saved/normal
 """
 
 import os, random, subprocess, sys, time, argparse
@@ -86,23 +88,43 @@ class EpisodeStatsCallback(BaseCallback):
         return True
 
 
-class CheckpointCallback(BaseCallback):
+class BestModelCallback(BaseCallback):
+    """Every CHECKPOINT_EVERY steps, keep the best model seen so far.
+
+    Performance is the mean *raw* episode reward over the model's recent-episode
+    buffer (filled by VecMonitor, which sits inside VecNormalize so its rewards are
+    un-normalised). When that mean improves on the previous best, the model is saved
+    as best_model.zip (+ best_model_vecnorm.pkl, needed at eval time). best_model is
+    overwritten in place, so it always holds the best checkpoint to date."""
     def __init__(self, save_path, seed):
         super().__init__()
         self._save_path = save_path
         self._seed      = seed
         self._last      = 0
+        self._best      = -float('inf')
 
     def _on_step(self):
         if self.num_timesteps - self._last < CHECKPOINT_EVERY:
             return True
-        stem = os.path.join(self._save_path, f'ckpt_{self.num_timesteps}')
+        self._last = self.num_timesteps
+
+        buf = self.model.ep_info_buffer
+        if not buf:                       # no completed episodes yet this early
+            return True
+        mean_reward = sum(ep['r'] for ep in buf) / len(buf)
+        if mean_reward <= self._best:
+            print(f'[{self._seed}] {self.num_timesteps:,}  mean_ep_reward={mean_reward:.3f} '
+                  f'(best {self._best:.3f}, not saved)', flush=True)
+            return True
+
+        self._best = mean_reward
+        stem = os.path.join(self._save_path, 'best_model')
         self.model.save(stem)
         env = self.model.get_env()
         if isinstance(env, VecNormalize):
             env.save(stem + '_vecnorm.pkl')
-        self._last = self.num_timesteps
-        print(f'[{self._seed}] checkpoint {self.num_timesteps:,}', flush=True)
+        print(f'[{self._seed}] {self.num_timesteps:,}  NEW BEST mean_ep_reward='
+              f'{mean_reward:.3f} -> saved best_model', flush=True)
         return True
 
 
@@ -149,9 +171,12 @@ def train(seed, t_warn=None, resume=None, dummy_retn=False):
                         env_kwargs=env_kwargs)
     monitored = VecMonitor(venv)
 
-    # Standardise observations AND reward. Obs mix radians (angles, ~+-pi) with
-    # range-scaled states, so VecNormalize gives the network zero-mean/unit-var
-    # inputs. The saved *_vecnorm.pkl MUST be loaded at eval/visualisation time.
+    # Standardise BOTH observations and reward with VecNormalize (norm_obs=True,
+    # norm_reward=True). Observations are pre-scaled in-env to roughly consistent
+    # ranges; VecNormalize additionally standardises them with running mean/std, which
+    # the policy relies on. The saved *_vecnorm.pkl holds the obs and reward stats and
+    # MUST be loaded at eval/visualisation time -- feeding raw obs to a norm_obs=True
+    # policy collapses it (e.g. onto HOLD).
     vecnorm_path = resume.replace('.zip', '_vecnorm.pkl') if resume else None
     if vecnorm_path and os.path.exists(vecnorm_path):
         env = VecNormalize.load(vecnorm_path, monitored)
@@ -171,7 +196,7 @@ def train(seed, t_warn=None, resume=None, dummy_retn=False):
     callbacks = CallbackList([
         ProgressCallback(seed),
         EpisodeStatsCallback(),
-        CheckpointCallback(ckpt_dir, seed),
+        BestModelCallback(ckpt_dir, seed),
     ])
 
     try:

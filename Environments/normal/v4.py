@@ -3,11 +3,11 @@ v4 -- ATCO conflict-resolution environment (multi-aircraft, ACAS Xu observation)
 
 Reward is purely negative (no positive components):
   -w_los      x 1[LoS]                                      heavy:  separation violation during step
-  -w_conflict x (1-dcpa/sep) x (1-tcpa/t_warn)             medium: linear DCPA*TCPA conflict score
+  -w_conflict x (1-dcpa/sep) x (1-t_los/t_warn)           medium: DCPA x time-to-LoS conflict score
   -w_drift    x ((1-cos(psi_dest-psi_cmd))/2)                medium: commanded heading deviation from route
                                                               (classic cosine drift penalty)
   -w_work     x act_cost                                    instruction workload (see ACT_COST):
-    a turn costs ~ 30 s of the drift it creates; hold free; fly-direct cheap; speed = half a 30-deg turn
+    turn cost is sub-additive (one -60 < two -30s); hold free; fly-direct cheap; speed = half a 30-deg turn
 
 Observation space (24 floats) -- ACAS Xu states, ego-centric from the focus
 aircraft (ownship), extended to the 4 nearest/most-urgent intruders. Angles are
@@ -90,9 +90,9 @@ CONFIG = {
                                                # one step reaches the envelope edge from nominal
     'altitude':              350,
     'center_ll':             (0.0, 0.0),      # flat-earth equatorial: cos(0)=1
-    'n_aircraft':            lambda: random.randint(2, 6),  # 2-6 aircraft per episode
-    'rho':                   lambda: random.uniform(1/20000, 1/10000),  # aircraft/km^2; area = n/rho.
-                                                                          # medium-low density: 10-20k km^2/ac
+    'n_aircraft':            lambda: random.randint(10, 14),  # 10-14 aircraft per episode
+    'rho':                   lambda: random.uniform(1/25000, 1/10000),  # aircraft/km^2; area = n/rho.
+                                                                          # 10-25k km^2/ac
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector: bearing-to-dest is
                                                # near-constant, so a held heading stays on route (turning
@@ -109,8 +109,8 @@ CONFIG = {
     'ref_jitter':            lambda: random.uniform(-0.2, 0.2),  # wider spread of reference points -> more
                                                                   # varied crossing angles / entry-exit geometry
     # Simulation
-    'sim_dt':                0.5,
-    'action_freq':           10,              # RL step = 5 s simulated
+    'sim_dt':                1.0,             # BlueSky integration timestep (DT) = 1 s
+    'action_freq':           5,               # RL step = 5 s simulated (action_freq x sim_dt)
     'lookahead_s':           900.0,
     't_warn':                360.0,           # conflict-resolution horizon: 6 min (D_WARN = 45 NM)
     'crossings_per_episode': 4.0,
@@ -126,11 +126,12 @@ CONFIG = {
     'w_los':                 10.00,           # heavy: separation violation
     'w_conflict':            2.00,            # medium: imminence x miss-distance of worst conflict
     'w_drift':               1.00,            # cosine drift penalty: -w_drift * (1 - cos(dpsi)) / 2.
-                                               # kept below w_conflict so avoiding conflict beats
-                                               # staying on route; ACT_COST scales with this, so
-                                               # turns/speed get cheaper in step with drift
+                                               # ACT_COST scales with this, so w_drift also sets the
+                                               # action-cost magnitude: doubling w_drift doubles BOTH
+                                               # the drift penalty and every turn/speed cost. kept
+                                               # below w_conflict so avoiding conflict beats route.
     'w_work':                1.00,            # master scale for ACT_COST (already in reward units);
-                                               # a turn costs ~ 30 s of the drift it creates
+                                               # leave at 1.0 and tune magnitudes via w_drift.
     'seed':                  None,
 }
 
@@ -138,8 +139,8 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NBR   = CONFIG['n_neighbours']
-OBS_DIM = 5 + N_NBR * 5       # 5 ownship (dpsi_act, v_own, a_cmd, v_cmd, S_ret)
-                              # + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 25
+OBS_DIM = 6 + N_NBR * 5       # 6 ownship (dpsi_act, v_own, a_cmd, v_cmd, retn_conf, in_conf)
+                              # + 4 intruders x 5 (rho, theta, psi, v_int, tau) = 26
 
 D_WARN = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0  # warning horizon distance (45 NM)
 V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed (NM/s); speed-normalising reference
@@ -150,34 +151,46 @@ V_NOM  = CONFIG['ac_speed'] / 3600.0                      # nominal cruise speed
 TURN_DELTAS   = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 SPEED_ACTIONS = {8: +1, 9: -1}        # +1/-1 x mach_step on the commanded Mach
 
-# Workload cost per instruction, calibrated so issuing a turn costs about the same as
-# letting the aircraft drift for ~30 s at the angle the turn creates:
-#     cost(turn d) = steps_in_30s * w_drift * (1 - cos d) / 2
-# Hold is free; fly-direct (return to route) is cheap; a speed change costs half a 30-deg
-# turn (twice as cheap as the cheapest heading change). r_work = -w_work * ACT_COST[a].
-_STEPS_30S = round(30.0 / (CONFIG['action_freq'] * CONFIG['sim_dt']))   # 6 RL steps
+# Workload cost per instruction. A heading instruction is one radio call, so its cost is
+# SUB-ADDITIVE in the turn it commands: a single decisive turn must not cost more than
+# splitting the same turn across several instructions, otherwise the policy is rewarded
+# for salami-slicing (issuing two -30s instead of one -60). The cost is anchored at a
+# 30-deg turn -- still ~30 s of the drift the turn creates -- and grows with turn size as
+#     cost(d) = _TURN_UNIT * (|d| / 30) ** _TURN_SUBADD,    _TURN_SUBADD < 1
+# so cost(60) = 2**0.9 * cost(30) = 1.87 * cost(30) < 2 * cost(30): one -60 is a little
+# cheaper than two -30s (the concave exponent guarantees this for every turn pair). Hold
+# is free; fly-direct (return to route) is cheap; a speed change costs half a 30-deg turn.
+# r_work = -w_work * ACT_COST[a].
+_STEPS_30S = round(30.0 / (CONFIG['action_freq'] * CONFIG['sim_dt']))   # RL steps in 30 s
 
 def _drift_30s_cost(delta_deg):
     """Drift penalty accrued over ~30 s if a turn of delta_deg became route drift."""
     return _STEPS_30S * CONFIG['w_drift'] * (1.0 - math.cos(math.radians(delta_deg))) / 2.0
 
+_TURN_UNIT   = _drift_30s_cost(30)   # cost anchor: one 30-deg turn (value unchanged)
+_TURN_SUBADD = 0.9                    # <1 -> sub-additive turn cost: cost(60) < 2*cost(30)
+
+def _turn_cost(delta_deg):
+    """Sub-additive workload cost of a heading instruction of |delta_deg| degrees."""
+    return _TURN_UNIT * (abs(delta_deg) / 30.0) ** _TURN_SUBADD
+
 ACT_COST = [
-    _drift_30s_cost(60),          # 0  turn -60
-    _drift_30s_cost(45),          # 1  turn -45
-    _drift_30s_cost(30),          # 2  turn -30
+    _turn_cost(60),               # 0  turn -60
+    _turn_cost(45),               # 1  turn -45
+    _turn_cost(30),               # 2  turn -30
     0.0,                          # 3  hold (free)
-    _drift_30s_cost(30),          # 4  turn +30
-    _drift_30s_cost(45),          # 5  turn +45
-    _drift_30s_cost(60),          # 6  turn +60
-    0.25 * _drift_30s_cost(30),   # 7  fly-direct (return to route: cheap)
-    0.5 * _drift_30s_cost(30),    # 8  speed up   (half a 30-deg turn)
-    0.5 * _drift_30s_cost(30),    # 9  speed down
+    _turn_cost(30),               # 4  turn +30
+    _turn_cost(45),               # 5  turn +45
+    _turn_cost(60),               # 6  turn +60
+    0.25 * _TURN_UNIT,            # 7  fly-direct (return to route: cheap)
+    0.5 * _TURN_UNIT,             # 8  speed up   (half a 30-deg turn)
+    0.5 * _TURN_UNIT,             # 9  speed down
 ]
 
 _bs_initialized = False
 
 # Labels for the visualisation obs panel (make_html.py)
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'in_conf']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']
 
 __all__ = ['AirspaceEnv', 'CONFIG', 'NM_TO_KM', 'latlon_to_nm', 'wrap_to_180', 'OBS_DIM',
@@ -254,6 +267,28 @@ def _place_one(polygon, sector, n_sectors):
     return {'sp_ll': spawn_ll, 'dest_ll': dest_ll,
             'ref_ll': ref_ll, 'heading': route_hdg}
 
+# -- Conflict timing -----------------------------------------------------------
+
+def _time_to_los(dist_sq, range_rate, rel_spd_sq, sep):
+    """Time (s) until two aircraft first LOSE SEPARATION (distance < sep), from the
+    current relative state. range_rate = r·v (negative = converging), rel_spd_sq = |v|^2.
+
+    Returns the LoS-entry time (>= 0), or None if they never intrude on the current
+    trajectory (diverging, parallel, or miss distance >= sep). This is EARLIER than tcpa:
+    the pair enters the protected circle before reaching closest approach, so it gives a
+    more honest "time until intrusion" than time-to-CPA.
+        t_los = tcpa - sqrt((sep^2 - dcpa^2) / |v|^2)
+    """
+    if rel_spd_sq < 1e-12:
+        return None
+    tcpa = -range_rate / rel_spd_sq
+    if tcpa < 0:
+        return None                                   # diverging
+    dcpa_sq = max(0.0, dist_sq - range_rate ** 2 / rel_spd_sq)
+    if dcpa_sq >= sep * sep:
+        return None                                   # miss distance too large: never intrudes
+    return tcpa - math.sqrt((sep * sep - dcpa_sq) / rel_spd_sq)
+
 # -- Pair urgency --------------------------------------------------------------
 
 def _urgency_from_state(pos_i, vel_i, pos_j, vel_j):
@@ -264,7 +299,7 @@ def _urgency_from_state(pos_i, vel_i, pos_j, vel_j):
 
     Returns:
       > 1   active LoS    (scales 1 at sep boundary → 10 at d=0)
-      0..1  predicted LoS (scales 0 at t_warn → 1 at t_CPA=0)
+      0..1  predicted LoS (scales 0 at t_warn → 1 at t_LoS=0, i.e. intrusion now)
       0     safe / diverging
     """
     d_east  = pos_j[0] - pos_i[0]
@@ -282,18 +317,15 @@ def _urgency_from_state(pos_i, vel_i, pos_j, vel_j):
     if rel_spd_sq < 1e-12:
         return 0.0
 
-    # r · v (negative = converging, positive = diverging)
-    range_rate = d_east * dv_east + d_north * dv_north
-    tcpa = -range_rate / rel_spd_sq
-    if tcpa < 0 or tcpa > CONFIG['lookahead_s']:
+    # Urgency scales with the time until LOSS OF SEPARATION (distance < sep) within the
+    # lookahead horizon -- not time to CPA. Intrusion begins before closest approach, so
+    # this warns earlier.
+    range_rate = d_east * dv_east + d_north * dv_north   # r·v; negative = converging
+    t_los = _time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+    if t_los is None or t_los > CONFIG['lookahead_s']:
         return 0.0
 
-    # dcpa^2 = |r|^2 - (r·v)^2 / |v|^2
-    dcpa_sq = max(0.0, dist_sq - range_rate**2 / rel_spd_sq)
-    if dcpa_sq >= sep**2:
-        return 0.0
-
-    return min(1.0, max(0.0, (CONFIG['t_warn'] - tcpa) / CONFIG['t_warn']))
+    return min(1.0, max(0.0, (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']))
 
 
 def _bs_state(idx):
@@ -632,9 +664,9 @@ class AirspaceEnv(gym.Env):
     def _conflict_score(self, cs, hdg_deg=None, infinite_horizon=False):
         """
         Returns max over all intruders of:
-          (1 - tcpa/t_warn) * (1 - dcpa/sep)
-        gated by dcpa < sep (only true collision courses score).
-        Active LoS contributes the maximum score of 1.
+          (1 - t_los/t_warn) * (1 - dcpa/sep)
+        where t_los is the time until separation is first lost (distance < sep), gated by
+        dcpa < sep (only true collision courses score). Active LoS contributes 1.
 
         hdg_deg overrides the ownship heading used for the relative-velocity / CPA
         prediction. Pass the route heading to ask "would flying direct now create a
@@ -685,23 +717,19 @@ class AirspaceEnv(gym.Env):
                 continue
 
             range_rate = d_east * dv_east + d_north * dv_north   # r·v; negative = converging
-            tcpa       = -range_rate / rel_spd_sq
-            if tcpa < 0:
-                continue                                          # diverging: no future conflict
-            if not infinite_horizon and tcpa > CONFIG['lookahead_s']:
+            dist_sq    = d_east**2 + d_north**2
+            t_los      = _time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+            if t_los is None:
+                continue                          # diverging or miss distance >= sep: no conflict
+            if not infinite_horizon and t_los > CONFIG['lookahead_s']:
                 continue
 
-            cpa_east  = d_east  + tcpa * dv_east
-            cpa_north = d_north + tcpa * dv_north
-            dcpa_sq   = cpa_east**2 + cpa_north**2
-            if dcpa_sq >= sep**2:
-                continue   # miss distance too large, not a conflict
-
-            dcpa = math.sqrt(dcpa_sq)
+            dcpa = math.sqrt(max(0.0, dist_sq - range_rate**2 / rel_spd_sq))
             if infinite_horizon:
                 score = max(0.0, 1.0 - dcpa / sep)                            # miss distance only
             else:
-                score = max(0.0, 1.0 - tcpa / t_warn) * max(0.0, 1.0 - dcpa / sep)
+                # imminence scales with TIME TO LOSS OF SEPARATION (not time to CPA)
+                score = max(0.0, 1.0 - max(0.0, t_los) / t_warn) * max(0.0, 1.0 - dcpa / sep)
             worst_score = max(worst_score, score)
 
         return worst_score
@@ -832,7 +860,7 @@ class AirspaceEnv(gym.Env):
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route, nominal speed, no cmd offset, conflict-free
-            return np.array([0.0, 1.0, 0.0, 1.0, 0.0]
+            return np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NBR, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -861,12 +889,17 @@ class AirspaceEnv(gym.Env):
         # Ablation: held at 0 (uninformative) when dummy_retn is set.
         conflict_return = 0.0 if self._dummy_retn else self._return_blocked(cs)
 
+        # binary {0,1}: am I currently in a conflict? 1 if any intruder is predicted to
+        # breach separation within the lookahead horizon (or we are already in LoS).
+        in_conflict = 1.0 if self._conflict_score(cs) > 0.0 else 0.0
+
         # ownship-global states (shared across intruder slots)
         obs = [dpsi_act,                              # actual heading deviation from route, rad
                own_spd / V_NOM,                       # v_own: actual speed / nominal
                a_cmd,                                 # commanded heading deviation from route, rad
                v_cmd,                                 # commanded speed / nominal
-               conflict_return]                       # 1 = route corridor blocked, 0 = free to return
+               conflict_return,                       # 1 = route corridor blocked, 0 = free to return
+               in_conflict]                           # 1 = currently in (predicted) conflict, else 0
 
         # fetch this aircraft's urgency row for intruder prioritisation
         urgency_row = None
@@ -902,8 +935,9 @@ class AirspaceEnv(gym.Env):
             psi   = math.radians(wrap_to_180(int_hdg - own_hdg))      # [2] intruder hdg rel. ownship, rad
             v_int = int_spd / V_NOM                                    # [3] intruder speed / nominal cruise
 
-            # tau: horizontal time-to-loss-of-separation / t_warn. 0 if already inside
-            # sep, time to CPA when converging, 1 (=t_warn cap) when diverging.
+            # tau: horizontal time-to-loss-of-separation / t_warn. 0 if already inside sep,
+            # time until distance<sep when converging into a conflict, 1 (=t_warn cap) when
+            # no intrusion is predicted (diverging or miss distance >= sep).
             if dist_nm < sep:
                 tau = 0.0
             else:
@@ -911,8 +945,8 @@ class AirspaceEnv(gym.Env):
                 dv_north   = int_spd * math.cos(math.radians(int_hdg)) - own_vn
                 rel_spd_sq = dv_east**2 + dv_north**2
                 range_rate = d_east * dv_east + d_north * dv_north     # negative = converging
-                tcpa       = (-range_rate / rel_spd_sq) if rel_spd_sq > 1e-12 else -1.0
-                tau        = min(tcpa / t_warn, 1.0) if tcpa > 0 else 1.0
+                t_los      = _time_to_los(dist_nm**2, range_rate, rel_spd_sq, sep)
+                tau        = min(max(0.0, t_los) / t_warn, 1.0) if t_los is not None else 1.0
 
             # urgency for this pair from the pre-computed matrix
             urgency = 0.0
