@@ -148,12 +148,18 @@ def reset_episode(env, seed):
 
 
 def policy_step(env, model, obs, deterministic, norm, st):
-    """Advance one RL step (obs normalised if norm given) and update stats in place."""
+    """Advance one RL step (obs normalised if norm given) and update stats in place.
+
+    model=None is the HOLD-only (do-nothing) policy: every step selects action 3 (HOLD),
+    so no instruction reaches the simulator and aircraft fly their spawned routes."""
     acting_cs = env._focus_cs
-    o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
-    action, _ = model.predict(o, deterministic=deterministic)
-    a = int(action)
-    obs, r, _, trunc, _ = env.step(action)
+    if model is None:
+        a = 3   # HOLD-only: do-nothing baseline
+    else:
+        o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
+        action, _ = model.predict(o, deterministic=deterministic)
+        a = int(action)
+    obs, r, _, trunc, _ = env.step(a)
     st['last_r'] = float(r); st['cum_r'] += st['last_r']; st['step_n'] += 1
     st['last_action'] = a; st['acting_cs'] = acting_cs
     st['counts'][a] += 1; st['recent'].appendleft((acting_cs, a))
@@ -306,11 +312,16 @@ def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', default='best_model.zip')
-    ap.add_argument('--env', default='Environments.normal.v4',
+    ap.add_argument('--env', default='Environments.v4',
                     help='env module exposing AirspaceEnv / CONFIG / latlon_to_nm')
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')
     ap.add_argument('--density', type=float, default=1 / 10000, help='density (ac/km^2)')
+    ap.add_argument('--hold', action='store_true',
+                    help='do-nothing policy: always select HOLD (no model loaded)')
+    ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
+                    help='exit-point jitter range: ref_jitter ~ uniform(-J, +J); '
+                         'J=0.5 gives fully random crossing directions')
     ap.add_argument('--mp4', default=None, metavar='PATH',
                     help='render a single episode to this mp4 file and exit')
     ap.add_argument('--fps', type=int, default=10, help='interactive / mp4 frame rate')
@@ -335,20 +346,28 @@ def main():
 
     CONFIG['n_aircraft'] = lambda: args.n_ac
     CONFIG['rho']        = lambda: args.density
+    if args.ref_jitter is not None:
+        j = args.ref_jitter
+        CONFIG['ref_jitter'] = lambda: random.uniform(-j, j)
 
-    model = load_model(args.model)
-    env = AirspaceEnv()
-
-    norm = None
-    if args.vecnorm:
-        norm = load_vecnorm_stats(args.vecnorm)
-        print(f'loaded obs normalisation from {args.vecnorm}', flush=True)
-    elif args.normalize:
-        print('estimating observation normalisation (warm-up rollout)...', flush=True)
-        norm = estimate_obs_stats(env, model)
     det = not args.stochastic
-    obs_mode = 'vecnorm' if args.vecnorm else 'est' if norm is not None else 'raw'
-    mode = f"obs:{obs_mode}  act:{'argmax' if det else 'sample'}"
+    if args.hold:
+        model, norm = None, None      # do-nothing policy: no model, no obs normalisation
+        env = AirspaceEnv()
+        mode = 'HOLD-only (do-nothing)'
+        print('do-nothing policy: HOLD selected every step', flush=True)
+    else:
+        model = load_model(args.model)
+        env = AirspaceEnv()
+        norm = None
+        if args.vecnorm:
+            norm = load_vecnorm_stats(args.vecnorm)
+            print(f'loaded obs normalisation from {args.vecnorm}', flush=True)
+        elif args.normalize:
+            print('estimating observation normalisation (warm-up rollout)...', flush=True)
+            norm = estimate_obs_stats(env, model)
+        obs_mode = 'vecnorm' if args.vecnorm else 'est' if norm is not None else 'raw'
+        mode = f"obs:{obs_mode}  act:{'argmax' if det else 'sample'}"
 
     if args.mp4:
         os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
