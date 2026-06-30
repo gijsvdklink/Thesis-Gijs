@@ -21,8 +21,8 @@ CONFIG = {
                                              # one step reaches the envelope edge from nominal
     'altitude':              350,
     'center_ll':             (0.0, 0.0),     # flat-earth equatorial: cos(0) = 1
-    'n_aircraft':            lambda: random.randint(15, 30),          # 15-30 aircraft per episode
-    'rho':                   lambda: random.uniform(1/25000, 1/10000),  # aircraft/km^2; area = n/rho
+    'n_aircraft':            lambda: 30,          # fixed at 30 aircraft per episode
+    'rho':                   lambda: 1/2500,      # fixed density; area = n/rho (denser airspaces)
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
@@ -52,7 +52,6 @@ CONFIG = {
     'return_clear_nm':       20.0,          # clearance distance for the drift-fallback score (4 x sep)
     # Reward weights
     'w_los':                 10.00,         # heavy: separation violation
-    'w_conflict':            2.00,          # medium: imminence x miss-distance of the worst conflict
     'w_drift':               1.00,          # cosine drift penalty. ACT_COST scales with this, so w_drift
                                             # also sets the action-cost magnitude (doubling it doubles
                                             # both the drift penalty and every turn/speed cost).
