@@ -1,0 +1,492 @@
+% ===============================================================
+%  Standalone, directly compilable document.
+%  Build with:  pdflatex codebase  ->  biber codebase  ->  pdflatex codebase (x2)
+%
+%  To drop this into the thesis instead, delete everything from the
+%  filecontents block down to \begin{document} (and the final
+%  \printbibliography / \end{document}), keeping only the \chapter...,
+%  and point \textcite/\cite at the thesis bibliography.
+% ===============================================================
+
+% --- embedded bibliography so the file compiles on its own ------
+\begin{filecontents}[overwrite]{codebase_refs.bib}
+@inproceedings{hoekstra2016,
+  title={{BlueSky} {ATC} Simulator Project: an Open Data and Open Source Approach},
+  author={Hoekstra, Jacco M. and Ellerbroek, Joost},
+  booktitle={Proc. 7th Int. Conf. on Research in Air Transportation (ICRAT)}, year={2016}}
+@inproceedings{groot2024,
+  title={{BlueSky-Gym}: A Reinforcement Learning Environment for Air Traffic Applications},
+  author={Groot, D. J. and others}, booktitle={SESAR Innovation Days}, year={2024}}
+@article{sui2025,
+  title={Urgency-Ranked Reinforcement Learning for Air Traffic Conflict Resolution},
+  author={Sui, D. and others}, journal={(to appear)}, year={2025}}
+@article{Julian_2019,
+  title={Deep Neural Network Compression for Aircraft Collision Avoidance Systems},
+  author={Julian, Kyle D. and Kochenderfer, Mykel J. and Owen, Michael P.},
+  journal={Journal of Guidance, Control, and Dynamics}, volume={42}, number={3},
+  pages={598--608}, year={2019}}
+@techreport{kochenderfer2011robust,
+  title={Robust Airborne Collision Avoidance through Dynamic Programming},
+  author={Kochenderfer, Mykel J. and Chryssanthacopoulos, James P.},
+  institution={MIT Lincoln Laboratory}, number={ATC-371}, year={2011}}
+@article{DBLP:journals/corr/SchulmanWDRK17,
+  title={Proximal Policy Optimization Algorithms},
+  author={Schulman, John and Wolski, Filip and Dhariwal, Prafulla and Radford, Alec and Klimov, Oleg},
+  journal={arXiv preprint arXiv:1707.06347}, year={2017}}
+@article{sb3_algos,
+  title={Stable-Baselines3: Reliable Reinforcement Learning Implementations},
+  author={Raffin, Antonin and Hill, Ashley and Gleave, Adam and Kanervisto, Anssi and
+          Ernestus, Maximilian and Dormann, Noah},
+  journal={Journal of Machine Learning Research}, volume={22}, number={268},
+  pages={1--8}, year={2021}}
+\end{filecontents}
+
+\documentclass[11pt]{report}
+
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\usepackage[hidelinks]{hyperref}
+\addbibresource{codebase_refs.bib}
+
+% --- Python listing style ---------------------------------------
+\lstdefinestyle{py}{
+  language=Python, basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{purple!70!black}, showstringspaces=false,
+  breaklines=true, columns=fullflexible, frame=single, framesep=4pt,
+  numbers=left, numberstyle=\tiny\color{gray}, xleftmargin=18pt,
+  captionpos=b}
+\lstset{style=py}
+
+\begin{document}
+\tableofcontents
+
+% ===============================================================
+\chapter{Conflict Resolution Environment and Training Setup}
+\label{ch:method}
+% ===============================================================
+
+This chapter describes both the design and the implementation of the simulation environment and the training pipeline used to develop the conflict resolution (CR) advisory model. The intention is that, after reading it, the reader understands not only what the environment does conceptually but also how every component is realised in code. Section~\ref{sec:method_platform} introduces the simulation platform, the reference frame, and the software architecture. Section~\ref{sec:method_geom} covers the coordinate geometry, Section~\ref{sec:method_conflict} the conflict geometry, and Section~\ref{sec:method_scenario} the procedural scenario generation. Section~\ref{sec:method_paradigm} explains the single-instruction paradigm and the focus-selection mechanism. Sections~\ref{sec:method_obs} and~\ref{sec:method_act} define the observation and action spaces and their construction in code. The reward function is presented in Section~\ref{sec:method_reward}, the full environment step loop in Section~\ref{sec:method_step}, and the training configuration in Section~\ref{sec:method_training}.
+
+
+% ---------------------------------------------------------------
+\section{Simulation Platform, Reference Frame and Architecture}
+\label{sec:method_platform}
+% ---------------------------------------------------------------
+
+The environment is built on the open-source air-traffic simulator BlueSky \cite{hoekstra2016}, which propagates the physical state of every aircraft, and follows the structure introduced by BlueSky Gym \cite{groot2024} so that the problem is exposed as a standard Gymnasium environment. BlueSky integrates the aircraft dynamics at a fixed simulation timestep of one second, while the reinforcement learning agent acts once every five simulated seconds; a single decision therefore corresponds to five integration steps. All aircraft are modelled as Airbus A320s cruising at flight level 350 near Mach $0.78$, within the ATC speed-control envelope of Mach $0.74$ to $0.82$. Because the scenario is confined to a single flight level, the problem reduces to a purely horizontal one and conflicts are evaluated entirely in the two-dimensional plane. A loss of separation (LoS) is defined as any pair of aircraft coming closer than the minimum separation of $s = 5$\,NM; no collision physics are simulated, so an LoS is a measured event rather than a dynamic outcome.
+
+The implementation is organised into five modules whose responsibilities are summarised in Table~\ref{tab:modules}. Keeping the pure geometry and conflict mathematics in their own modules, separate from the stateful environment class, means those functions can be unit-tested and reused (for example by the visualiser and the Monte-Carlo evaluator) without instantiating the environment.
+
+\begin{table}[htbp]
+\centering
+\caption{The five modules of the environment package and their responsibilities.}
+\label{tab:modules}
+\begin{tabular}{ll}
+\toprule
+Module & Responsibility \\
+\midrule
+\texttt{config.py}   & Tunable settings, derived constants, action layout, workload costs \\
+\texttt{geometry.py} & Coordinate transforms and BlueSky state readers \\
+\texttt{conflict.py} & Time-to-LoS, urgency, conflict score, return-blocked and LoS checks \\
+\texttt{sector.py}   & Random sector polygon and aircraft placement \\
+\texttt{env.py}      & The \texttt{AirspaceEnv} Gymnasium class tying everything together \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All tunable parameters live in a single dictionary, \texttt{CONFIG}, from which a number of constants are derived at import time, including the observation dimension. This centralisation means an experiment can be reconfigured from one place, and the derived constants stay consistent.
+
+\begin{lstlisting}[caption={Selected entries of the \texttt{CONFIG} dictionary and derived constants (\texttt{config.py}).}, label={lst:config}]
+CONFIG = {
+    'ac_type': 'A320', 'ac_speed': 450.0, 'ac_mach': 0.78,
+    'sep_nm': 5.0,                 # minimum separation s
+    'n_aircraft': lambda: random.randint(15, 30),
+    'rho':        lambda: random.uniform(1/10000, 1/2500),  # aircraft / km^2
+    'sim_dt': 1.0, 'action_freq': 5,        # 1 s integration, 5 s per RL step
+    't_warn': 360.0,               # conflict horizon (= 45 NM at cruise)
+    'n_neighbours': 4,             # intruders encoded in the observation
+    'w_los': 10.0, 'w_drift': 1.0, 'w_work': 1.0,   # reward weights
+}
+N_NEIGHBOURS = CONFIG['n_neighbours']
+OBS_DIM      = 6 + N_NEIGHBOURS * 5      # 6 ownship + 4 x 5 intruder = 26
+\end{lstlisting}
+
+
+% ---------------------------------------------------------------
+\section{Coordinate Geometry}
+\label{sec:method_geom}
+% ---------------------------------------------------------------
+
+All geometric reasoning is carried out in a flat east--north frame measured in nautical miles and centred on the sector. This planar approximation is valid because the sector sits at the equator, where the cosine-of-latitude distortion vanishes, so a degree of latitude and of longitude both equal sixty nautical miles. Headings follow the aeronautical convention of degrees clockwise from north, which is why the velocity decomposition places the sine on the east component and the cosine on the north component, the opposite of the usual mathematical convention. Listing~\ref{lst:geom} shows the core helpers.
+
+\begin{lstlisting}[caption={Frame transforms and state readers (\texttt{geometry.py}).}, label={lst:geom}]
+def latlon_to_nm(center_ll, lat, lon):
+    ref_lat, ref_lon = center_ll
+    east_nm  = (lon - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
+    north_nm = (lat - ref_lat) * 60.0
+    return np.array([east_nm, north_nm])
+
+def wrap_to_180(angle_deg):
+    return (angle_deg + 180) % 360 - 180      # wrap to (-180, 180]
+
+def heading_to_velocity(speed, heading_deg):
+    h = math.radians(heading_deg)
+    return speed * math.sin(h), speed * math.cos(h)   # (east, north)
+
+def aircraft_state(idx):
+    pos = aircraft_position_nm(idx)
+    vel = heading_to_velocity(aircraft_speed_nms(idx), float(bs.traf.hdg[idx]))
+    return pos, vel
+\end{lstlisting}
+
+The function \texttt{wrap\_to\_180} is used throughout to express any angular difference as a signed value in $(-180^\circ, 180^\circ]$, so that, for example, a heading error of $350^\circ$ is correctly read as $-10^\circ$. The reader \texttt{aircraft\_state} returns a position and velocity pair in the planar frame directly from the live BlueSky state, and is the primary input to all of the conflict mathematics in the next section.
+
+
+% ---------------------------------------------------------------
+\section{Conflict Detection and Urgency}
+\label{sec:method_conflict}
+% ---------------------------------------------------------------
+
+The conflict geometry is the analytical core of the environment, and the same quantities are reused for the observation, the focus selection and the urgency ranking. The functions in \texttt{conflict.py} are pure: they read the live traffic by callsign or index but hold no environment state.
+
+\subsection{Time to loss of separation}
+
+Consider two aircraft with relative position $\mathbf{r}$ and relative velocity $\mathbf{v}$. The time of closest point of approach (CPA) minimises the squared separation,
+\begin{equation}
+\label{eq:tcpa}
+t_{\text{cpa}} = -\frac{\mathbf{r} \cdot \mathbf{v}}{\lvert \mathbf{v} \rvert^2},
+\end{equation}
+where the range rate $\mathbf{r}\cdot\mathbf{v}$ is negative when converging, and the miss distance satisfies $d_{\text{cpa}}^2 = \lvert\mathbf{r}\rvert^2 - (\mathbf{r}\cdot\mathbf{v})^2/\lvert\mathbf{v}\rvert^2$. The quantity actually needed is not the time to closest approach but the time at which the protected zone of radius $s$ is first entered, which is earlier:
+\begin{equation}
+\label{eq:tlos}
+t_{\text{los}} = t_{\text{cpa}} - \sqrt{\frac{s^2 - d_{\text{cpa}}^2}{\lvert\mathbf{v}\rvert^2}}.
+\end{equation}
+Listing~\ref{lst:tlos} implements Equation~\ref{eq:tlos} directly, returning \texttt{None} for the three cases that never intrude, namely a parallel track, a diverging track, and a miss distance larger than the separation minimum.
+
+\begin{lstlisting}[caption={Time to loss of separation (\texttt{conflict.py}).}, label={lst:tlos}]
+def time_to_los(dist_sq, range_rate, rel_spd_sq, sep):
+    if rel_spd_sq < 1e-12:
+        return None                                    # parallel
+    tcpa = -range_rate / rel_spd_sq
+    if tcpa < 0:
+        return None                                    # diverging
+    dcpa_sq = max(0.0, dist_sq - range_rate ** 2 / rel_spd_sq)
+    if dcpa_sq >= sep * sep:
+        return None                                    # miss distance too large
+    return tcpa - math.sqrt((sep * sep - dcpa_sq) / rel_spd_sq)
+\end{lstlisting}
+
+\subsection{Pairwise urgency}
+
+From the time to loss of separation a single scalar urgency is assigned to each pair. It is greater than one when the pair is already in loss of separation, scaling from one at the boundary up to ten at zero range; between zero and one when a loss of separation is predicted within the lookahead, increasing as the time decreases; and zero when safe. This piecewise definition is implemented in Listing~\ref{lst:urg}, and is the value that drives the focus selection of Section~\ref{sec:method_paradigm}.
+
+\begin{lstlisting}[caption={Pairwise urgency from planar state (\texttt{conflict.py}).}, label={lst:urg}]
+def urgency_from_state(pos_i, vel_i, pos_j, vel_j):
+    d_east, d_north = pos_j[0] - pos_i[0], pos_j[1] - pos_i[1]
+    dist_sq, sep = d_east**2 + d_north**2, CONFIG['sep_nm']
+    if dist_sq < sep ** 2:                             # active LoS
+        return 1.0 + 9.0 * (1.0 - math.sqrt(dist_sq) / sep)
+    dv_east, dv_north = vel_j[0] - vel_i[0], vel_j[1] - vel_i[1]
+    rel_spd_sq = dv_east**2 + dv_north**2
+    range_rate = d_east * dv_east + d_north * dv_north
+    t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+    if t_los is None or t_los > CONFIG['lookahead_s']:
+        return 0.0
+    return min(1.0, max(0.0, (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']))
+\end{lstlisting}
+
+\subsection{Conflict score and return-blocked signals}
+
+Two further functions provide the binary observation features. The conflict score, used to set \texttt{in\_conf}, is the worst over all intruders of an imminence term multiplied by a severity term,
+\begin{equation}
+\label{eq:cscore}
+\text{score} = \max_{\text{intruders}} \Bigl(1 - \frac{t_{\text{los}}}{t_{\text{warn}}}\Bigr)\Bigl(1 - \frac{d_{\text{cpa}}}{s}\Bigr),
+\end{equation}
+with an active loss of separation scoring one. The function accepts an optional heading override, which allows the same routine to answer the hypothetical question of whether flying a particular heading would create a conflict. The return-blocked check, used to set \texttt{retn\_conf}, projects the focus aircraft onto its own route heading and tests it against every other aircraft projected onto \emph{its} route heading; evaluating intruders on their planned routes rather than their transient headings makes the signal robust to avoidance manoeuvres still in progress. Listing~\ref{lst:retn} shows its structure.
+
+\begin{lstlisting}[caption={The ``safe to return'' check (\texttt{conflict.py}, abridged).}, label={lst:retn}]
+def return_blocked(cs, active_callsigns, route_hdg):
+    own_pos = aircraft_position_nm(idx)
+    own_ve, own_vn = heading_to_velocity(aircraft_speed_nms(idx), route_hdg[cs])
+    for other in active_callsigns:
+        ...
+        if d_east**2 + d_north**2 < sep*sep:
+            return 1.0                                 # already in LoS
+        int_hdg = route_hdg.get(other, bs.traf.hdg[j]) # intruder on its route
+        int_ve, int_vn = heading_to_velocity(aircraft_speed_nms(j), int_hdg)
+        ...
+        tcpa = -(d_east*dv_east + d_north*dv_north) / rel_spd_sq
+        if tcpa >= 0 and cpa_east**2 + cpa_north**2 < sep*sep:
+            return 1.0                                 # route corridors conflict
+    return 0.0
+\end{lstlisting}
+
+Finally, \texttt{any\_los} performs a simple pairwise distance check across all flying aircraft each step and is the source of the realised loss-of-separation flag used in the reward.
+
+
+% ---------------------------------------------------------------
+\section{Traffic Scenario Generation}
+\label{sec:method_scenario}
+% ---------------------------------------------------------------
+
+Each episode generates a new scenario procedurally, which prevents overfitting to a fixed geometry and exposes the policy to a wide range of operating conditions. The aircraft count is drawn uniformly between fifteen and thirty and the density uniformly, with the sector area following as $A = n/\rho$; a higher density therefore yields a smaller, more congested sector. The sector is a random convex polygon, re-generated until its isoperimetric circularity $4\pi A / L^2$ exceeds $0.7$, which discards pathologically elongated shapes while still varying the geometry.
+
+Routes are defined by an entry point and an exit reference point on the boundary, placed at evenly spaced but jittered arc positions as shown in Listing~\ref{lst:place}. The route heading is the bearing from entry to exit, and the destination is set far beyond the sector so that holding a constant heading keeps the aircraft on route. The reference-point jitter is set wide, so that crossings point in essentially arbitrary directions.
+
+\begin{lstlisting}[caption={Entry, exit and route heading for one aircraft (\texttt{sector.py}, abridged).}, label={lst:place}]
+t_spawn = (sector + CONFIG['spawn_jitter']()) / n_sectors
+t_ref   = (t_spawn + 0.5 + CONFIG['ref_jitter']()) % 1.0
+spawn_pt = polygon.exterior.interpolate(t_spawn, normalized=True)
+ref_pt   = polygon.exterior.interpolate(t_ref,   normalized=True)
+route_hdg = math.degrees(math.atan2(ref_pt.x - spawn_pt.x,
+                                    ref_pt.y - spawn_pt.y)) % 360.0
+\end{lstlisting}
+
+A candidate aircraft is admitted only by \texttt{\_spawn\_ok}, which enforces two conditions: a static buffer of $s + 10$\,NM to all existing traffic, and a conflict-free entry, meaning that flying its route at cruise it must not be predicted to reach a CPA inside the separation minimum against any active aircraft within the warning horizon (Listing~\ref{lst:spawn}). This guarantees that conflicts emerge from the evolving traffic rather than being injected at spawn.
+
+\begin{lstlisting}[caption={Conflict-free spawn admission (\texttt{env.py}, abridged).}, label={lst:spawn}]
+def _spawn_ok(self, ac):
+    for cs in self._active_callsigns:
+        pos_o, vel_o = aircraft_state(idx)
+        if math.hypot(d_east, d_north) < min_spawn_sep:
+            return False                               # (1) static buffer
+        tcpa = -(d_east*dv_east + d_north*dv_north) / rel_sq
+        if 0 <= tcpa <= horizon and cpa_e**2 + cpa_n**2 < sep*sep:
+            return False                               # (2) predicted LoS on route
+    return True
+\end{lstlisting}
+
+When an aircraft leaves the sector it is removed and its slot queued for a delayed respawn, maintaining a continuous flow of traffic. The exit is scored as an on-target arrival if it occurs within a small tolerance of the intended reference point, which provides the efficiency metric reported alongside the safety metrics.
+
+
+% ---------------------------------------------------------------
+\section{The Single-Instruction Paradigm and Focus Selection}
+\label{sec:method_paradigm}
+% ---------------------------------------------------------------
+
+In contrast to the fully autonomous MARL formulations that dominate the literature, the environment is deliberately designed around the way an air traffic controller operates: at most one aircraft is instructed per time interval. This reflects the human-AI teaming setting that motivates this research, in which the model acts as an advisory tool rather than a centralised autopilot. The environment selects a single \emph{focus} aircraft each step, presents the policy with an observation centred on that aircraft, and applies the resulting instruction to it alone, so that the agent experiences a stream of single-aircraft control problems.
+
+The focus is chosen by \texttt{\_select\_focus\_aircraft}, following the urgency-ranking principle of \textcite{sui2025}. A symmetric urgency matrix is built over all flying aircraft using \texttt{pair\_urgency}, from which a per-aircraft worst-pair urgency and total conflict load are obtained. The aircraft in the most urgent pair is selected, with total load as a tie-breaker. A hysteresis mechanism then retains the current focus while it is still active, unless its conflict has been resolved for a fixed number of consecutive steps or an emergency, defined by an urgency above a threshold corresponding to roughly two minutes before CPA, forces a switch. Listing~\ref{lst:focus} shows the decision logic.
+
+\begin{lstlisting}[caption={Candidate selection and hysteresis (\texttt{env.py}, abridged).}, label={lst:focus}]
+worst_pair = urgency.max(axis=1)        # worst single-pair urgency per aircraft
+total_load = urgency.sum(axis=1)        # total conflict burden per aircraft
+emergency  = worst_pair.max() >= CONFIG['focus_emergency_u']
+
+if worst_pair.max() > 0:                # pick the most urgent (tie: total load)
+    best_cs = ... aircraft with max worst_pair ...
+else:
+    best_cs = self._drift_fallback(flying)   # calm sector: tidy up off-route ac
+
+if focus_idx >= 0 and best_cs != self._focus_cs:
+    keep = (focus_urgency > 0 or not focus_resolved or drift_locked) \
+           and not emergency
+    if keep:
+        best_cs = self._focus_cs        # hysteresis: hold the current focus
+\end{lstlisting}
+
+When no conflict exists, \texttt{\_drift\_fallback} instead selects the aircraft that is most off-route yet has the most surrounding clearance, scoring each candidate by the product of its drift and a clearance term that ramps with nearest-neighbour distance. In this way the agent uses quiet periods to return aircraft to their routes rather than leaving them on avoidance manoeuvres.
+
+
+% ---------------------------------------------------------------
+\section{Observation Space}
+\label{sec:method_obs}
+% ---------------------------------------------------------------
+
+The observation is an ego-centric vector of twenty-six values following the ACAS Xu encoding \cite{Julian_2019, kochenderfer2011robust}: six features describing the focus aircraft and five for each of its four most relevant intruders (Table~\ref{tab:obs}).
+
+\begin{table}[htbp]
+\centering
+\caption{Structure of the twenty-six-dimensional observation. The intruder block is repeated four times.}
+\label{tab:obs}
+\begin{tabular}{llp{7.6cm}}
+\toprule
+Group & Feature & Description \\
+\midrule
+\multirow{6}{*}{Ownship}
+ & \texttt{dpsi}       & Actual heading error relative to the route (rad) \\
+ & \texttt{v\_own}     & Current speed normalised by cruise speed \\
+ & \texttt{a\_cmd}     & Commanded heading error relative to the route (rad) \\
+ & \texttt{v\_cmd}     & Commanded Mach normalised by nominal Mach \\
+ & \texttt{retn\_conf} & Binary: returning direct-to-route is currently unsafe \\
+ & \texttt{in\_conf}   & Binary: the aircraft is currently in conflict \\
+\midrule
+\multirow{5}{*}{Per intruder}
+ & \texttt{rho}    & Range normalised by the 45\,NM warning horizon \\
+ & \texttt{theta}  & Bearing to the intruder in the body frame \\
+ & \texttt{psi}    & Intruder heading relative to ownship heading \\
+ & \texttt{v\_int} & Intruder speed normalised by cruise speed \\
+ & \texttt{tau}    & Time to loss of separation normalised by the warning time \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The construction in \texttt{\_get\_observation} distinguishes the \emph{actual} state of the aircraft from its \emph{commanded} state. The feature \texttt{dpsi} encodes the current heading error, whereas \texttt{a\_cmd} encodes the heading the controller has ordered; the two differ while a turn is being flown. Because the policy is a feed-forward network without recurrence, these commanded features are important, as they implicitly carry the net effect of previously issued instructions on the focus aircraft. Listing~\ref{lst:obs} shows the ownship block and the per-intruder projection.
+
+\begin{lstlisting}[caption={Ownship features and intruder projection (\texttt{env.py}, abridged).}, label={lst:obs}]
+dpsi_act = math.radians(wrap_to_180(own_hdg - route_hdg))   # actual error
+a_cmd    = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded error
+retn_conf = return_blocked(cs, self._active_callsigns, self._route_hdg)
+in_conf   = 1.0 if conflict_score(cs, self._active_callsigns) > 0.0 else 0.0
+obs = [dpsi_act, own_spd / CRUISE_SPD_NMS, a_cmd, v_cmd, retn_conf, in_conf]
+
+for other in self._active_callsigns:          # per intruder, in the body frame
+    ego_lat = d_east*cos_hdg - d_north*sin_hdg   # + right of own heading
+    ego_fwd = d_east*sin_hdg + d_north*cos_hdg   # + ahead
+    rho   = min(1.0, dist_nm / WARN_DIST_NM)
+    theta = math.atan2(ego_lat, ego_fwd)         # bearing to intruder
+    psi   = math.radians(wrap_to_180(int_hdg - own_hdg))   # relative heading
+    tau   = min(max(0.0, t_los) / t_warn, 1.0)   # normalised time to LoS
+\end{lstlisting}
+
+The two intruder angles are distinct: \texttt{theta} describes \emph{where} an intruder is, with zero straight ahead, positive to the right and $\pm\pi$ behind, while \texttt{psi} describes \emph{which way} it is pointing, with zero a co-aligned overtake and $\pm\pi$ a head-on geometry. Intruder slots are filled by priority, conflicting pairs first and then nearest range, with unused slots set to a neutral sentinel.
+
+
+% ---------------------------------------------------------------
+\section{Action Space}
+\label{sec:method_act}
+% ---------------------------------------------------------------
+
+The action space is discrete with ten instructions (Table~\ref{tab:act}). The six heading changes are stacked onto the current commanded heading, the hold action is a true no-operation, the fly-direct action persistently returns the aircraft to its route, and two speed actions step the commanded Mach within the envelope.
+
+\begin{table}[htbp]
+\centering
+\caption{The discrete action space and the associated workload cost.}
+\label{tab:act}
+\begin{tabular}{clc}
+\toprule
+Index & Instruction & Workload cost \\
+\midrule
+0, 1, 2 & Turn left $60^\circ$, $45^\circ$, $30^\circ$  & 0.750, 0.625, 0.500 \\
+3       & Hold (no instruction)                         & 0.000 \\
+4, 5, 6 & Turn right $30^\circ$, $45^\circ$, $60^\circ$ & 0.500, 0.625, 0.750 \\
+7       & Fly direct to route                           & 0.125 \\
+8, 9    & Speed up, speed down                          & 0.250 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Listing~\ref{lst:act} shows how \texttt{\_apply\_action} maps an action index to a BlueSky command. A turn updates the stored commanded heading and cancels any active fly-direct mode; fly-direct sets a persistent flag re-issued every step; a speed action clamps the commanded Mach to the envelope. Each instruction carries the fixed workload cost in the table, chosen to be sub-additive in turn angle so that the agent is not rewarded for fragmenting a single decisive turn into several smaller ones.
+
+\begin{lstlisting}[caption={Mapping an action to a simulator command (\texttt{env.py}, abridged).}, label={lst:act}]
+def _apply_action(self, cs, action_idx):
+    if action_idx == 3:
+        return                                     # hold: true no-op
+    if action_idx in SPEED_ACTIONS:                # speed up / down
+        mach = clamp(self._commanded_mach[cs] + SPEED_ACTIONS[action_idx]*step)
+        bs.stack.stack(f'SPD {cs} {mach:.3f}'); return
+    if action_idx in TURN_DELTAS:                  # relative heading change
+        self._commanded_heading[cs] += TURN_DELTAS[action_idx]
+        self._direct_mode[cs] = False
+    elif action_idx == 7:                          # fly direct (persistent)
+        self._direct_mode[cs] = True
+        self._commanded_heading[cs] = self._route_hdg[cs]
+    bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+\end{lstlisting}
+
+
+% ---------------------------------------------------------------
+\section{Reward Function}
+\label{sec:method_reward}
+% ---------------------------------------------------------------
+
+The reward is computed for the focus aircraft each step and is strictly non-positive, so the agent learns to minimise an accumulated penalty. It is the sum of three terms,
+\begin{equation}
+\label{eq:reward}
+r = \underbrace{- w_{\text{los}} \, \mathbb{1}[\text{LoS}]}_{\text{safety}}
+    \; \underbrace{- w_{\text{drift}} \, \frac{1 - \cos(\Delta\psi_{\text{cmd}})}{2}}_{\text{route adherence}}
+    \; \underbrace{- w_{\text{work}} \, c(a)}_{\text{workload}},
+\end{equation}
+where $\Delta\psi_{\text{cmd}}$ is the difference between the route and commanded headings and $c(a)$ is the workload cost of the chosen action. With $w_{\text{los}}=10$, $w_{\text{drift}}=1$ and $w_{\text{work}}=1$, an actual loss of separation dominates the reward while drift and workload provide continuous pressure toward efficient, on-route behaviour. Listing~\ref{lst:reward} shows the implementation.
+
+\begin{lstlisting}[caption={The reward (\texttt{env.py}).}, label={lst:reward}]
+def _compute_reward(self, acting_cs, action_idx):
+    r_los = -CONFIG['w_los'] if self._los_this_step else 0.0
+    r_drift = 0.0
+    if acting_cs and acting_cs in self._route_hdg:
+        hdg_err = wrap_to_180(self._route_hdg[acting_cs]
+                              - self._commanded_heading[acting_cs])
+        r_drift = -CONFIG['w_drift'] * (1.0 - math.cos(math.radians(hdg_err))) / 2.0
+    r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
+    return float(r_los + r_drift + r_work)
+\end{lstlisting}
+
+A fourth term proportional to the conflict score was considered, which would have penalised the agent for merely being in a conflict state rather than only for a realised loss of separation. It was ultimately removed, so the safety penalty reflects actual separation violations alone. The conflict score is nonetheless still computed, as it remains the basis for the \texttt{in\_conf} observation feature and the urgency used in focus selection.
+
+
+% ---------------------------------------------------------------
+\section{The Environment Step Loop}
+\label{sec:method_step}
+% ---------------------------------------------------------------
+
+The complete behaviour of one decision is assembled in the \texttt{step} method, shown in Listing~\ref{lst:step}. The order of operations is important and proceeds as follows: any pending delayed spawns are processed; the action is applied to the current focus and all fly-direct aircraft are re-aimed at their routes; BlueSky is advanced five one-second steps; a loss of separation is detected over the new state; aircraft that have left the sector are removed and scored; the next focus is selected; and finally the reward is computed for the aircraft that just acted. The episode is never terminated by a goal state; it is only truncated once the time budget, set from the expected number of sector crossings, is reached, reflecting the continuous nature of the controller's task.
+
+\begin{lstlisting}[caption={The environment step (\texttt{env.py}).}, label={lst:step}]
+def step(self, action):
+    action = int(action)
+    self._process_pending_spawns()
+    acting_cs = self._focus_cs
+    if acting_cs:
+        self._apply_action(acting_cs, action)
+    self._update_direct_headings()               # hold fly-direct aircraft on route
+    for _ in range(CONFIG['action_freq']):       # advance 5 x 1 s
+        bs.sim.step()
+    self._los_this_step = any_los(self._active_callsigns)
+    self._step_count += 1
+    self._process_exits()                         # remove leavers, score arrivals
+    self._focus_cs = self._select_focus_aircraft()
+    reward = self._compute_reward(acting_cs, action)
+    truncated = self._step_count >= self._max_steps
+    return self._get_observation(), reward, False, truncated, info
+\end{lstlisting}
+
+
+% ---------------------------------------------------------------
+\section{Training Configuration}
+\label{sec:method_training}
+% ---------------------------------------------------------------
+
+The policy is trained with Proximal Policy Optimisation (PPO) \cite{DBLP:journals/corr/SchulmanWDRK17} as implemented in Stable Baselines 3 \cite{sb3_algos}. PPO is an on-policy actor--critic method that collects a batch of experience, estimates advantages with generalised advantage estimation, and performs several epochs of clipped policy-gradient updates that prevent the policy from changing too abruptly between iterations. The policy and value functions are multilayer perceptrons with two hidden layers of one hundred and twenty-eight units. The principal hyperparameters are listed in Table~\ref{tab:ppo}.
+
+\begin{table}[htbp]
+\centering
+\caption{Principal PPO and training hyperparameters.}
+\label{tab:ppo}
+\begin{tabular}{lc@{\hspace{2em}}lc}
+\toprule
+Parameter & Value & Parameter & Value \\
+\midrule
+Learning rate            & $3\times10^{-4}$ & Steps per environment & 256 \\
+Discount factor $\gamma$ & 0.99             & Minibatch size        & 2048 \\
+GAE parameter $\lambda$  & 0.95             & Epochs per update     & 10 \\
+Clipping range           & 0.2              & Parallel environments & 48 \\
+Entropy coefficient      & 0.02             & Network architecture  & $[128,128]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The training stack is shown in Listing~\ref{lst:train}. Forty-eight copies of the environment are run in parallel in separate processes by \texttt{SubprocVecEnv}, so that each update is computed from a large and diverse batch. A \texttt{VecMonitor} records the true, unnormalised episode returns, and a \texttt{VecNormalize} wrapper standardises both observations and rewards online using running estimates of their mean and variance, which keeps the network inputs well-scaled and stabilises learning.
+
+\begin{lstlisting}[caption={The vectorised, monitored and normalised training environment (\texttt{v4\_train.py}).}, label={lst:train}]
+venv = make_vec_env(AirspaceEnv, n_envs=48, vec_env_cls=SubprocVecEnv,
+                    seed=seed, env_kwargs=env_kwargs)
+env  = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
+                    clip_obs=10.0, clip_reward=10.0, gamma=0.99)
+model = PPO('MlpPolicy', env, seed=seed, tensorboard_log=tb_dir, **PPO_KWARGS)
+model.learn(TOTAL_TIMESTEPS, callback=callbacks)
+\end{lstlisting}
+
+A subtle but essential consequence of \texttt{norm\_obs=True} is that the policy is trained on standardised observations. The running statistics are saved alongside the model and must be reapplied whenever the policy is evaluated or visualised, because feeding raw, unnormalised observations to a policy trained on standardised inputs degrades its behaviour. During training three callbacks run: one logs per-episode safety, efficiency and action-distribution metrics to TensorBoard; a second checkpoints the model whenever the recent mean unnormalised episode reward improves on the best seen so far; and a third prints throughput.
+
+Finally, the environment exposes a feature-ablation mechanism through its constructor, in which a chosen ownship observation feature is replaced by a constant while the observation dimension is left unchanged. Because the network architecture is then identical across conditions, this provides a controlled means of measuring the contribution of an individual feature to the policy's performance, and forms the basis of the ablation experiments reported in the following chapters.
+
+\printbibliography
+
+\end{document}

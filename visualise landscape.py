@@ -30,12 +30,57 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-# -- NumPy unpickle shim so SB3 checkpoints load across numpy versions ------------
-class _NumpyShim(pickle.Unpickler):
+# -- NumPy unpickle compat: a newer numpy pickles its RNG ctors with the BitGenerator
+# passed as a class or instance (e.g. PCG64), while older ctors expect the string name.
+# Patch the RNG reconstruction helpers to accept any of these, so SB3 model and
+# VecNormalize pickles load regardless of the numpy version. ----------------------------
+import numpy.random._pickle as _np_rand_pickle
+_orig_bg_ctor = _np_rand_pickle.__bit_generator_ctor
+
+def _to_bitgen(bit_generator):
+    if isinstance(bit_generator, np.random.BitGenerator):
+        return bit_generator
+    if isinstance(bit_generator, type):
+        return bit_generator()
+    return _orig_bg_ctor(bit_generator)
+
+def _bg_ctor_compat(bit_generator='MT19937'):
+    return _to_bitgen(bit_generator)
+
+def _gen_ctor_compat(bit_generator='MT19937', bit_generator_ctor=None):
+    return np.random.Generator(_to_bitgen(bit_generator))
+
+def _rs_ctor_compat(bit_generator='MT19937', bit_generator_ctor=None):
+    rs = np.random.RandomState.__new__(np.random.RandomState)
+    rs._bit_generator = _to_bitgen(bit_generator)
+    return rs
+
+_np_rand_pickle.__bit_generator_ctor = _bg_ctor_compat
+_np_rand_pickle.__generator_ctor = _gen_ctor_compat
+if hasattr(_np_rand_pickle, '__randomstate_ctor'):
+    _np_rand_pickle.__randomstate_ctor = _rs_ctor_compat
+
+# -- NumPy unpickle compat so SB3 checkpoints load across numpy versions ----------
+# Checkpoints saved with a newer numpy break in two ways on an older numpy: the module
+# path numpy._core was renamed from numpy.core, and the RNG state is pickled in a format
+# the older BitGenerator.__setstate__ rejects. Visualisation never uses these RNGs, so we
+# rewrite the module path and simply drop any incompatible RNG state (keeping a fresh
+# generator). Using the pure-python _Unpickler lets us override load_build.
+class _NumpyShim(pickle._Unpickler):
     def find_class(self, module, name):
         if module.startswith('numpy._core'):
             module = module.replace('numpy._core', 'numpy.core')
         return super().find_class(module, name)
+
+    def load_build(self):
+        state = self.stack[-1]
+        inst = self.stack[-2]
+        if isinstance(inst, np.random.BitGenerator) and not isinstance(state, dict):
+            self.stack.pop()          # discard version-incompatible RNG state
+            return
+        return super().load_build()
+    dispatch = dict(pickle._Unpickler.dispatch)
+    dispatch[pickle.BUILD[0]] = load_build
 
 from stable_baselines3.common import save_util
 
@@ -61,17 +106,16 @@ from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
 
-WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
-CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
-PANEL_X = 1100                    # observation panel starts here (right of the radar square)
-MARGIN = 80
+WIN_W, WIN_H = 1920, 1080         # landscape, full-screen scope
+CX, CY = WIN_W // 2, WIN_H // 2   # origin (sector centre) at the window centre
+MARGIN = 60
 DIAG   = math.hypot(WIN_W, WIN_H)
 BG     = (6, 14, 10)
 GREEN  = (60, 220, 120)
 DIM    = (28, 90, 55)
 ORANGE = (255, 140, 0)
 RED    = (255, 60, 55)
-BLUE   = (140, 205, 255)        # light blue -- ownship ring
+BLUE   = (120, 200, 255)        # ownship
 CYAN   = (90, 220, 255)
 WP     = (40, 120, 70)
 KT     = 1.94384
@@ -118,13 +162,8 @@ def estimate_obs_stats(env, model, warmup=2500):
 def load_vecnorm_stats(path):
     """Load the real observation mean/std from a saved VecNormalize .pkl (the exact
     stats the policy was trained with -- preferred over estimate_obs_stats)."""
-    class _U(pickle.Unpickler):
-        def find_class(self, module, name):
-            if module.startswith('numpy._core'):
-                module = module.replace('numpy._core', 'numpy.core')
-            return super().find_class(module, name)
     with open(path, 'rb') as f:
-        vn = _U(f).load()
+        vn = _NumpyShim(f).load()
     if getattr(vn, 'obs_rms', None) is None:
         raise ValueError(f'{path} has no obs_rms (saved with norm_obs=False?)')
     mean = np.asarray(vn.obs_rms.mean, dtype=np.float32)
@@ -133,16 +172,35 @@ def load_vecnorm_stats(path):
 
 
 def fresh_stats():
-    return {'cum_r': 0.0, 'last_r': 0.0, 'step_n': 0, 'los': 0,
-            'last_action': 3, 'acting_cs': None,
+    return {'cum_r': 0.0, 'last_r': 0.0, 'step_n': 0, 'los': 0, 'resolved': 0,
+            'last_action': 3, 'acting_cs': None, 'conf_state': {},
             'counts': [0] * 10, 'recent': deque(maxlen=14)}
+
+
+def conflict_pairs(env):
+    """Current conflict pairs (urgency > 0) as frozenset(callsigns) -> urgency."""
+    U, cs = env._urgency_matrix, env._urgency_cs_list
+    pairs = {}
+    if U.size:
+        n = len(cs)
+        for i in range(n):
+            for j in range(i + 1, n):
+                u = float(U[i, j])
+                if u > 0.0:
+                    pairs[frozenset((cs[i], cs[j]))] = u
+    return pairs
 
 
 def reset_episode(env, seed):
     obs, _ = env.reset(seed=seed)
     poly = list(env.polygon) if env.polygon is not None else []
-    rng = max(35.0, 1.1 * max((math.hypot(v[0], v[1]) for v in poly), default=60.0))
-    scale = (min(CX, CY) - MARGIN) / rng
+    # Fill the landscape window: scale the sector to the window extent in x and y.
+    if poly:
+        half_w = max(abs(v[0]) for v in poly)
+        half_h = max(abs(v[1]) for v in poly)
+    else:
+        half_w = half_h = 60.0
+    scale = min((CX - MARGIN) / max(half_w, 1e-6), (CY - MARGIN) / max(half_h, 1e-6))
     prot_px = 0.5 * CONFIG['sep_nm'] * scale         # 2.5 NM protected-zone radius
     return obs, poly, scale, prot_px
 
@@ -165,6 +223,21 @@ def policy_step(env, model, obs, deterministic, norm, st):
     st['counts'][a] += 1; st['recent'].appendleft((acting_cs, a))
     if env._los_this_step:
         st['los'] += 1
+
+    # Track conflicts resolved: a conflict pair that disappears without ever
+    # reaching a loss of separation counts as resolved.
+    cur = conflict_pairs(env)
+    state = st['conf_state']
+    for p, u in cur.items():
+        if u > 1.0:
+            state[p] = 'los'
+        elif p not in state:
+            state[p] = 'conflict'
+    for p in list(state):
+        if p not in cur:
+            if state[p] == 'conflict':
+                st['resolved'] += 1
+            del state[p]
     return obs, trunc
 
 
@@ -199,33 +272,6 @@ def dashed_line(surf, color, p1, p2, dash=6, gap=7, width=1):
         s += dash + gap
 
 
-def draw_obs_panel(screen, font, font_hud, obs, focus_cs, intruder_cs):
-    """Right-hand panel: the focus aircraft's raw observation vector, labelled."""
-    pygame.draw.rect(screen, (8, 16, 12), (PANEL_X, 0, WIN_W - PANEL_X, WIN_H))
-    pygame.draw.line(screen, DIM, (PANEL_X, 0), (PANEL_X, WIN_H), 1)
-    x, y = PANEL_X + 16, 16
-    screen.blit(font_hud.render('OBSERVATION', True, GREEN), (x, y)); y += 26
-    screen.blit(font.render(f'ownship: {focus_cs or "--"}', True, DIM), (x, y)); y += 24
-    if obs is None:
-        return
-    n_own = len(OBS_OWNSHIP_LABELS)
-    for lbl, val in zip(OBS_OWNSHIP_LABELS, obs[:n_own]):
-        col = ORANGE if (lbl == 'in_conf' and val > 0.5) else GREEN
-        screen.blit(font.render(f'{lbl:>9} {val:+.2f}', True, col), (x, y)); y += 16
-    y += 8
-    rest, n_int = obs[n_own:], len(OBS_INTRUDER_LABELS)
-    for k in range(len(rest) // n_int):
-        seg = rest[k * n_int:(k + 1) * n_int]
-        cs_k = intruder_cs[k] if k < len(intruder_cs) else None
-        empty = cs_k is None
-        head = f'INTRUDER {k}  (empty)' if empty else f'INTRUDER {k}: {cs_k}'
-        screen.blit(font.render(head, True, DIM if empty else CYAN), (x, y)); y += 16
-        for lbl, val in zip(OBS_INTRUDER_LABELS, seg):
-            screen.blit(font.render(f'{lbl:>9} {val:+.2f}', True,
-                                    DIM if empty else GREEN), (x + 10, y)); y += 15
-        y += 4
-
-
 def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
     font, font_hud = fonts
     screen.fill(BG)
@@ -243,8 +289,8 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         px, py = to_screen(pos[0], pos[1], scale)
         u = urg.get(cs, 0.0)
         col = RED if u > 1.0 else ORANGE if u > 0.0 else GREEN
+        is_own = cs == env._focus_cs
         hdg_deg = float(bs.traf.hdg[idx])
-        gs_kt = float(bs.traf.tas[idx]) * KT
 
         dest = dest_map.get(cs)
         if dest is not None:
@@ -255,40 +301,34 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
                 dashed_line(screen, WP, (px, py),
                             (px + sdx / sn * DIAG, py + sdy / sn * DIAG))
 
-        # 2.5 NM protected-zone ring (two overlapping == intrusion / LoS). The ownship
-        # (focus) ring is blue, drawn at the same 2.5 NM radius.
-        aa_ring(screen, px, py, prot_px, BLUE if cs == env._focus_cs else col)
-
-        h = math.radians(hdg_deg)                          # current-heading leader
+        h = math.radians(hdg_deg)
         lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale
-        pygame.draw.line(screen, col, (px, py),
-                         (px + math.sin(h) * lead, py - math.cos(h) * lead), 2)
+        lx, ly = px + math.sin(h) * lead, py - math.cos(h) * lead
 
-        pygame.draw.circle(screen, col, (int(px), int(py)), 2)   # radar blip (no square)
-        screen.blit(font.render(f'{cs} {hdg_deg:03.0f}', True, col), (px + 10, py - 18))
-        screen.blit(font.render(f'{gs_kt:3.0f}kt', True, col), (px + 10, py - 5))
+        if is_own:
+            # Ownship: bright blue, filled marker, thick leader, double ring + halo.
+            aa_ring(screen, px, py, prot_px + 6, BLUE)
+            pygame.draw.circle(screen, BLUE, (int(px), int(py)), int(prot_px), 2)
+            pygame.draw.line(screen, BLUE, (px, py), (lx, ly), 4)
+            pygame.draw.circle(screen, BLUE, (int(px), int(py)), 6)
+        else:
+            aa_ring(screen, px, py, prot_px, col)
+            pygame.draw.line(screen, col, (px, py), (lx, ly), 2)
+            pygame.draw.circle(screen, col, (int(px), int(py)), 3)
 
-    al = ACTION_LABELS[st['last_action']]
-    tgt = st['acting_cs'] or '--'
-    screen.blit(font_hud.render(f'TOTAL REWARD {st["cum_r"]:+.1f}', True, GREEN), (12, 10))
-    screen.blit(font.render(f'STEP {st["step_n"]}   R {st["last_r"]:+.2f}   LoS {st["los"]}',
-                            True, DIM), (14, 34))
-    screen.blit(font.render(f'ACTION  {al:4s} -> {tgt}', True, CYAN), (14, 52))
-    screen.blit(font.render(mode, True, DIM), (14, 70))
+    # HUD: total reward, LoS, and conflicts resolved.
+    screen.blit(font_hud.render(f'TOTAL REWARD {st["cum_r"]:+.1f}', True, GREEN), (24, 20))
+    screen.blit(font_hud.render(f'Loss of Separations {st["los"]}', True, RED if st['los'] else DIM), (24, 56))
+    screen.blit(font_hud.render(f'Resolved Conflicts {st["resolved"]}', True, GREEN), (24, 92))
     if paused:
-        screen.blit(font.render('PAUSED', True, ORANGE), (14, 88))
+        screen.blit(font_hud.render('PAUSED', True, ORANGE), (24, 128))
 
-    y0 = WIN_H - 12 - 11 * 16
-    screen.blit(font.render('ACTIONS (count)', True, GREEN), (14, y0))
+    # Action counts (which actions have been taken), bottom-left.
+    y0 = WIN_H - 24 - len(ACTION_LABELS) * 24
+    screen.blit(font.render('ACTIONS', True, GREEN), (24, y0 - 26))
     for i, lbl in enumerate(ACTION_LABELS):
         c = CYAN if i == st['last_action'] else DIM
-        screen.blit(font.render(f'{lbl:4s} {st["counts"][i]:4d}', True, c),
-                    (14, y0 + 16 * (i + 1)))
-    recent = '  '.join(f'{cs}:{ACTION_LABELS[a]}' for cs, a in list(st['recent'])[:6])
-    screen.blit(font.render(recent, True, DIM), (150, y0))
-
-    draw_obs_panel(screen, font, font_hud, obs, env._focus_cs,
-                   getattr(env, '_last_intruder_cs', []))
+        screen.blit(font.render(f'{lbl:4s} {st["counts"][i]:4d}', True, c), (24, y0 + i * 24))
 
 
 def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
@@ -322,8 +362,9 @@ def main():
     ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
                     help='exit-point jitter range: ref_jitter ~ uniform(-J, +J); '
                          'J=0.5 gives fully random crossing directions')
-    ap.add_argument('--mp4', default=None, metavar='PATH',
-                    help='render a single episode to this mp4 file and exit')
+    ap.add_argument('--mp4', default='landscape.mp4', metavar='PATH',
+                    help='render a single episode to this mp4 file and exit '
+                         '(default: landscape.mp4; pass "" for interactive window)')
     ap.add_argument('--fps', type=int, default=10, help='interactive / mp4 frame rate')
     ap.add_argument('--stochastic', action='store_true',
                     help='sample actions instead of the argmax (best) policy')
@@ -376,8 +417,8 @@ def main():
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
     pygame.display.set_caption('ATC Radar -- policy visualisation')
-    fonts = (pygame.font.SysFont('consolas,monospace', 13),
-             pygame.font.SysFont('consolas,monospace', 18, bold=True))
+    fonts = (pygame.font.SysFont('consolas,monospace', 20),
+             pygame.font.SysFont('consolas,monospace', 30, bold=True))
 
     seed = args.seed if args.seed is not None else random.randint(0, 99_999)
     obs, poly, scale, prot_px = reset_episode(env, seed)

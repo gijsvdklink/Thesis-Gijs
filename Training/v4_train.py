@@ -73,9 +73,10 @@ class EpisodeStatsCallback(BaseCallback):
             for label, count in zip(self.ACTION_LABELS, dist):
                 self.logger.record_mean(f'actions/{label}', count / total)
             if len(dist) >= 10:
-                turns = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]   # heading changes only
-                self.logger.record_mean('actions/turns_total', turns)
-                self.logger.record_mean('actions/speed_total', dist[8] + dist[9])
+                # fractions, so they are comparable to the per-action fractions above
+                turns = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]   # 6 stack-turns (excl. hold/fly-direct/speed)
+                self.logger.record_mean('actions/turns_total', turns / total)
+                self.logger.record_mean('actions/speed_total', (dist[8] + dist[9]) / total)
         return True
 
 
