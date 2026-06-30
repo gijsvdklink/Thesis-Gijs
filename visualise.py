@@ -61,10 +61,10 @@ from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
 
-WIN_W, WIN_H = 1340, 1000
-CX, CY = 500, 500                 # radar centred in the left 1000x1000 region
-PANEL_X = 1012                    # observation panel starts here
-MARGIN = 70
+WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
+CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
+PANEL_X = 1100                    # observation panel starts here (right of the radar square)
+MARGIN = 80
 DIAG   = math.hypot(WIN_W, WIN_H)
 BG     = (6, 14, 10)
 GREEN  = (60, 220, 120)

@@ -318,8 +318,8 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
 
     # HUD: total reward, LoS, and conflicts resolved.
     screen.blit(font_hud.render(f'TOTAL REWARD {st["cum_r"]:+.1f}', True, GREEN), (24, 20))
-    screen.blit(font_hud.render(f'LoS {st["los"]}', True, RED if st['los'] else DIM), (24, 56))
-    screen.blit(font_hud.render(f'RESOLVED {st["resolved"]}', True, GREEN), (24, 92))
+    screen.blit(font_hud.render(f'Loss of Separations {st["los"]}', True, RED if st['los'] else DIM), (24, 56))
+    screen.blit(font_hud.render(f'Resolved Conflicts {st["resolved"]}', True, GREEN), (24, 92))
     if paused:
         screen.blit(font_hud.render('PAUSED', True, ORANGE), (24, 128))
 

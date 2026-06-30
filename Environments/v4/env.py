@@ -14,8 +14,7 @@ Observation (26 floats), ego-centric from the focus aircraft:
 Action (Discrete 10): turn -+60/45/30 (stack on commanded heading), hold (no-op),
   fly-direct (return to route, persistent), speed up/down (step commanded Mach).
 
-Reward (purely negative): -w_los*1[LoS] - w_conflict*conflict_score
-  - w_drift*(1-cos(dpsi))/2 - w_work*ACT_COST[action].
+Reward (purely negative): -w_los*1[LoS] - w_drift*(1-cos(dpsi))/2 - w_work*ACT_COST[action].
 """
 
 import math
@@ -34,7 +33,7 @@ from .config import (CONFIG, OBS_DIM, N_ACTIONS, N_NEIGHBOURS, WARN_DIST_NM,
                      CRUISE_SPD_NMS, TURN_DELTAS, SPEED_ACTIONS, ACT_COST)
 from .geometry import (latlon_to_nm, nm_to_latlon, wrap_to_180, aircraft_speed_nms,
                        aircraft_position_nm, aircraft_state, heading_to_velocity)
-from .conflict import (conflict_score, return_blocked, any_los, pair_urgency, time_to_los)
+from .conflict import (return_blocked, any_los, pair_urgency, time_to_los)
 from .sector import make_polygon, place_aircraft
 
 _bs_initialized = False
@@ -52,14 +51,9 @@ class AirspaceEnv(gym.Env):
     # ACAS Xu empty-intruder-slot sentinel: rho=1 (far), tau=1 (no imminent LoS)
     _EMPTY_SLOT = [1.0, 0.0, 0.0, 0.0, 1.0]
 
-    def __init__(self, dummy_retn_conf=False, dummy_in_conf=False):
+    def __init__(self):
         super().__init__()
         global _bs_initialized
-        # Feature-ablation flags: when set, the corresponding ownship observation feature
-        # is replaced by a constant (0.0) so it carries no information. The observation
-        # dimension is unchanged, keeping the policy architecture identical across runs.
-        self.dummy_retn_conf = bool(dummy_retn_conf)   # ablate retn_conf ("safe to return")
-        self.dummy_in_conf   = bool(dummy_in_conf)     # ablate in_conf   ("am I in conflict")
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
 
@@ -80,7 +74,7 @@ class AirspaceEnv(gym.Env):
         self._active_callsigns    = set()
         self._destination_ll      = {}   # far point along the route (visualisation only)
         self._ref_ll              = {}   # exit reference point per callsign
-        self._route_hdg           = {}   # fixed route bearing (deg) per callsign
+        self._route_hdg           = {}   # live bearing (deg) to destination, updated each step
         self._commanded_heading   = {}
         self._commanded_mach      = {}
         self._direct_mode         = {}   # fly-direct (back-to-route) active per callsign
@@ -149,6 +143,7 @@ class AirspaceEnv(gym.Env):
     def step(self, action):
         action = int(action)
         self._process_pending_spawns()
+        self._refresh_route_headings()
         acting_cs = self._focus_cs
 
         if acting_cs:
@@ -183,9 +178,11 @@ class AirspaceEnv(gym.Env):
         n_steps = max(s['steps'], 1)
         return {
             'mean_episode_reward': s['reward'] / n_steps,
+            'ep_reward_total':     s['reward'],
             'ep_los_steps':        s['los'],
             'ep_length':           s['steps'],
             'ep_exits':            s['exits'],
+            'ep_arrivals':         s['arrivals'],
             'ep_arrival_rate':     s['arrivals'] / max(s['exits'], 1),
             'action_distribution': np.bincount(s['actions'], minlength=N_ACTIONS).tolist(),
         }
@@ -287,8 +284,7 @@ class AirspaceEnv(gym.Env):
     # -- Reward ----------------------------------------------------------------
 
     def _compute_reward(self, acting_cs, action_idx):
-        r_los      = -CONFIG['w_los'] if self._los_this_step else 0.0
-        r_conflict = -CONFIG['w_conflict'] * conflict_score(acting_cs, self._active_callsigns)
+        r_los = -CONFIG['w_los'] if self._los_this_step else 0.0
 
         r_drift = 0.0
         if acting_cs and acting_cs in self._route_hdg:
@@ -299,7 +295,7 @@ class AirspaceEnv(gym.Env):
                 r_drift = -CONFIG['w_drift'] * (1.0 - math.cos(math.radians(hdg_err))) / 2.0
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
-        return float(r_los + r_conflict + r_drift + r_work)
+        return float(r_los + r_drift + r_work)
 
     # -- Actions ---------------------------------------------------------------
 
@@ -330,6 +326,21 @@ class AirspaceEnv(gym.Env):
             self._commanded_heading[cs] = self._route_hdg[cs]
 
         bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+
+    def _refresh_route_headings(self):
+        """Recompute each aircraft's route heading as the live bearing from its current
+        position to its destination. Using the far destination keeps the bearing stable
+        while naturally correcting for any drift accumulated during avoidance manoeuvres."""
+        center = CONFIG['center_ll']
+        for cs in self._active_callsigns:
+            idx  = bs.traf.id2idx(cs)
+            dest = self._destination_ll.get(cs)
+            if idx < 0 or dest is None:
+                continue
+            dest_nm = latlon_to_nm(center, float(dest[0]), float(dest[1]))
+            pos     = aircraft_position_nm(idx)
+            self._route_hdg[cs] = math.degrees(
+                math.atan2(dest_nm[0] - pos[0], dest_nm[1] - pos[1])) % 360.0
 
     def _update_direct_headings(self):
         """Re-issue the fixed route heading for every fly-direct aircraft each step."""
@@ -363,10 +374,19 @@ class AirspaceEnv(gym.Env):
         a_cmd     = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded heading error
         v_cmd     = self._commanded_mach.get(cs, CONFIG['ac_mach']) / CONFIG['ac_mach']
 
-        retn_conf = 0.0 if self.dummy_retn_conf else \
-            return_blocked(cs, self._active_callsigns, self._route_hdg)
-        in_conf = 0.0 if self.dummy_in_conf else \
-            (1.0 if conflict_score(cs, self._active_callsigns) > 0.0 else 0.0)
+        # pre-computed urgency row for this aircraft (built in _select_focus_aircraft);
+        # used both to prioritise intruders and to set the in_conf flag below.
+        urgency_row = None
+        if cs in self._urgency_cs_list:
+            row = self._urgency_cs_list.index(cs)
+            if row < self._urgency_matrix.shape[0]:
+                urgency_row = self._urgency_matrix[row]
+
+        retn_conf = return_blocked(cs, self._active_callsigns, self._route_hdg)
+        # in_conf == 1 iff the focus has any positive-urgency pair (active LoS, or a
+        # converging intruder within t_warn) -- read straight off the urgency matrix,
+        # which is exactly equivalent to conflict_score(cs) > 0 but avoids recomputing it.
+        in_conf = 1.0 if (urgency_row is not None and urgency_row.max() > 0.0) else 0.0
 
         obs = [dpsi_act,
                own_spd / CRUISE_SPD_NMS,
@@ -374,13 +394,6 @@ class AirspaceEnv(gym.Env):
                v_cmd,
                retn_conf,      # retn_conf ("safe to return"); dummied to 0.0 when ablated
                in_conf]        # in_conf   ("am I in conflict"); dummied to 0.0 when ablated
-
-        # pre-computed urgency row for this aircraft (intruder prioritisation)
-        urgency_row = None
-        if cs in self._urgency_cs_list:
-            row = self._urgency_cs_list.index(cs)
-            if row < self._urgency_matrix.shape[0]:
-                urgency_row = self._urgency_matrix[row]
 
         sep, t_warn = CONFIG['sep_nm'], CONFIG['t_warn']
         intruders = []
