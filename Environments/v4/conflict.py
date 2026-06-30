@@ -71,10 +71,10 @@ def pair_urgency(idx_i, idx_j):
 def return_blocked(cs, active_callsigns, route_hdg):
     """Binary {0, 1}: 1 if returning aircraft cs to its route is NOT free.
 
-    Route-vs-route CPA: ownship on its own route heading vs every intruder on ITS route
-    heading, from current positions. Using each intruder's route heading (not its transient
-    one) keeps this robust to in-progress avoidance manoeuvres. Returns 1 if already in LoS
-    with anyone, or if any route corridor pair would breach separation.
+    Puts the ownship on its route heading and checks it against every other aircraft on
+    ITS route heading (using route headings, not transient ones, keeps this robust to
+    in-progress avoidance manoeuvres). Returns 1 if already in LoS with anyone, or if any
+    route-corridor pair would lose separation within the warning horizon t_warn.
     """
     idx = bs.traf.id2idx(cs)
     if idx < 0:
@@ -92,22 +92,19 @@ def return_blocked(cs, active_callsigns, route_hdg):
         pos_j   = aircraft_position_nm(j)
         d_east  = pos_j[0] - own_pos[0]
         d_north = pos_j[1] - own_pos[1]
-        if d_east ** 2 + d_north ** 2 < sep * sep:
+        dist_sq = d_east ** 2 + d_north ** 2
+        if dist_sq < sep * sep:
             return 1.0                                 # already in LoS
 
-        int_hdg = route_hdg.get(other, bs.traf.hdg[j])
-        int_ve, int_vn = heading_to_velocity(aircraft_speed_nms(j), int_hdg)
+        int_ve, int_vn = heading_to_velocity(aircraft_speed_nms(j),
+                                             route_hdg.get(other, bs.traf.hdg[j]))
         dv_east, dv_north = int_ve - own_ve, int_vn - own_vn
         rel_spd_sq = dv_east ** 2 + dv_north ** 2
-        if rel_spd_sq < 1e-12:
-            continue
-        tcpa = -(d_east * dv_east + d_north * dv_north) / rel_spd_sq
-        if tcpa < 0:
-            continue                                   # route corridors diverge
-        cpa_east  = d_east + tcpa * dv_east
-        cpa_north = d_north + tcpa * dv_north
-        if cpa_east ** 2 + cpa_north ** 2 < sep * sep:
-            return 1.0                                 # route corridors conflict
+        range_rate = d_east * dv_east + d_north * dv_north
+
+        t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+        if t_los is not None and t_los <= CONFIG['t_warn']:
+            return 1.0                                 # route corridors lose sep within t_warn
     return 0.0
 
 

@@ -51,14 +51,9 @@ class AirspaceEnv(gym.Env):
     # ACAS Xu empty-intruder-slot sentinel: rho=1 (far), tau=1 (no imminent LoS)
     _EMPTY_SLOT = [1.0, 0.0, 0.0, 0.0, 1.0]
 
-    def __init__(self, dummy_retn_conf=False, dummy_in_conf=False):
+    def __init__(self):
         super().__init__()
         global _bs_initialized
-        # Feature-ablation flags: when set, the corresponding ownship observation feature
-        # is replaced by a constant (0.0) so it carries no information. The observation
-        # dimension is unchanged, keeping the policy architecture identical across runs.
-        self.dummy_retn_conf = bool(dummy_retn_conf)   # ablate retn_conf ("safe to return")
-        self.dummy_in_conf   = bool(dummy_in_conf)     # ablate in_conf   ("am I in conflict")
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
 
@@ -79,7 +74,7 @@ class AirspaceEnv(gym.Env):
         self._active_callsigns    = set()
         self._destination_ll      = {}   # far point along the route (visualisation only)
         self._ref_ll              = {}   # exit reference point per callsign
-        self._route_hdg           = {}   # fixed route bearing (deg) per callsign
+        self._route_hdg           = {}   # live bearing (deg) to destination, updated each step
         self._commanded_heading   = {}
         self._commanded_mach      = {}
         self._direct_mode         = {}   # fly-direct (back-to-route) active per callsign
@@ -148,6 +143,7 @@ class AirspaceEnv(gym.Env):
     def step(self, action):
         action = int(action)
         self._process_pending_spawns()
+        self._refresh_route_headings()
         acting_cs = self._focus_cs
 
         if acting_cs:
@@ -331,6 +327,21 @@ class AirspaceEnv(gym.Env):
 
         bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
 
+    def _refresh_route_headings(self):
+        """Recompute each aircraft's route heading as the live bearing from its current
+        position to its destination. Using the far destination keeps the bearing stable
+        while naturally correcting for any drift accumulated during avoidance manoeuvres."""
+        center = CONFIG['center_ll']
+        for cs in self._active_callsigns:
+            idx  = bs.traf.id2idx(cs)
+            dest = self._destination_ll.get(cs)
+            if idx < 0 or dest is None:
+                continue
+            dest_nm = latlon_to_nm(center, float(dest[0]), float(dest[1]))
+            pos     = aircraft_position_nm(idx)
+            self._route_hdg[cs] = math.degrees(
+                math.atan2(dest_nm[0] - pos[0], dest_nm[1] - pos[1])) % 360.0
+
     def _update_direct_headings(self):
         """Re-issue the fixed route heading for every fly-direct aircraft each step."""
         for cs, on in self._direct_mode.items():
@@ -371,13 +382,11 @@ class AirspaceEnv(gym.Env):
             if row < self._urgency_matrix.shape[0]:
                 urgency_row = self._urgency_matrix[row]
 
-        retn_conf = 0.0 if self.dummy_retn_conf else \
-            return_blocked(cs, self._active_callsigns, self._route_hdg)
+        retn_conf = return_blocked(cs, self._active_callsigns, self._route_hdg)
         # in_conf == 1 iff the focus has any positive-urgency pair (active LoS, or a
         # converging intruder within t_warn) -- read straight off the urgency matrix,
         # which is exactly equivalent to conflict_score(cs) > 0 but avoids recomputing it.
-        in_conf = 1.0 if (not self.dummy_in_conf and urgency_row is not None
-                          and urgency_row.max() > 0.0) else 0.0
+        in_conf = 1.0 if (urgency_row is not None and urgency_row.max() > 0.0) else 0.0
 
         obs = [dpsi_act,
                own_spd / CRUISE_SPD_NMS,

@@ -140,7 +140,7 @@ class ProgressCallback(BaseCallback):
 
 # -- Training run --------------------------------------------------------------
 
-def train(seed, dummy_retn_conf=False, dummy_in_conf=False, tag=''):
+def train(seed, tag=''):
     tag_part = f'_{tag}' if tag else ''
     run_name = f"v4_seed{seed}{tag_part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(RUNS_ROOT, run_name)
@@ -149,10 +149,7 @@ def train(seed, dummy_retn_conf=False, dummy_in_conf=False, tag=''):
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(tb_dir,   exist_ok=True)
 
-    env_kwargs = dict(dummy_retn_conf=dummy_retn_conf, dummy_in_conf=dummy_in_conf)
-    print(f'[{seed}] env_kwargs={env_kwargs}', flush=True)
-    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed,
-                        env_kwargs=env_kwargs)
+    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
     env  = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                         clip_obs=10.0, clip_reward=10.0, gamma=0.99)
 
@@ -178,17 +175,12 @@ def main():
     parser = argparse.ArgumentParser(description='PPO training for the v4 ATC environment.')
     parser.add_argument('--seed', type=int, default=None,
                         help='random seed (default: random)')
-    parser.add_argument('--dummy-retn-conf', action='store_true',
-                        help='ablate the retn_conf ("safe to return") observation feature')
-    parser.add_argument('--dummy-in-conf', action='store_true',
-                        help='ablate the in_conf ("am I in conflict") observation feature')
     parser.add_argument('--tag', type=str, default='',
                         help='label added to the run directory name')
     args = parser.parse_args()
 
     seed = args.seed if args.seed is not None else random.randint(0, 99_999)
-    train(seed, dummy_retn_conf=args.dummy_retn_conf,
-          dummy_in_conf=args.dummy_in_conf, tag=args.tag)
+    train(seed, tag=args.tag)
 
 
 if __name__ == '__main__':
