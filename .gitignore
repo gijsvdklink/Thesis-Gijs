@@ -14,3 +14,5 @@ __pycache__/
 # Kept local only, not published to GitHub
 LATEX/
 VerticalCAS-master/
+assignments/scratch.py
+assignments/sandbox/
