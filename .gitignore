@@ -5,5 +5,12 @@ __pycache__/
 # Large media files (exceed GitHub's 100 MB limit)
 *.mp4
 
+# macOS
+.DS_Store
+
 # Claude tooling
 .claude/
+
+# Kept local only, not published to GitHub
+LATEX/
+VerticalCAS-master/
