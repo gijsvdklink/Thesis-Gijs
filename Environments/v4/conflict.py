@@ -1,6 +1,6 @@
 """
 Separation geometry: time-to-loss-of-separation, pairwise urgency (which drives focus
-selection and the in_conf flag), the "safe to return" check, and the live LoS check.
+selection and intruder ordering), the "safe to return" check, and the live LoS check.
 
 All functions are pure (no env state): they read the live BlueSky traffic by callsign
 or index and take any extra state (active callsigns, route headings) as arguments.

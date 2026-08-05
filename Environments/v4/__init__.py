@@ -4,7 +4,7 @@ v4 ATC conflict-resolution environment.
 Public API (import from Environments.v4):
     AirspaceEnv          the gymnasium environment
     CONFIG               tunable settings dict
-    OBS_DIM              observation length (26)
+    OBS_DIM              observation length (25)
     OBS_OWNSHIP_LABELS   per-feature labels for the ownship part of the observation
     OBS_INTRUDER_LABELS  per-feature labels for each intruder slot
     latlon_to_nm, nm_to_latlon, wrap_to_180   coordinate helpers (used by the visualiser)

@@ -4,10 +4,10 @@ v4 -- ATCO conflict-resolution environment (multi-aircraft, ACAS Xu observation)
 One aircraft (the focus / ownship) is controlled per step; focus follows the worst
 conflict, falling back to the most drift-x-clearance aircraft when the sector is clear.
 
-Observation (26 floats), ego-centric from the focus aircraft:
-  ownship (6): dpsi (actual heading error to route, rad), v_own (speed / cruise),
+Observation (25 floats), ego-centric from the focus aircraft:
+  ownship (5): dpsi (actual heading error to route, rad), v_own (speed / cruise),
                a_cmd (commanded heading error, rad), v_cmd (commanded speed / nominal),
-               retn_conf (1 = returning to route is blocked), in_conf (1 = in conflict)
+               retn_conf (1 = returning to route is blocked)
   per intruder (4 x 5): rho (distance / 45 NM), theta (bearing, rad), psi (rel heading,
                rad), v_int (speed / cruise), tau (time-to-LoS / t_warn)
 
@@ -358,7 +358,7 @@ class AirspaceEnv(gym.Env):
         if cs is None or bs.traf.id2idx(cs) < 0:
             # no controllable aircraft: on-route, nominal speed, conflict-free
             self._last_intruder_cs = [None] * N_NEIGHBOURS
-            return np.array([0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+            return np.array([0.0, 1.0, 0.0, 1.0, 0.0]
                             + self._EMPTY_SLOT * N_NEIGHBOURS, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -375,7 +375,7 @@ class AirspaceEnv(gym.Env):
         v_cmd     = self._commanded_mach.get(cs, CONFIG['ac_mach']) / CONFIG['ac_mach']
 
         # pre-computed urgency row for this aircraft (built in _select_focus_aircraft);
-        # used both to prioritise intruders and to set the in_conf flag below.
+        # used to prioritise which intruders fill the observation slots below.
         urgency_row = None
         if cs in self._urgency_cs_list:
             row = self._urgency_cs_list.index(cs)
@@ -383,17 +383,12 @@ class AirspaceEnv(gym.Env):
                 urgency_row = self._urgency_matrix[row]
 
         retn_conf = return_blocked(cs, self._active_callsigns, self._route_hdg)
-        # in_conf == 1 iff the focus has any positive-urgency pair (active LoS, or a
-        # converging intruder within t_warn) -- read straight off the urgency matrix,
-        # which is exactly equivalent to conflict_score(cs) > 0 but avoids recomputing it.
-        in_conf = 1.0 if (urgency_row is not None and urgency_row.max() > 0.0) else 0.0
 
         obs = [dpsi_act,
                own_spd / CRUISE_SPD_NMS,
                a_cmd,
                v_cmd,
-               retn_conf,      # retn_conf ("safe to return"); dummied to 0.0 when ablated
-               in_conf]        # in_conf   ("am I in conflict"); dummied to 0.0 when ablated
+               retn_conf]      # retn_conf ("safe to return"); dummied to 0.0 when ablated
 
         sep, t_warn = CONFIG['sep_nm'], CONFIG['t_warn']
         intruders = []

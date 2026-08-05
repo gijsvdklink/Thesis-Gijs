@@ -65,7 +65,7 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NEIGHBOURS = CONFIG['n_neighbours']
-OBS_DIM      = 6 + N_NEIGHBOURS * 5   # 6 ownship + 4 intruders x 5 = 26
+OBS_DIM      = 5 + N_NEIGHBOURS * 5   # 5 ownship + 4 intruders x 5 = 25
 
 WARN_DIST_NM  = CONFIG['t_warn'] * CONFIG['ac_speed'] / 3600.0   # warning-horizon distance (45 NM)
 CRUISE_SPD_NMS = CONFIG['ac_speed'] / 3600.0                     # nominal cruise speed (NM/s); obs scale
@@ -101,5 +101,5 @@ ACT_COST = [
 ]
 
 # -- Observation labels (used by the visualiser's obs panel) -------------------
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'in_conf']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf']
 OBS_INTRUDER_LABELS = ['rho', 'theta', 'psi', 'vint', 'tau']

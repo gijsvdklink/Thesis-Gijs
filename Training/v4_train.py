@@ -10,7 +10,6 @@ Edit the SETTINGS / PPO_KWARGS below to configure a run.
 Command-line flags (for the feature-ablation experiment):
   --seed N            fix the random seed (default: random)
   --dummy-retn-conf   ablate the retn_conf ("safe to return") observation feature
-  --dummy-in-conf     ablate the in_conf   ("am I in conflict") observation feature
   --tag NAME          label added to the run directory name
 
 Run:       python -m Training.v4_train --seed 42

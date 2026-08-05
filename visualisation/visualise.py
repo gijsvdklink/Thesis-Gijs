@@ -210,7 +210,7 @@ def draw_obs_panel(screen, font, font_hud, obs, focus_cs, intruder_cs):
         return
     n_own = len(OBS_OWNSHIP_LABELS)
     for lbl, val in zip(OBS_OWNSHIP_LABELS, obs[:n_own]):
-        col = ORANGE if (lbl == 'in_conf' and val > 0.5) else GREEN
+        col = ORANGE if (lbl == 'retn_conf' and val > 0.5) else GREEN
         screen.blit(font.render(f'{lbl:>9} {val:+.2f}', True, col), (x, y)); y += 16
     y += 8
     rest, n_int = obs[n_own:], len(OBS_INTRUDER_LABELS)
