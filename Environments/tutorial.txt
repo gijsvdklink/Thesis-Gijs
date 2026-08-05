@@ -1,20 +1,4 @@
-EXPERIMENT 1 -- action-response delays in RL-based conflict resolution
-
-Three models, one variable: how long an instruction takes to reach the aircraft.
-All three run the SAME environment (Environments/v4_experiments) so any difference is
-attributable to the delay alone. Keep --seed identical across the three arms.
-
-    arm             first advisory        subsequent advisory
-    none            0 s                   0 s
-    deterministic   25 s                  12.5 s
-    probabilistic   log-normal, mean 25 s log-normal, mean 12.5 s
-
-"Subsequent" means the pilot is already engaged, so it applies only AFTER an advisory has
-actually EXECUTED in the current urgency cycle. Re-issuing while an instruction is still
-outstanding is an amendment: it replaces the action but inherits the original deadline.
-
-Environments/v4 is NOT part of this experiment -- it is the archived normalised env.
-
+EXPERIMENT 1 -- action-response delays. Three arms, same env, same seed, only --delay varies.
 
 # each terminal
 cd "/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/Thesis Gijs Github/Thesis-Gijs"
@@ -24,84 +8,22 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # terminal 1  baseline (no delay)
 python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 8
 
-# terminal 2  deterministic delay
+# terminal 2  deterministic (25 s first advisory, 12.5 s subsequent)
 python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 8
 
-# terminal 3  probabilistic delay
+# terminal 3  probabilistic (log-normal, same means)
 python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 8
 
 # terminal 4  -> http://localhost:6006
 tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
 
-# --n-envs is a flag now, so nothing needs editing before a run. 8 x 3 arms keeps the
-# 12C/24T server from oversubscribing; a single arm run alone can use more.
-#
-# Budget is 10M steps per arm (TOTAL_TIMESTEPS in Training/v4_experiments_train.py).
-# Episode length is NOT fixed: it is derived per scenario from sector size, 1510-3372 steps
-# (median 2205, i.e. 2-5 hours of simulated time), so 10M steps is roughly 4400 episodes.
 
-
-WHAT TO WATCH IN TENSORBOARD
-
-  safety/los_per_fh        losses of separation per flight-hour. Reference point: 0.691
-                           under a do-nothing policy at the current traffic density.
-  safety/los_events        LoS entries (one long intrusion = one event), not steps in LoS.
-
-  arrival/on_route         lenient: heading error to route <= 5 deg at exit, i.e. the
-                           aircraft is flying straight at its destination again.
-  arrival/xtrack           middle: lateral offset from the intended route line <= 15 NM.
-  arrival/ref              strict: within 5 NM of the reference point.
-                           All three exclude aircraft that exited before really flying.
-
-  strategy/tlos_at_issue   THE anticipation metric. Mean time-to-LoS when an instruction is
-                           issued. If delayed agents learn to act earlier, this rises.
-  strategy/turn_magnitude  mean |heading change| per instruction: do they also turn harder?
-  delay/amend_lead_s       how long before execution amendments arrive. An agent that learns
-                           to issue early and amend for free will show a large value here.
-  delay/pending_frac       fraction of steps with an instruction outstanding.
-  delay/mean_delay_s       realised mean delay; sanity-check (near 25 s early on, falling
-                           toward 12.5 s as more cycles reach a second advisory).
-
-  cross/<mode>/...         LIVE CROSS-EVALUATION. Every 200k steps the policy being trained
-                           is also run under all three delay conditions, so you can watch
-                           transfer develop instead of waiting for the run to finish. In the
-                           baseline terminal, compare cross/none/los_per_fh against
-                           cross/deterministic/los_per_fh: the gap IS the cost of delay to a
-                           policy that never trained with it.
-                           Short partial episodes (600 steps), so read them as a trend, not
-                           as final numbers. Switch off with CROSS_EVAL_EVERY = 0.
-
-
-CROSS-EVALUATION AFTER TRAINING  (full episodes)
-
-Train under one condition, test under another. This is possible because all three arms share
-an identical 26-feature observation and Discrete(10) action space -- 'pending' exists in the
-no-delay arm too, where it is always 0 -- so a checkpoint from one arm loads against another.
-
+# cross-evaluation after training (train under one condition, test under another)
 python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
 tensorboard --logdir Runs_saved/cross_eval
 
-Each (trained, tested) pair becomes its own TensorBoard run, "<trained>_on_<tested>", so
-overlaying none_on_none / none_on_deterministic / none_on_probabilistic shows how the
-baseline policy degrades as the pilots get slower. Just the baseline row:
-
-python -m Validation.cross_evaluate --trained none --episodes 10
-
-CAVEAT on that row: a policy trained with delay_mode='none' never saw pending=1, so its
-VecNormalize gives that feature ~zero variance and maps pending=1 to the clip bound at test
-time. Those cells mix a wrong strategy with an out-of-distribution input. The script prints
-an OOD factor per model so you can judge the size of it -- do not report them as a pure
-strategy result.
-
-
-WATCH A TRAINED POLICY  (--env must match how it was trained)
-
+# watch a trained policy (--vecnorm is mandatory: raw-unit observations)
 python -m visualisation.visualise --env Environments.v4_experiments \
     --model   "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model.zip" \
     --vecnorm "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05
-
-# The observation is 26-dimensional and in raw units, so --vecnorm is MANDATORY.
-# Checkpoints from v4, or from any v4_experiments run before the delay work, will not load.
-# The visualiser builds the env with the default delay_mode ('none' in config.py); set
-# CONFIG['delay_mode'] there to replay a delayed policy under its training condition.
