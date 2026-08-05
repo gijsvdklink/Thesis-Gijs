@@ -4,22 +4,35 @@ v4 -- ATCO conflict-resolution environment (multi-aircraft, ACAS Xu observation)
 One aircraft (the focus / ownship) is controlled per step; focus follows the worst
 conflict, falling back to the most drift-x-clearance aircraft when the sector is clear.
 
-Observation (25 floats), ego-centric from the focus aircraft, in RAW PHYSICAL UNITS.
+Observation (26 floats), ego-centric from the focus aircraft, in RAW PHYSICAL UNITS.
 Nothing is divided by a hand-picked constant and nothing is clipped to [0, 1]; the
 features go out as NM, kt, seconds and radians, and VecNormalize(norm_obs=True) does
 the standardising during training. Feeding these raw values to a policy trained with
 VecNormalize therefore REQUIRES loading the matching vecnorm.pkl.
-  ownship (5): dpsi (actual heading error to route, rad), v_own (TAS, kt),
+  ownship (6): dpsi (actual heading error to route, rad), v_own (TAS, kt),
                a_cmd (commanded heading error, rad), v_cmd (commanded TAS, kt),
-               retn_conf (1 = returning to route is blocked)
+               retn_conf (1 = returning to route is blocked),
+               pending (1 = an issued instruction has not been executed yet)
   per intruder (4 x 5): dist (range, NM), theta (bearing, rad), psi (rel heading, rad),
                v_int (TAS, kt), tlos (time-to-LoS, s; NO_CONFLICT_S when the pair never
-               loses separation or is beyond the planning horizon)
+               loses separation or is beyond the conflict horizon)
 
 Action (Discrete 10): turn -+60/45/30 (stack on commanded heading), hold (no-op),
   fly-direct (return to route, persistent), speed up/down (step commanded Mach).
 
+ACTION-RESPONSE DELAY (delay_mode = none | deterministic | probabilistic)
+  An action is ISSUED when the agent selects it and EXECUTED when the pilot acts on it,
+  delay_s later. Only execution reaches BlueSky and only execution updates
+  _commanded_heading / _commanded_mach, so the a_cmd observation and the drift reward
+  never credit a turn that has not started. The queue is checked every simulated second
+  (inside the action_freq loop), so 12.5 s means 12.5 s and not "2 or 3 RL steps".
+  Amendments: re-issuing while an instruction is outstanding replaces the payload but
+  INHERITS the original deadline -- the clock belongs to the pilot's engagement, not to
+  the message. The reduced delay_next_s applies only once an advisory has actually
+  EXECUTED in the current urgency cycle.
+
 Reward (purely negative): -w_los*1[LoS] - w_drift*(1-cos(dpsi))/2 - w_work*ACT_COST[action].
+Workload is charged at ISSUE time: the radio call happens whether or not the pilot complies.
 """
 
 import math
@@ -58,9 +71,15 @@ class AirspaceEnv(gym.Env):
     # unreachably far, stationary, and with no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self):
+    def __init__(self, delay_mode=None):
         super().__init__()
         global _bs_initialized
+        # Per-instance, not a CONFIG mutation: SubprocVecEnv workers do not inherit a
+        # parent-process CONFIG edit under spawn, so the mode must travel via env_kwargs.
+        self.delay_mode = delay_mode if delay_mode is not None else CONFIG['delay_mode']
+        if self.delay_mode not in ('none', 'deterministic', 'probabilistic'):
+            raise ValueError(f'unknown delay_mode {self.delay_mode!r}')
+
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
 
@@ -97,8 +116,27 @@ class AirspaceEnv(gym.Env):
         self._urgency_cs_list     = []
         self._los_this_step       = False
         self._last_intruder_cs    = [None] * N_NEIGHBOURS   # callsign per obs slot (viz only)
-        self._ep_stats            = {'reward': 0.0, 'steps': 0, 'los': 0,
-                                     'actions': [], 'exits': 0, 'arrivals': 0}
+
+        # -- action-response delay --
+        self._sim_time_s     = 0.0   # simulated seconds since reset; the delay clock
+        self._pending_cmd    = {}    # cs -> issued-but-not-executed instruction
+        self._executed_count = {}    # cs -> advisories EXECUTED in the current urgency cycle
+
+        # -- arrival scoring --
+        self._spawn_step = {}        # cs -> step at spawn (to drop aircraft that never flew)
+        self._spawn_ll   = {}        # cs -> entry point (for the cross-track flavor)
+
+        self._prev_los_pairs = set()
+        self._ep_stats       = {
+            'reward': 0.0, 'steps': 0, 'los': 0, 'actions': [], 'exits': 0, 'arrivals': 0,
+            # arrival flavors, counted over 'flown' aircraft only
+            'flown': 0, 'arr_on_route': 0, 'arr_xtrack': 0, 'arr_ref': 0,
+            # safety
+            'los_events': 0, 'ac_steps': 0,
+            # delay / strategy
+            'delays': [], 'amendments': 0, 'amend_lead_s': [], 'executed': 0,
+            'pending_steps': 0, 'tlos_at_issue': [], 'turn_mag': [],
+        }
 
     # -- Gym interface ---------------------------------------------------------
 
@@ -154,11 +192,16 @@ class AirspaceEnv(gym.Env):
         acting_cs = self._focus_cs
 
         if acting_cs:
-            self._apply_action(acting_cs, action)
+            self._issue_action(acting_cs, action)
         self._update_direct_headings()   # re-aim fly-direct aircraft before propagating
 
+        # The agent observes once per RL step (action_freq x sim_dt = 5 s), but the pilot
+        # may act on any simulated second, so the queue is flushed at 1 s resolution.
         for _ in range(CONFIG['action_freq']):
+            self._flush_due_commands()
             bs.sim.step()
+            self._sim_time_s += CONFIG['sim_dt']
+
         self._los_this_step = any_los(self._active_callsigns)
         self._step_count += 1
 
@@ -171,6 +214,14 @@ class AirspaceEnv(gym.Env):
         self._ep_stats['actions'].append(action)
         if self._los_this_step:
             self._ep_stats['los'] += 1
+        if self._focus_cs in self._pending_cmd:
+            self._ep_stats['pending_steps'] += 1
+        self._ep_stats['ac_steps'] += len(self._urgency_cs_list)
+
+        # Count LoS ENTRIES, not steps-in-LoS: a single long intrusion is one event.
+        los_pairs = self._current_los_pairs()
+        self._ep_stats['los_events'] += len(los_pairs - self._prev_los_pairs)
+        self._prev_los_pairs = los_pairs
 
         n_los_pairs = int((self._urgency_matrix > 1.0).sum()) // 2 if self._urgency_matrix.size else 0
         truncated   = self._step_count >= self._max_steps
@@ -181,16 +232,46 @@ class AirspaceEnv(gym.Env):
 
     def _episode_summary(self):
         """End-of-episode metrics (logged by the training callbacks)."""
-        s = self._ep_stats
+        s       = self._ep_stats
         n_steps = max(s['steps'], 1)
+        flown   = max(s['flown'], 1)
+        mean    = lambda xs: float(np.mean(xs)) if xs else 0.0
+
+        # Aircraft-hours actually flown this episode: every aircraft alive for one RL step
+        # contributes action_freq * sim_dt seconds.
+        flight_hours = s['ac_steps'] * CONFIG['action_freq'] * CONFIG['sim_dt'] / 3600.0
+
         return {
             'mean_episode_reward': s['reward'] / n_steps,
             'ep_reward_total':     s['reward'],
-            'ep_los_steps':        s['los'],
             'ep_length':           s['steps'],
+
+            # -- safety --
+            'ep_los_steps':        s['los'],
+            'ep_los_events':       s['los_events'],
+            'ep_flight_hours':     flight_hours,
+            'ep_los_per_fh':       s['los_events'] / max(flight_hours, 1e-9),
+
+            # -- arrival, three flavors over aircraft that actually flew --
             'ep_exits':            s['exits'],
+            'ep_flown':            s['flown'],
             'ep_arrivals':         s['arrivals'],
-            'ep_arrival_rate':     s['arrivals'] / max(s['exits'], 1),
+            'ep_arrival_rate':     s['arrivals'] / max(s['exits'], 1),   # legacy, all exits
+            'ep_arr_on_route':     s['arr_on_route'] / flown,
+            'ep_arr_xtrack':       s['arr_xtrack'] / flown,
+            'ep_arr_ref':          s['arr_ref'] / flown,
+
+            # -- delay realisation --
+            'ep_mean_delay_s':     mean(s['delays']),
+            'ep_executed':         s['executed'],
+            'ep_pending_frac':     s['pending_steps'] / n_steps,
+
+            # -- strategy --
+            'ep_tlos_at_issue':    mean(s['tlos_at_issue']),
+            'ep_turn_magnitude':   mean(s['turn_mag']),
+            'ep_amendments':       s['amendments'],
+            'ep_amend_lead_s':     mean(s['amend_lead_s']),
+
             'action_distribution': np.bincount(s['actions'], minlength=N_ACTIONS).tolist(),
         }
 
@@ -306,33 +387,121 @@ class AirspaceEnv(gym.Env):
 
     # -- Actions ---------------------------------------------------------------
 
-    def _apply_action(self, cs, action_idx):
+    def _draw_delay(self, executed_n):
+        """Seconds until the pilot acts. executed_n = advisories already EXECUTED in this
+        urgency cycle, so 0 means this is the cycle's first advisory."""
+        if self.delay_mode == 'none':
+            return 0.0
+        mean = CONFIG['delay_first_s'] if executed_n == 0 else CONFIG['delay_next_s']
+        if self.delay_mode == 'deterministic':
+            return mean
+        # Log-normal parameterised on the MEAN: E[X] = exp(mu + sigma^2/2), so mu below
+        # makes E[X] land exactly on `mean` rather than on the median.
+        sigma = CONFIG['delay_sigma']
+        mu    = math.log(mean) - sigma ** 2 / 2.0
+        return min(random.lognormvariate(mu, sigma), CONFIG['delay_max_s'])
+
+    def _issue_action(self, cs, action_idx):
+        """Register the agent's instruction. Nothing reaches BlueSky here -- the aircraft
+        only responds in _flush_due_commands, delay_s later."""
         if action_idx == 3:
-            return   # hold: true no-op, no instruction reaches the simulator
+            return   # hold: true no-op, no instruction is transmitted at all
 
         idx = bs.traf.id2idx(cs)
         if idx < 0:
             return
 
-        # Speed: step the commanded Mach within the ATC envelope; leaves heading untouched.
+        pending = self._pending_cmd.get(cs)
+        cmd     = {'action': action_idx}
+
+        # A turn stacks onto the controller's last STATED intent: the outstanding target if
+        # one exists (the pilot has not acted on it yet), otherwise the flying heading.
         if action_idx in SPEED_ACTIONS:
-            mach = self._commanded_mach.get(cs, CONFIG['ac_mach']) + SPEED_ACTIONS[action_idx] * CONFIG['mach_step']
-            mach = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
-            self._commanded_mach[cs] = mach
-            bs.stack.stack(f'SPD {cs} {mach:.3f}')
-            return
-
-        # Heading: a turn stacks onto the commanded heading and cancels fly-direct;
-        # fly-direct (7) locks onto the fixed route heading (held by _update_direct_headings).
-        if action_idx in TURN_DELTAS:
-            current = self._commanded_heading.get(cs, bs.traf.hdg[idx])
-            self._commanded_heading[cs] = (current + TURN_DELTAS[action_idx]) % 360
-            self._direct_mode[cs] = False
+            base = pending['target_mach'] if pending and 'target_mach' in pending \
+                   else self._commanded_mach.get(cs, CONFIG['ac_mach'])
+            mach = base + SPEED_ACTIONS[action_idx] * CONFIG['mach_step']
+            cmd['target_mach'] = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
+        elif action_idx in TURN_DELTAS:
+            base = pending['target_hdg'] if pending and 'target_hdg' in pending \
+                   else self._commanded_heading.get(cs, bs.traf.hdg[idx])
+            cmd['target_hdg'] = (base + TURN_DELTAS[action_idx]) % 360
+            self._ep_stats['turn_mag'].append(abs(TURN_DELTAS[action_idx]))
         elif action_idx == 7:
-            self._direct_mode[cs] = True
-            self._commanded_heading[cs] = self._route_hdg[cs]
+            # Resolve the route heading at EXECUTION time: it drifts while the pilot delays.
+            cmd['direct'] = True
 
-        bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+        if pending is not None:
+            # Amendment: the deadline belongs to the pilot's engagement, not to the message.
+            # Replace the payload, inherit the clock, draw no new delay, and do not touch
+            # _executed_count -- nothing has been executed yet.
+            cmd['execute_at_s'] = pending['execute_at_s']
+            cmd['issued_at_s']  = pending['issued_at_s']
+            self._ep_stats['amendments'] += 1
+            self._ep_stats['amend_lead_s'].append(pending['execute_at_s'] - self._sim_time_s)
+        else:
+            clear = CONFIG['focus_clear_steps']
+            if self._steps_since_urgency.get(cs, clear) >= clear:
+                self._executed_count[cs] = 0        # fresh urgency cycle -> next is a "first"
+            delay = self._draw_delay(self._executed_count.get(cs, 0))
+            cmd['execute_at_s'] = self._sim_time_s + delay
+            cmd['issued_at_s']  = self._sim_time_s
+            self._ep_stats['delays'].append(delay)
+
+        tlos = self._focus_tlos(cs)
+        if tlos is not None:
+            self._ep_stats['tlos_at_issue'].append(tlos)
+
+        self._pending_cmd[cs] = cmd
+
+    def _flush_due_commands(self):
+        """Execute every instruction whose deadline has arrived. This is the only place a
+        heading/speed instruction reaches BlueSky or updates the commanded state."""
+        for cs, cmd in list(self._pending_cmd.items()):
+            if cmd['execute_at_s'] > self._sim_time_s:
+                continue
+            del self._pending_cmd[cs]
+
+            idx = bs.traf.id2idx(cs)
+            if idx < 0:
+                continue                     # aircraft left before the pilot acted
+
+            if 'target_mach' in cmd:
+                self._commanded_mach[cs] = cmd['target_mach']
+                bs.stack.stack(f'SPD {cs} {cmd["target_mach"]:.3f}')
+            else:
+                if cmd.get('direct'):
+                    self._direct_mode[cs]       = True
+                    self._commanded_heading[cs] = self._route_hdg.get(cs, bs.traf.hdg[idx])
+                else:
+                    self._direct_mode[cs]       = False
+                    self._commanded_heading[cs] = cmd['target_hdg']
+                bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+
+            # Only an EXECUTED advisory earns the shorter delay_next_s for this cycle.
+            self._executed_count[cs] = self._executed_count.get(cs, 0) + 1
+            self._ep_stats['executed'] += 1
+
+    def _focus_tlos(self, cs):
+        """Time-to-LoS (s) of the aircraft's worst pair, inverted from its urgency, or None
+        when it has no conflict. Used to measure how early the agent acts."""
+        if cs not in self._urgency_cs_list or not self._urgency_matrix.size:
+            return None
+        row = self._urgency_cs_list.index(cs)
+        if row >= self._urgency_matrix.shape[0]:
+            return None
+        u = float(self._urgency_matrix[row].max())
+        if u <= 0:
+            return None                      # conflict-free: not an anticipation datapoint
+        return CONFIG['t_warn'] * max(0.0, 1.0 - min(u, 1.0))
+
+    def _current_los_pairs(self):
+        """Callsign pairs currently in loss of separation (urgency > 1 marks an active LoS)."""
+        m = self._urgency_matrix
+        if not m.size:
+            return set()
+        rows, cols = np.where(m > 1.0)
+        return {(self._urgency_cs_list[i], self._urgency_cs_list[j])
+                for i, j in zip(rows, cols) if i < j}
 
     def _refresh_route_headings(self):
         """Recompute each aircraft's route heading as the live bearing from its current
@@ -364,9 +533,9 @@ class AirspaceEnv(gym.Env):
         reported in raw physical units (NM, kt, s, rad) -- see the module docstring."""
         cs = self._focus_cs
         if cs is None or bs.traf.id2idx(cs) < 0:
-            # no controllable aircraft: on-route, nominal speed, conflict-free
+            # no controllable aircraft: on-route, nominal speed, conflict-free, nothing pending
             self._last_intruder_cs = [None] * N_NEIGHBOURS
-            return np.array([0.0, CONFIG['ac_speed'], 0.0, CONFIG['ac_speed'], 0.0]
+            return np.array([0.0, CONFIG['ac_speed'], 0.0, CONFIG['ac_speed'], 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NEIGHBOURS, dtype=np.float32)
 
         idx     = bs.traf.id2idx(cs)
@@ -396,7 +565,11 @@ class AirspaceEnv(gym.Env):
                own_spd * NMS_TO_KT,
                a_cmd,
                v_cmd,
-               retn_conf]      # retn_conf ("safe to return"); dummied to 0.0 when ablated
+               retn_conf,      # retn_conf ("safe to return"); dummied to 0.0 when ablated
+               # Whether an instruction is outstanding -- the honest observable: under a
+               # probabilistic delay the controller knows the pilot has not acted yet, but
+               # not when they will. Constant 0.0 when delay_mode='none'.
+               1.0 if cs in self._pending_cmd else 0.0]
 
         sep = CONFIG['sep_nm']
         intruders = []
@@ -528,13 +701,66 @@ class AirspaceEnv(gym.Env):
 
         self._destination_ll[cs]      = ac['dest_ll']
         self._ref_ll[cs]              = ac['ref_ll']
+        self._spawn_ll[cs]            = ac['sp_ll']
+        self._spawn_step[cs]          = self._step_count
         self._route_hdg[cs]           = float(ac['heading'])
         self._commanded_heading[cs]   = float(ac['heading'])
         self._commanded_mach[cs]      = CONFIG['ac_mach']
         self._direct_mode[cs]         = False
+        self._executed_count[cs]      = 0
         self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs
         self._active_callsigns.add(cs)
+
+    def _cross_track_nm(self, cs, idx):
+        """Perpendicular distance (NM) from the aircraft to its intended spawn->reference
+        line. Unlike distance-to-reference this does not care WHERE along the route the
+        aircraft crossed the boundary, only how far sideways it ended up."""
+        sp, rf = self._spawn_ll.get(cs), self._ref_ll.get(cs)
+        if sp is None or rf is None:
+            return None
+        centre = CONFIG['center_ll']
+        a = latlon_to_nm(centre, float(sp[0]), float(sp[1]))
+        b = latlon_to_nm(centre, float(rf[0]), float(rf[1]))
+        p = aircraft_position_nm(idx)
+        de, dn = b[0] - a[0], b[1] - a[1]
+        chord  = math.hypot(de, dn)
+        if chord < 1e-9:
+            return None
+        return abs((p[0] - a[0]) * dn - (p[1] - a[1]) * de) / chord
+
+    def _score_arrival(self, cs, idx):
+        """Score one exiting aircraft under all three arrival flavors (lenient -> strict).
+        Aircraft that barely existed never flew a route, so they are excluded entirely."""
+        self._ep_stats['exits'] += 1
+
+        ref_ll  = self._ref_ll.get(cs)
+        dist_nm = geo.kwikdist(float(bs.traf.lat[idx]), float(bs.traf.lon[idx]),
+                               float(ref_ll[0]), float(ref_ll[1]))
+        if dist_nm <= CONFIG['arrival_tol_nm']:
+            self._ep_stats['arrivals'] += 1          # legacy metric, kept for continuity
+
+        life = self._step_count - self._spawn_step.get(cs, 0)
+        if life <= CONFIG['arrival_min_life_steps']:
+            return
+        self._ep_stats['flown'] += 1
+
+        # (1) on_route -- is it flying straight at its destination again, i.e. no longer
+        #     in an active deviation? Lenient: ignores accumulated lateral displacement.
+        route_hdg = self._route_hdg.get(cs)
+        if route_hdg is not None:
+            if abs(wrap_to_180(float(bs.traf.hdg[idx]) - route_hdg)) <= CONFIG['arrival_hdg_tol_deg']:
+                self._ep_stats['arr_on_route'] += 1
+
+        # (2) xtrack -- lateral offset from the intended route line. Catches exactly the
+        #     displacement that (1) ignores, without depending on the exit geometry.
+        xt = self._cross_track_nm(cs, idx)
+        if xt is not None and xt <= CONFIG['arrival_xtrack_nm']:
+            self._ep_stats['arr_xtrack'] += 1
+
+        # (3) ref -- strictest: did it actually reach its reference point?
+        if dist_nm <= CONFIG['arrival_tol_nm']:
+            self._ep_stats['arr_ref'] += 1
 
     def _process_exits(self):
         """Remove aircraft that have left the sector, scoring on-target arrivals, and
@@ -543,18 +769,14 @@ class AirspaceEnv(gym.Env):
             slot = self._slots.index(cs)
             idx  = bs.traf.id2idx(cs)
             if idx >= 0:
-                ref_ll = self._ref_ll.get(cs)
-                if ref_ll is not None:
-                    dist_nm = geo.kwikdist(float(bs.traf.lat[idx]), float(bs.traf.lon[idx]),
-                                           float(ref_ll[0]), float(ref_ll[1]))
-                    self._ep_stats['exits'] += 1
-                    if dist_nm <= CONFIG['arrival_tol_nm']:
-                        self._ep_stats['arrivals'] += 1
+                if self._ref_ll.get(cs) is not None:
+                    self._score_arrival(cs, idx)
                 bs.traf.delete(idx)
             self._active_callsigns.discard(cs)
             self._slots[slot] = None
             for d in (self._destination_ll, self._ref_ll, self._route_hdg, self._commanded_heading,
-                      self._commanded_mach, self._direct_mode, self._steps_since_urgency):
+                      self._commanded_mach, self._direct_mode, self._steps_since_urgency,
+                      self._pending_cmd, self._executed_count, self._spawn_step, self._spawn_ll):
                 d.pop(cs, None)
             if slot not in self._pending_spawns:
                 self._pending_spawns[slot] = random.randint(*self._spawn_delay_range)

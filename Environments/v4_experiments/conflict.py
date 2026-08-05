@@ -56,8 +56,9 @@ def urgency_from_state(pos_i, vel_i, pos_j, vel_j):
     range_rate = d_east * dv_east + d_north * dv_north   # r.v; negative = converging
 
     t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
-    if t_los is None or t_los > CONFIG['lookahead_s']:
+    if t_los is None:
         return 0.0
+    # t_warn is the single conflict horizon: the clip below already returns 0 beyond it.
     return min(1.0, max(0.0, (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']))
 
 

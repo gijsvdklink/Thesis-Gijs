@@ -11,10 +11,18 @@ than in v4 where the features were already O(1).
 Edit the SETTINGS / PPO_KWARGS below to configure a run.
 
 Command-line flags:
+  --delay MODE        none | deterministic | probabilistic  (required; THE experiment variable)
   --seed N            fix the random seed (default: random)
+  --n-envs N          parallel environments (default N_ENVS below)
   --tag NAME          label added to the run directory name
 
-Run:       python -m Training.v4_experiments_train --seed 42
+Experiment 1 trains the same environment under three action-response delay conditions,
+so keep the seed fixed across arms and vary only --delay:
+
+  python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 8
+  python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 8
+  python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 8
+
 Monitor:   tensorboard --logdir Runs_saved/experiments
 """
 
@@ -27,6 +35,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
@@ -37,8 +46,13 @@ from Environments.v4_experiments import AirspaceEnv
 # -- Settings ------------------------------------------------------------------
 
 N_ENVS           = 48            # parallel environments (tune to the machine's cores)
-TOTAL_TIMESTEPS  = 100_000_000
-CHECKPOINT_EVERY = 300_000       # best-model check interval (steps)
+TOTAL_TIMESTEPS  = 10_000_000
+CHECKPOINT_EVERY = 200_000       # best-model check interval (steps)
+
+# Live cross-evaluation: how does the policy being trained cope with the OTHER two delay
+# conditions? Logged under cross/<mode>/... Set CROSS_EVAL_EVERY = 0 to switch off.
+CROSS_EVAL_EVERY = 200_000
+CROSS_EVAL_STEPS = 600           # short partial episode per condition (~25 s of overhead)
 
 RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'experiments'))
 
@@ -67,8 +81,30 @@ class EpisodeStatsCallback(BaseCallback):
             if 'mean_episode_reward' not in info:
                 continue
             self.logger.record_mean('episode/mean_reward',  info['mean_episode_reward'])
-            self.logger.record_mean('episode/los_steps',    info['ep_los_steps'])
-            self.logger.record_mean('episode/arrival_rate', info['ep_arrival_rate'])
+            self.logger.record_mean('episode/length',       info['ep_length'])
+
+            # safety
+            self.logger.record_mean('safety/los_steps',        info['ep_los_steps'])
+            self.logger.record_mean('safety/los_events',       info['ep_los_events'])
+            self.logger.record_mean('safety/los_per_fh',       info['ep_los_per_fh'])
+            self.logger.record_mean('safety/flight_hours',     info['ep_flight_hours'])
+
+            # arrival: three flavors, lenient -> strict (see CONFIG['arrival_*'])
+            self.logger.record_mean('arrival/on_route',     info['ep_arr_on_route'])
+            self.logger.record_mean('arrival/xtrack',       info['ep_arr_xtrack'])
+            self.logger.record_mean('arrival/ref',          info['ep_arr_ref'])
+            self.logger.record_mean('arrival/legacy_rate',  info['ep_arrival_rate'])
+            self.logger.record_mean('arrival/flown',        info['ep_flown'])
+
+            # delay realisation + strategy response
+            self.logger.record_mean('delay/mean_delay_s',   info['ep_mean_delay_s'])
+            self.logger.record_mean('delay/pending_frac',   info['ep_pending_frac'])
+            self.logger.record_mean('delay/executed',       info['ep_executed'])
+            self.logger.record_mean('delay/amendments',     info['ep_amendments'])
+            self.logger.record_mean('delay/amend_lead_s',   info['ep_amend_lead_s'])
+            self.logger.record_mean('strategy/tlos_at_issue',  info['ep_tlos_at_issue'])
+            self.logger.record_mean('strategy/turn_magnitude', info['ep_turn_magnitude'])
+
             dist  = info.get('action_distribution', [])
             total = max(sum(dist), 1)
             for label, count in zip(self.ACTION_LABELS, dist):
@@ -78,6 +114,52 @@ class EpisodeStatsCallback(BaseCallback):
                 turns = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]   # 6 stack-turns (excl. hold/fly-direct/speed)
                 self.logger.record_mean('actions/turns_total', turns / total)
                 self.logger.record_mean('actions/speed_total', (dist[8] + dist[9]) / total)
+        return True
+
+
+class CrossEvalCallback(BaseCallback):
+    """Every CROSS_EVAL_EVERY steps, run the CURRENT policy under all three delay
+    conditions and log the result, so the transfer question is visible during training
+    rather than only after it.
+
+    Uses ONE evaluation environment in the training process, re-used sequentially with its
+    delay_mode swapped between conditions. BlueSky is a process-global singleton, so the
+    three conditions must not run concurrently -- but they are separated by a full reset(),
+    and the SubprocVecEnv training workers live in other processes entirely.
+
+    The episodes are deliberately short (CROSS_EVAL_STEPS, well under a full ~2200-step
+    episode), so treat these as a comparable trend across the three conditions rather than
+    as final numbers -- Validation/cross_evaluate.py does the full-episode version.
+    """
+    TAGS = [('ep_los_per_fh', 'los_per_fh'), ('ep_arr_on_route', 'arr_on_route'),
+            ('ep_arr_ref', 'arr_ref'), ('ep_reward_total', 'reward_total'),
+            ('ep_tlos_at_issue', 'tlos_at_issue'), ('ep_pending_frac', 'pending_frac')]
+
+    def __init__(self, seed):
+        super().__init__()
+        self.seed = seed
+        self.last_step = 0
+        self.env = None
+
+    def _on_step(self):
+        if not CROSS_EVAL_EVERY or self.num_timesteps - self.last_step < CROSS_EVAL_EVERY:
+            return True
+        self.last_step = self.num_timesteps
+
+        if self.env is None:
+            self.env = AirspaceEnv()          # first use: pays the BlueSky init once
+        vecnorm = self.model.get_env()        # training VecNormalize; supplies obs stats
+
+        for mode in ('none', 'deterministic', 'probabilistic'):
+            self.env.delay_mode = mode
+            obs, _ = self.env.reset(seed=self.seed)     # same scenario for every condition
+            for _ in range(CROSS_EVAL_STEPS):
+                norm = vecnorm.normalize_obs(obs.reshape(1, -1))
+                action, _ = self.model.predict(norm, deterministic=True)
+                obs, _, _, _, _ = self.env.step(int(np.asarray(action).flat[0]))
+            summary = self.env._episode_summary()
+            for key, tag in self.TAGS:
+                self.logger.record(f'cross/{mode}/{tag}', summary[key])
         return True
 
 
@@ -141,16 +223,19 @@ class ProgressCallback(BaseCallback):
 
 # -- Training run --------------------------------------------------------------
 
-def train(seed, tag=''):
+def train(seed, delay_mode, n_envs, tag=''):
     tag_part = f'_{tag}' if tag else ''
-    run_name = f"v4exp_seed{seed}{tag_part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir  = os.path.join(RUNS_ROOT, run_name)
+    run_name = f"v4exp_{delay_mode}_seed{seed}{tag_part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir  = os.path.join(RUNS_ROOT, delay_mode, run_name)
     ckpt_dir = os.path.join(run_dir, 'checkpoints')
     tb_dir   = os.path.join(run_dir, 'tensorboard')
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(tb_dir,   exist_ok=True)
 
-    venv = make_vec_env(AirspaceEnv, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv, seed=seed)
+    # delay_mode travels via env_kwargs so it reaches every SubprocVecEnv worker. Mutating
+    # the module-level CONFIG in this process would NOT propagate to spawned workers.
+    venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=SubprocVecEnv, seed=seed,
+                        env_kwargs={'delay_mode': delay_mode})
     # norm_obs=True is REQUIRED here: this environment emits raw NM/kt/s/rad.
     env  = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                         clip_obs=10.0, clip_reward=10.0, gamma=0.99)
@@ -159,9 +244,11 @@ def train(seed, tag=''):
     callbacks = CallbackList([
         ProgressCallback(seed),
         EpisodeStatsCallback(),
+        CrossEvalCallback(seed),
         BestModelCallback(ckpt_dir, seed),
     ])
 
+    print(f'[{seed}] delay={delay_mode}  n_envs={n_envs}  -> {run_dir}', flush=True)
     try:
         model.learn(TOTAL_TIMESTEPS, callback=callbacks, tb_log_name='ppo')
     except KeyboardInterrupt:
@@ -176,14 +263,20 @@ def train(seed, tag=''):
 def main():
     parser = argparse.ArgumentParser(
         description='PPO training for the v4-experiments ATC environment (raw-unit observations).')
+    parser.add_argument('--delay', required=True,
+                        choices=['none', 'deterministic', 'probabilistic'],
+                        help='action-response delay condition (the experiment variable)')
     parser.add_argument('--seed', type=int, default=None,
                         help='random seed (default: random)')
+    parser.add_argument('--n-envs', type=int, default=N_ENVS,
+                        help=f'parallel environments (default {N_ENVS}); lower it when '
+                             f'running the three delay arms concurrently')
     parser.add_argument('--tag', type=str, default='',
                         help='label added to the run directory name')
     args = parser.parse_args()
 
     seed = args.seed if args.seed is not None else random.randint(0, 99_999)
-    train(seed, tag=args.tag)
+    train(seed, delay_mode=args.delay, n_envs=args.n_envs, tag=args.tag)
 
 
 if __name__ == '__main__':

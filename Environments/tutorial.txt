@@ -1,27 +1,72 @@
-v4 (normalised obs) vs v4_experiments (raw obs)
-Set N_ENVS = 24 in both training scripts before running them at the same time.
+EXPERIMENT 1 -- action-response delays in RL-based conflict resolution
+
+Three models, one variable: how long an instruction takes to reach the aircraft.
+All three run the SAME environment (Environments/v4_experiments) so any difference is
+attributable to the delay alone. Keep --seed identical across the three arms.
+
+    arm             first advisory        subsequent advisory
+    none            0 s                   0 s
+    deterministic   25 s                  12.5 s
+    probabilistic   log-normal, mean 25 s log-normal, mean 12.5 s
+
+"Subsequent" means the pilot is already engaged, so it applies only AFTER an advisory has
+actually EXECUTED in the current urgency cycle. Re-issuing while an instruction is still
+outstanding is an amendment: it replaces the action but inherits the original deadline.
+
+Environments/v4 is NOT part of this experiment -- it is the archived normalised env.
+
 
 # each terminal
 cd "/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/Thesis Gijs Github/Thesis-Gijs"
 source ~/.venvs/RL/bin/activate
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
-# terminal 1
-python -m Training.v4_train --seed 42 --tag baseline
+# terminal 1  baseline (no delay)
+python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 8
 
-# terminal 2
-python -m Training.v4_experiments_train --seed 42 --tag rawunits
+# terminal 2  deterministic delay
+python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 8
 
-# terminal 3  -> http://localhost:6006
-tensorboard --logdir_spec baseline:Runs_saved/normal,rawunits:Runs_saved/experiments
+# terminal 3  probabilistic delay
+python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 8
 
-# watch a policy (--env must match the training script)
-python -m visualisation.visualise --env Environments.v4 \
-    --model   "Runs_saved/normal/v4_seed42_baseline_<ts>/checkpoints/best_model.zip" \
-    --vecnorm "Runs_saved/normal/v4_seed42_baseline_<ts>/checkpoints/best_model_vecnorm.pkl" \
-    --n_ac 20 --density 8e-05
+# terminal 4  -> http://localhost:6006
+tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
+
+# --n-envs is a flag now, so nothing needs editing before a run. 8 x 3 arms keeps the
+# 12C/24T server from oversubscribing; a single arm run alone can use more.
+
+
+WHAT TO WATCH IN TENSORBOARD
+
+  safety/los_per_fh        losses of separation per flight-hour. Reference point: 0.691
+                           under a do-nothing policy at the current traffic density.
+  safety/los_events        LoS entries (one long intrusion = one event), not steps in LoS.
+
+  arrival/on_route         lenient: heading error to route <= 5 deg at exit, i.e. the
+                           aircraft is flying straight at its destination again.
+  arrival/xtrack           middle: lateral offset from the intended route line <= 15 NM.
+  arrival/ref              strict: within 5 NM of the reference point.
+                           All three exclude aircraft that exited before really flying.
+
+  strategy/tlos_at_issue   THE anticipation metric. Mean time-to-LoS when an instruction is
+                           issued. If delayed agents learn to act earlier, this rises.
+  strategy/turn_magnitude  mean |heading change| per instruction: do they also turn harder?
+  delay/amend_lead_s       how long before execution amendments arrive. An agent that learns
+                           to issue early and amend for free will show a large value here.
+  delay/pending_frac       fraction of steps with an instruction outstanding.
+  delay/mean_delay_s       realised mean delay; sanity-check (near 25 s early on, falling
+                           toward 12.5 s as more cycles reach a second advisory).
+
+
+WATCH A TRAINED POLICY  (--env must match how it was trained)
 
 python -m visualisation.visualise --env Environments.v4_experiments \
-    --model   "Runs_saved/experiments/v4exp_seed42_rawunits_<ts>/checkpoints/best_model.zip" \
-    --vecnorm "Runs_saved/experiments/v4exp_seed42_rawunits_<ts>/checkpoints/best_model_vecnorm.pkl" \
+    --model   "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model.zip" \
+    --vecnorm "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05
+
+# The observation is 26-dimensional and in raw units, so --vecnorm is MANDATORY.
+# Checkpoints from v4, or from any v4_experiments run before the delay work, will not load.
+# The visualiser builds the env with the default delay_mode ('none' in config.py); set
+# CONFIG['delay_mode'] there to replay a delayed policy under its training condition.

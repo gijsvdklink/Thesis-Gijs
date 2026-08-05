@@ -30,23 +30,42 @@ CONFIG = {
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
-    'arrival_tol_nm':        5.0,            # exit within this distance of the reference point = on-target
+    # Arrival scoring -- METRIC ONLY, not part of the reward (which is los + drift + work).
+    # Three flavors are logged side by side, lenient -> strict; pick one at analysis time.
+    'arrival_hdg_tol_deg':   5.0,            # (1) on_route: heading error to route at exit
+    'arrival_xtrack_nm':     15.0,           # (2) xtrack:   lateral offset from the spawn->ref line
+    'arrival_tol_nm':        5.0,            # (3) ref:      distance to the reference point
+    'arrival_min_life_steps': 3,             # aircraft alive fewer steps than this never really
+                                             # flew; excluded from all three flavors
     'buffer_nm':             10.0,           # spawn buffer: min distance to traffic = sep_nm + buffer_nm
     'spawn_conflict_free':   True,           # reject spawns whose route hits CPA < sep within t_warn
     # Sector polygon -- varied but reasonably round (random convex shapes, circularity >= 0.7)
     'n_vertices':            lambda: random.randint(6, 12),
     'min_circularity':       0.7,
     'max_placement_tries':   50,
+    'min_chord_nm':          15.0,           # reject spawn->ref routes shorter than this: they
+                                             # exit before flying and pollute arrival statistics
     # Aircraft placement jitter
     'spawn_jitter':          lambda: random.uniform(0.1, 0.9),
     'ref_jitter':            lambda: random.uniform(-0.5, 0.5),       # fully random crossing/exit directions
     # Simulation
     'sim_dt':                1.0,            # BlueSky integration timestep (DT) = 1 s
     'action_freq':           5,             # RL step = 5 s simulated (action_freq x sim_dt)
-    'lookahead_s':           900.0,
-    't_warn':                360.0,         # conflict-resolution horizon: 6 min
+    't_warn':                360.0,         # THE conflict horizon (6 min). Single horizon: the
+                                            # old lookahead_s was inert (urgency already clips to
+                                            # 0 beyond t_warn) and has been removed.
     'crossings_per_episode': 4.0,
     'spawn_delay_s':         (0, 0),
+    # Action-response delay: seconds between the controller issuing an instruction and the
+    # pilot executing it. Lives in the transition function; see env._issue_action /
+    # _flush_due_commands. The reduced 'next' delay models an already-engaged pilot, so it
+    # applies only AFTER an advisory has actually executed in the current urgency cycle.
+    'delay_mode':            'none',        # 'none' | 'deterministic' | 'probabilistic'
+    'delay_first_s':         25.0,          # first advisory of an urgency cycle
+    'delay_next_s':          12.5,          # once one has executed in that cycle
+    'delay_sigma':           0.4,           # log-normal shape (probabilistic only);
+                                            # mean 25 s -> ~90% of draws within 14-39 s
+    'delay_max_s':           120.0,         # cap: a tail draw must not outlive the conflict
     # Observation
     'n_neighbours':          4,
     # Focus selection
@@ -69,7 +88,7 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NEIGHBOURS = CONFIG['n_neighbours']
-OBS_DIM      = 5 + N_NEIGHBOURS * 5   # 5 ownship + 4 intruders x 5 = 25
+OBS_DIM      = 6 + N_NEIGHBOURS * 5   # 6 ownship + 4 intruders x 5 = 26
 
 CRUISE_SPD_NMS = CONFIG['ac_speed'] / 3600.0        # nominal cruise speed (NM/s); spawn checks
 NMS_TO_KT      = 3600.0                             # NM/s -> kt (observation reports kt)
@@ -86,10 +105,11 @@ KT_PER_MACH    = CONFIG['ac_speed'] / CONFIG['ac_mach']   # TAS per unit Mach at
 #                   anyway (15+ aircraft always leaves 4 neighbours), so an oversized
 #                   value costs nothing in the VecNormalize statistics.
 #   NO_CONFLICT_S   time-to-LoS for a pair that never loses separation (diverging,
-#                   parallel, or missing) and the cap for pairs beyond the planning
-#                   horizon. Reuses lookahead_s, the same cutoff urgency_from_state uses.
+#                   parallel, or missing) and the cap for pairs beyond the conflict
+#                   horizon. Anchored to t_warn, the single horizon: urgency is already
+#                   0 past t_warn, so the observation saturating there is consistent.
 EMPTY_RANGE_NM = 1000.0
-NO_CONFLICT_S  = CONFIG['lookahead_s']
+NO_CONFLICT_S  = CONFIG['t_warn']
 
 # -- Action layout (Discrete 10) -----------------------------------------------
 #   0-2, 4-6  heading turns (stack on commanded heading)   3  hold   7  fly-direct
@@ -123,5 +143,6 @@ ACT_COST = [
 
 # -- Observation labels (used by the visualiser's obs panel) -------------------
 # Units: dpsi/a_cmd/theta/psi in rad, v_own/v_cmd/vint in kt, dist in NM, tlos in s.
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf']
+# 'pending' is binary: 1 while an issued instruction has not yet been executed by the pilot.
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'pending']
 OBS_INTRUDER_LABELS = ['dist', 'theta', 'psi', 'vint', 'tlos']
