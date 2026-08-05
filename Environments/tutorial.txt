@@ -5,15 +5,9 @@ cd "/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/Th
 source ~/.venvs/RL/bin/activate
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
-# train (same seed both arms; run sequentially, 48 envs each)
+# train (same seed both arms; run one after the other, 48 envs each)
 python -m Training.v4_train             --seed 42 --tag baseline
 python -m Training.v4_experiments_train --seed 42 --tag rawunits
-
-# three seeds
-for S in 42 43 44; do
-    python -m Training.v4_train             --seed $S --tag baseline
-    python -m Training.v4_experiments_train --seed $S --tag rawunits
-done
 
 # detached on the server
 nohup python -m Training.v4_train             --seed 42 --tag baseline > log_v4_s42.txt    2>&1 &
