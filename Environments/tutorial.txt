@@ -35,6 +35,10 @@ tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experi
 
 # --n-envs is a flag now, so nothing needs editing before a run. 8 x 3 arms keeps the
 # 12C/24T server from oversubscribing; a single arm run alone can use more.
+#
+# Budget is 10M steps per arm (TOTAL_TIMESTEPS in Training/v4_experiments_train.py).
+# Episode length is NOT fixed: it is derived per scenario from sector size, 1510-3372 steps
+# (median 2205, i.e. 2-5 hours of simulated time), so 10M steps is roughly 4400 episodes.
 
 
 WHAT TO WATCH IN TENSORBOARD
@@ -57,6 +61,37 @@ WHAT TO WATCH IN TENSORBOARD
   delay/pending_frac       fraction of steps with an instruction outstanding.
   delay/mean_delay_s       realised mean delay; sanity-check (near 25 s early on, falling
                            toward 12.5 s as more cycles reach a second advisory).
+
+  cross/<mode>/...         LIVE CROSS-EVALUATION. Every 200k steps the policy being trained
+                           is also run under all three delay conditions, so you can watch
+                           transfer develop instead of waiting for the run to finish. In the
+                           baseline terminal, compare cross/none/los_per_fh against
+                           cross/deterministic/los_per_fh: the gap IS the cost of delay to a
+                           policy that never trained with it.
+                           Short partial episodes (600 steps), so read them as a trend, not
+                           as final numbers. Switch off with CROSS_EVAL_EVERY = 0.
+
+
+CROSS-EVALUATION AFTER TRAINING  (full episodes)
+
+Train under one condition, test under another. This is possible because all three arms share
+an identical 26-feature observation and Discrete(10) action space -- 'pending' exists in the
+no-delay arm too, where it is always 0 -- so a checkpoint from one arm loads against another.
+
+python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
+tensorboard --logdir Runs_saved/cross_eval
+
+Each (trained, tested) pair becomes its own TensorBoard run, "<trained>_on_<tested>", so
+overlaying none_on_none / none_on_deterministic / none_on_probabilistic shows how the
+baseline policy degrades as the pilots get slower. Just the baseline row:
+
+python -m Validation.cross_evaluate --trained none --episodes 10
+
+CAVEAT on that row: a policy trained with delay_mode='none' never saw pending=1, so its
+VecNormalize gives that feature ~zero variance and maps pending=1 to the clip bound at test
+time. Those cells mix a wrong strategy with an out-of-distribution input. The script prints
+an OOD factor per model so you can judge the size of it -- do not report them as a pure
+strategy result.
 
 
 WATCH A TRAINED POLICY  (--env must match how it was trained)
