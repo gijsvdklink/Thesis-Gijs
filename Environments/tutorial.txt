@@ -1,31 +1,27 @@
-EXPERIMENT: v4 (normalised obs) vs v4_experiments (raw obs)
+v4 (normalised obs) vs v4_experiments (raw obs)
+Set N_ENVS = 24 in both training scripts before running them at the same time.
 
-# setup
+# each terminal
 cd "/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/Thesis Gijs Github/Thesis-Gijs"
 source ~/.venvs/RL/bin/activate
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
-# train (same seed both arms; run one after the other, 48 envs each)
-python -m Training.v4_train             --seed 42 --tag baseline
+# terminal 1
+python -m Training.v4_train --seed 42 --tag baseline
+
+# terminal 2
 python -m Training.v4_experiments_train --seed 42 --tag rawunits
 
-# detached on the server
-nohup python -m Training.v4_train             --seed 42 --tag baseline > log_v4_s42.txt    2>&1 &
-nohup python -m Training.v4_experiments_train --seed 42 --tag rawunits > log_v4exp_s42.txt 2>&1 &
-tail -f log_v4_s42.txt
-
-# compare
+# terminal 3  -> http://localhost:6006
 tensorboard --logdir_spec baseline:Runs_saved/normal,rawunits:Runs_saved/experiments
 
-# watch a policy (--env must match the training script; --vecnorm is required)
-python -m visualisation.visualise \
-    --env Environments.v4 \
+# watch a policy (--env must match the training script)
+python -m visualisation.visualise --env Environments.v4 \
     --model   "Runs_saved/normal/v4_seed42_baseline_<ts>/checkpoints/best_model.zip" \
     --vecnorm "Runs_saved/normal/v4_seed42_baseline_<ts>/checkpoints/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05
 
-python -m visualisation.visualise \
-    --env Environments.v4_experiments \
+python -m visualisation.visualise --env Environments.v4_experiments \
     --model   "Runs_saved/experiments/v4exp_seed42_rawunits_<ts>/checkpoints/best_model.zip" \
     --vecnorm "Runs_saved/experiments/v4exp_seed42_rawunits_<ts>/checkpoints/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05
