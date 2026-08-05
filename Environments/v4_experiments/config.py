@@ -26,7 +26,7 @@ CONFIG = {
     'altitude':              350,
     'center_ll':             (0.0, 0.0),     # flat-earth equatorial: cos(0) = 1
     'n_aircraft':            lambda: random.randint(15, 30),            # sampled per episode
-    'rho':                   lambda: random.uniform(1/15000, 1/5000),   # sampled per episode; area = n/rho
+    'rho':                   lambda: random.uniform(1/25000, 1/10000),  # sampled per episode; area = n/rho
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
@@ -78,8 +78,8 @@ KT_PER_MACH    = CONFIG['ac_speed'] / CONFIG['ac_mach']   # TAS per unit Mach at
 # Sentinels for states that have no finite physical value. Both are expressed in the
 # same raw units as the features they stand in for, so VecNormalize sees no special case.
 #   EMPTY_RANGE_NM  range for an unused intruder slot. The sector spans n/rho km^2, so
-#                   with 15-30 aircraft at rho in [1/15000, 1/5000] it runs from ~167 NM
-#                   to ~409 NM across, and further still for a non-circular polygon.
+#                   with 15-30 aircraft at rho in [1/25000, 1/10000] it runs from ~236 NM
+#                   to ~528 NM across, and further still for a non-circular polygon.
 #                   Typical intruder ranges peak far lower, but the sentinel has to clear
 #                   the WIDEST possible sector, not the typical one, or a genuinely
 #                   distant intruder would be read as an empty slot. Empty slots are rare
