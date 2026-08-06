@@ -24,13 +24,13 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # so any difference between the curves is the delay and nothing else.
 
 # terminal 1  baseline
-python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 16
+python -m Training.v4_train --delay none          --seed 42 --n-envs 16
 
 # terminal 2  deterministic
-python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 16
+python -m Training.v4_train --delay deterministic --seed 42 --n-envs 16
 
 # terminal 3  probabilistic
-python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 16
+python -m Training.v4_train --delay probabilistic --seed 42 --n-envs 16
 
 # terminal 4  -> http://localhost:6006
 tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
