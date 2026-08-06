@@ -46,7 +46,7 @@ from Environments.v4 import AirspaceEnv
 # -- Settings ------------------------------------------------------------------
 
 N_ENVS           = 48            # parallel environments (tune to the machine's cores)
-TOTAL_TIMESTEPS  = 10_000_000
+TOTAL_TIMESTEPS  = 20_000_000
 CHECKPOINT_EVERY = 200_000       # best-model check interval (steps)
 
 # Live cross-evaluation: how does the policy being trained cope with the OTHER two delay
