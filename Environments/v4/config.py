@@ -71,8 +71,7 @@ CONFIG = {
     # Focus selection
     'focus_clear_steps':     5,
     'focus_emergency_u':     0.67,          # ~2 min before CPA at t_warn = 360 s
-    'drift_switch_margin':   0.01,
-    'return_clear_nm':       20.0,          # clearance distance for the drift-fallback score (4 x sep)
+    'drift_switch_margin':   0.01,          # drift a rival must beat the current focus by
     # Reward weights
     'w_los':                 10.00,         # heavy: separation violation
     'w_drift':               1.00,          # cosine drift penalty. ACT_COST scales with this, so w_drift

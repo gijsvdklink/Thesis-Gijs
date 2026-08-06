@@ -283,7 +283,7 @@ class AirspaceEnv(gym.Env):
         Highest worst-pair urgency wins (tiebreak: total urgency burden), with hysteresis
         that keeps the current focus while it is still active. An emergency (urgency >=
         focus_emergency_u) overrides hysteresis; a conflict-free sector falls back to the
-        best drift-x-clearance drifter.
+        most-drifted aircraft that is free to return to its route.
         """
         flying = [cs for cs in self._active_callsigns if bs.traf.id2idx(cs) >= 0]
         if not flying:
@@ -336,28 +336,30 @@ class AirspaceEnv(gym.Env):
         return best_cs
 
     def _drift_fallback(self, flying):
-        """Pick the drifted aircraft best placed to be sent back to route.
+        """Pick the most-drifted aircraft that can safely be sent back to its route.
 
-        Score = drift x clearance, where clearance ramps 0->1 with nearest-neighbour
-        distance up to return_clear_nm: drifters in open airspace are prioritised. A
-        hysteresis margin keeps the current focus unless another scores clearly higher.
+        Score = heading drift, restricted to aircraft whose route heading is currently
+        free (return_blocked == 0) -- the same predicate the observation reports as
+        retn_conf. A drifter that cannot turn back offers the agent nothing to act on, so
+        focusing it only burns steps. If every drifted aircraft is blocked the filter is
+        dropped, so the rule always returns a focus. A hysteresis margin keeps the current
+        focus unless another aircraft scores clearly higher.
         """
-        positions = {cs: aircraft_position_nm(bs.traf.id2idx(cs))
-                     for cs in flying if bs.traf.id2idx(cs) >= 0}
-        clear_nm = CONFIG['return_clear_nm']
-
-        best_cs, best_score, focus_score = None, -1.0, 0.0
+        drift = {}
         for cs in sorted(flying):
             idx = bs.traf.id2idx(cs)
             if idx < 0 or cs not in self._route_hdg:
                 continue
             hdg_err = wrap_to_180(self._route_hdg[cs] - self._commanded_heading.get(cs, bs.traf.hdg[idx]))
-            drift   = (1 - math.cos(math.radians(hdg_err))) / 2
-            own     = positions[cs]
-            nearest = min((float(np.hypot(*(positions[o] - own))) for o in positions if o != cs),
-                          default=clear_nm)
-            score   = drift * min(1.0, nearest / clear_nm)
+            drift[cs] = (1 - math.cos(math.radians(hdg_err))) / 2
 
+        free = [cs for cs in drift
+                if drift[cs] > 0 and not return_blocked(cs, flying, self._route_hdg)]
+        candidates = free or list(drift)
+
+        best_cs, best_score, focus_score = None, -1.0, 0.0
+        for cs in candidates:
+            score = drift[cs]
             if cs == self._focus_cs:
                 focus_score = score
             if score > best_score:
