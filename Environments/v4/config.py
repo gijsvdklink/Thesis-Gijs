@@ -31,12 +31,11 @@ CONFIG = {
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
     # Arrival scoring -- METRIC ONLY, not part of the reward (which is los + drift + work).
-    # Three flavors are logged side by side, lenient -> strict; pick one at analysis time.
-    'arrival_hdg_tol_deg':   5.0,            # (1) on_route: heading error to route at exit
-    'arrival_xtrack_nm':     15.0,           # (2) xtrack:   lateral offset from the spawn->ref line
-    'arrival_tol_nm':        5.0,            # (3) ref:      distance to the reference point
-    'arrival_min_life_steps': 3,             # aircraft alive fewer steps than this never really
-                                             # flew; excluded from all three flavors
+    # An aircraft "arrives" if it leaves the sector without drift, i.e. within this many
+    # degrees of its route heading rather than still in an avoidance deviation.
+    'arrival_hdg_tol_deg':   5.0,
+    'arrival_min_life_steps': 3,             # aircraft alive fewer steps than this never
+                                             # really flew; excluded from the rate entirely
     'buffer_nm':             10.0,           # spawn buffer: min distance to traffic = sep_nm + buffer_nm
     'spawn_conflict_free':   True,           # reject spawns whose route hits CPA < sep within t_warn
     # Sector polygon -- varied but reasonably round (random convex shapes, circularity >= 0.7)

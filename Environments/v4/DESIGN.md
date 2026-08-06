@@ -34,6 +34,16 @@ All other traffic keeps flying, and the ranking re-runs every step.
 BlueSky handles flight dynamics. `conflict.py` is pure functions with no environment
 state, which is what makes the urgency logic testable in isolation.
 
+### Reproducibility
+
+Active aircraft live in a `set` of callsign strings, and Python randomises string hashing
+per process, so iterating that set directly gives a different order in every run. That
+order feeds urgency tie-breaks, intruder slot assignment and the order exits consume the
+RNG -- enough to make two runs at the same seed diverge within ~20 steps. Every such
+iteration is therefore `sorted()`. A given `--seed` now reproduces the same trajectories
+in any process, which is what lets the three delay arms be compared as a controlled
+experiment rather than three differently-seeded runs.
+
 The step loop:
 
 ```python

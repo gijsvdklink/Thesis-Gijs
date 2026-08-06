@@ -40,15 +40,15 @@ tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experi
 
 # ---- what to watch ----------------------------------------------------------
 # rollout/ep_rew_mean        the headline curve
-# safety/los_events          separation violations per episode
-# safety/los_per_fh          the same, per flight hour (traffic-independent)
-# delay/mean_delay_s         realised delay -- must read 0.0 in the baseline (sanity check)
-# delay/pending_frac         share of steps with an instruction outstanding
-# delay/amendments           re-issues before the pilot acted
-# delay/amend_lead_s         how much deadline was left when an amendment came in
-# strategy/tlos_at_issue     how early the agent acts (seconds before predicted LoS)
-# arrival/on_route           lenient arrival criterion; xtrack and ref are stricter
+# episode/mean_reward        per-step reward, comparable across episode lengths
+# safety/los_events          distinct intrusions per episode (entries, not steps)
+# safety/los_steps           steps spent in loss of separation
+# arrival/rate               fraction of aircraft leaving the sector without drift
+# actions/<name>             share of each instruction; turns_total and speed_total too
 # cross/<mode>/...           live check against the other two conditions, every 200k steps
+#
+# Runs are reproducible: same --seed gives the same scenarios and the same trajectories,
+# in this process or any other.
 
 
 # ---- cross-evaluation after training ----------------------------------------

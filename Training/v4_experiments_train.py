@@ -73,37 +73,21 @@ PPO_KWARGS = dict(
 # -- Callbacks -----------------------------------------------------------------
 
 class EpisodeStatsCallback(BaseCallback):
-    """Log per-episode reward, LoS steps, arrival rate, and the action distribution."""
+    """Log per-episode reward, separation losses, arrival rate and the action mix."""
     ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'return', 'spd+', 'spd-']
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
             if 'mean_episode_reward' not in info:
                 continue
-            self.logger.record_mean('episode/mean_reward',  info['mean_episode_reward'])
-            self.logger.record_mean('episode/length',       info['ep_length'])
+            self.logger.record_mean('episode/mean_reward', info['mean_episode_reward'])
+            self.logger.record_mean('episode/length',      info['ep_length'])
 
-            # safety
-            self.logger.record_mean('safety/los_steps',        info['ep_los_steps'])
-            self.logger.record_mean('safety/los_events',       info['ep_los_events'])
-            self.logger.record_mean('safety/los_per_fh',       info['ep_los_per_fh'])
-            self.logger.record_mean('safety/flight_hours',     info['ep_flight_hours'])
+            self.logger.record_mean('safety/los_steps',    info['ep_los_steps'])
+            self.logger.record_mean('safety/los_events',   info['ep_los_events'])
 
-            # arrival: three flavors, lenient -> strict (see CONFIG['arrival_*'])
-            self.logger.record_mean('arrival/on_route',     info['ep_arr_on_route'])
-            self.logger.record_mean('arrival/xtrack',       info['ep_arr_xtrack'])
-            self.logger.record_mean('arrival/ref',          info['ep_arr_ref'])
-            self.logger.record_mean('arrival/legacy_rate',  info['ep_arrival_rate'])
-            self.logger.record_mean('arrival/flown',        info['ep_flown'])
-
-            # delay realisation + strategy response
-            self.logger.record_mean('delay/mean_delay_s',   info['ep_mean_delay_s'])
-            self.logger.record_mean('delay/pending_frac',   info['ep_pending_frac'])
-            self.logger.record_mean('delay/executed',       info['ep_executed'])
-            self.logger.record_mean('delay/amendments',     info['ep_amendments'])
-            self.logger.record_mean('delay/amend_lead_s',   info['ep_amend_lead_s'])
-            self.logger.record_mean('strategy/tlos_at_issue',  info['ep_tlos_at_issue'])
-            self.logger.record_mean('strategy/turn_magnitude', info['ep_turn_magnitude'])
+            # fraction of aircraft leaving the sector without drift (on route heading)
+            self.logger.record_mean('arrival/rate',        info['ep_arrival_rate'])
 
             dist  = info.get('action_distribution', [])
             total = max(sum(dist), 1)
@@ -131,9 +115,8 @@ class CrossEvalCallback(BaseCallback):
     episode), so treat these as a comparable trend across the three conditions rather than
     as final numbers -- Validation/cross_evaluate.py does the full-episode version.
     """
-    TAGS = [('ep_los_per_fh', 'los_per_fh'), ('ep_arr_on_route', 'arr_on_route'),
-            ('ep_arr_ref', 'arr_ref'), ('ep_reward_total', 'reward_total'),
-            ('ep_tlos_at_issue', 'tlos_at_issue'), ('ep_pending_frac', 'pending_frac')]
+    TAGS = [('ep_reward_total', 'reward_total'), ('ep_los_events', 'los_events'),
+            ('ep_los_steps', 'los_steps'), ('ep_arrival_rate', 'arrival_rate')]
 
     def __init__(self, seed):
         super().__init__()

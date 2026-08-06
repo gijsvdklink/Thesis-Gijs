@@ -43,23 +43,15 @@ MODES = ('none', 'deterministic', 'probabilistic')
 
 # (episode-summary key, TensorBoard tag)
 METRICS = [
-    ('ep_los_per_fh',     'safety/los_per_fh'),
-    ('ep_los_events',     'safety/los_events'),
-    ('ep_los_steps',      'safety/los_steps'),
-    ('ep_arr_on_route',   'arrival/on_route'),
-    ('ep_arr_xtrack',     'arrival/xtrack'),
-    ('ep_arr_ref',        'arrival/ref'),
-    ('ep_reward_total',   'episode/reward_total'),
-    ('ep_length',         'episode/length'),
-    ('ep_tlos_at_issue',  'strategy/tlos_at_issue'),
-    ('ep_turn_magnitude', 'strategy/turn_magnitude'),
-    ('ep_pending_frac',   'delay/pending_frac'),
-    ('ep_mean_delay_s',   'delay/mean_delay_s'),
-    ('ep_amendments',     'delay/amendments'),
+    ('ep_reward_total', 'episode/reward_total'),
+    ('ep_length',       'episode/length'),
+    ('ep_los_events',   'safety/los_events'),
+    ('ep_los_steps',    'safety/los_steps'),
+    ('ep_arrival_rate', 'arrival/rate'),
 ]
 
 # Shown in the terminal summary; the rest are TensorBoard-only.
-HEADLINE = ['ep_los_per_fh', 'ep_arr_on_route', 'ep_arr_ref', 'ep_reward_total']
+HEADLINE = ['ep_los_events', 'ep_los_steps', 'ep_arrival_rate', 'ep_reward_total']
 
 
 def find_checkpoint(runs_root, mode):
@@ -106,7 +98,7 @@ def evaluate(model_path, vecnorm_path, test_delay, episodes, n_envs, seed, write
         action, _ = model.predict(obs, deterministic=True)
         obs, _, _, infos = env.step(action)
         for info in infos:
-            if 'ep_los_per_fh' not in info or len(done_eps) >= episodes:
+            if 'ep_los_events' not in info or len(done_eps) >= episodes:
                 continue
             for key, tag in METRICS:
                 writer.add_scalar(tag, info[key], len(done_eps))
