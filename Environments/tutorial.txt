@@ -23,7 +23,7 @@ python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
 tensorboard --logdir Runs_saved/cross_eval
 
 # watch a trained policy (--vecnorm is mandatory: raw-unit observations)
-python -m visualisation.visualise --env Environments.v4_experiments \
+python -m visualisation.visualise \
     --model   "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model.zip" \
     --vecnorm "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05

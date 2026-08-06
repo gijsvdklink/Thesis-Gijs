@@ -1,5 +1,5 @@
 """
-PPO training for the v4-experiments ATC environment (Environments/v4_experiments).
+PPO training for the v4 ATC environment (Environments/v4).
 
 That environment emits RAW PHYSICAL UNITS (NM, kt, s, rad) with no hand-picked
 normalisers and no clipping, so VecNormalize is not a convenience here -- it is the
@@ -41,7 +41,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from Environments.v4_experiments import AirspaceEnv
+from Environments.v4 import AirspaceEnv
 
 # -- Settings ------------------------------------------------------------------
 
@@ -262,7 +262,7 @@ def train(seed, delay_mode, n_envs, tag=''):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='PPO training for the v4-experiments ATC environment (raw-unit observations).')
+        description='PPO training for the v4 ATC environment (raw-unit observations).')
     parser.add_argument('--delay', required=True,
                         choices=['none', 'deterministic', 'probabilistic'],
                         help='action-response delay condition (the experiment variable)')

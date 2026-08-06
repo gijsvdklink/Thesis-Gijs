@@ -37,7 +37,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.tensorboard import SummaryWriter
 
-from Environments.v4_experiments import AirspaceEnv
+from Environments.v4 import AirspaceEnv
 
 MODES = ('none', 'deterministic', 'probabilistic')
 

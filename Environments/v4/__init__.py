@@ -1,10 +1,27 @@
 """
 v4 ATC conflict-resolution environment.
 
+Two properties define it:
+
+1. The observation is reported in RAW PHYSICAL UNITS (NM, kt, s, rad). There are no
+   hand-picked normalisers -- no D_WARN range scale, no division by cruise speed, no
+   clipping to [0, 1] -- so all scaling is left to VecNormalize(norm_obs=True). Training
+   and evaluation MUST load the matching *_vecnorm.pkl; raw observations fed to the
+   policy directly produce nonsense.
+2. Instructions are subject to an ACTION-RESPONSE DELAY: the pilot acts delay_s after
+   the controller issues, selected per environment instance via
+
+       AirspaceEnv(delay_mode='none' | 'deterministic' | 'probabilistic')
+
+   The 'pending' observation feature (1 while an issued instruction has not yet been
+   executed) exists in all three modes, so the three delay arms share one observation
+   space and policies can be cross-evaluated across them. Checkpoints from any earlier
+   25-feature version of this env are NOT loadable.
+
 Public API (import from Environments.v4):
     AirspaceEnv          the gymnasium environment
     CONFIG               tunable settings dict
-    OBS_DIM              observation length (25)
+    OBS_DIM              observation length (26)
     OBS_OWNSHIP_LABELS   per-feature labels for the ownship part of the observation
     OBS_INTRUDER_LABELS  per-feature labels for each intruder slot
     latlon_to_nm, nm_to_latlon, wrap_to_180   coordinate helpers (used by the visualiser)

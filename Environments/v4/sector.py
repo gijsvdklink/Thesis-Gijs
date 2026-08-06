@@ -37,14 +37,22 @@ def place_aircraft(polygon, sector, n_sectors):
     The entry and exit (reference) points sit at evenly spaced, jittered arc positions.
     The route heading is the spawn->reference bearing; the destination is a far point along
     that heading. Returns lat/lon for spawn, destination and reference plus the route heading.
+
+    ref_jitter spans [-0.5, 0.5], so t_ref can land arbitrarily close to t_spawn and produce a
+    near-zero chord. Such an aircraft exits within a step or two without ever really flying,
+    which pollutes the arrival statistics. Resample until the chord clears min_chord_nm.
     """
     minx, miny, maxx, maxy = polygon.bounds
     dest_dist = math.sqrt((maxx - minx) ** 2 + (maxy - miny) ** 2) * CONFIG['dest_dist_factor']
+    min_chord = CONFIG['min_chord_nm']
 
-    t_spawn  = (sector + CONFIG['spawn_jitter']()) / n_sectors
-    t_ref    = (t_spawn + 0.5 + CONFIG['ref_jitter']()) % 1.0
-    spawn_pt = polygon.exterior.interpolate(t_spawn, normalized=True)
-    ref_pt   = polygon.exterior.interpolate(t_ref,   normalized=True)
+    for _ in range(CONFIG['max_placement_tries']):
+        t_spawn  = (sector + CONFIG['spawn_jitter']()) / n_sectors
+        t_ref    = (t_spawn + 0.5 + CONFIG['ref_jitter']()) % 1.0
+        spawn_pt = polygon.exterior.interpolate(t_spawn, normalized=True)
+        ref_pt   = polygon.exterior.interpolate(t_ref,   normalized=True)
+        if math.hypot(ref_pt.x - spawn_pt.x, ref_pt.y - spawn_pt.y) >= min_chord:
+            break
 
     route_hdg = math.degrees(math.atan2(ref_pt.x - spawn_pt.x,
                                         ref_pt.y - spawn_pt.y)) % 360.0

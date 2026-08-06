@@ -56,9 +56,9 @@ def urgency_from_state(pos_i, vel_i, pos_j, vel_j):
     range_rate = d_east * dv_east + d_north * dv_north   # r.v; negative = converging
 
     t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
-    if t_los is None or t_los > CONFIG['lookahead_s']:
-        return 0.0
-    return min(1.0, max(0.0, (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']))
+    if t_los is None or t_los > CONFIG['t_warn']:
+        return 0.0                                       # no intrusion, or beyond the horizon
+    return (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']  # t_los in [0, t_warn] -> u in [0, 1]
 
 
 def pair_urgency(idx_i, idx_j):
