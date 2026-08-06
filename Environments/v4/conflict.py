@@ -10,11 +10,11 @@ import math
 import bluesky as bs
 
 from .config import CONFIG
-from .geometry import (aircraft_position_nm, aircraft_speed_nms, aircraft_state,
-                       heading_to_velocity)
+from .geometry import (aircraft_position_nm, aircraft_speed_nms,
+                       aircraft_position_and_velocity, heading_to_velocity)
 
 
-def time_to_los(dist_sq, range_rate, rel_spd_sq, sep):
+def time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep):
     """Seconds until two aircraft first LOSE SEPARATION (distance < sep), from their
     current relative state. range_rate = r.v (negative = converging), rel_spd_sq = |v|^2.
 
@@ -28,47 +28,62 @@ def time_to_los(dist_sq, range_rate, rel_spd_sq, sep):
     tcpa = -range_rate / rel_spd_sq
     if tcpa < 0:
         return None                                    # diverging
+    # Clamped because the subtraction can round marginally negative for nearly
+    # collinear pairs, and it feeds a sqrt.
     dcpa_sq = max(0.0, dist_sq - range_rate ** 2 / rel_spd_sq)
     if dcpa_sq >= sep * sep:
         return None                                    # miss distance too large: never intrudes
     return tcpa - math.sqrt((sep * sep - dcpa_sq) / rel_spd_sq)
 
 
-def urgency_from_state(pos_i, vel_i, pos_j, vel_j):
+def relative_motion(pos_i, vel_i, pos_j, vel_j):
+    """Relative geometry of j as seen from i, as the three scalars every separation
+    calculation needs: (dist_sq, range_rate, rel_spd_sq).
+
+    range_rate is the dot product r.v -- negative means closing.
+    """
+    d_east  = pos_j[0] - pos_i[0]
+    d_north = pos_j[1] - pos_i[1]
+    dv_east  = vel_j[0] - vel_i[0]
+    dv_north = vel_j[1] - vel_i[1]
+
+    dist_sq    = d_east ** 2 + d_north ** 2
+    rel_spd_sq = dv_east ** 2 + dv_north ** 2
+    range_rate = d_east * dv_east + d_north * dv_north
+    return dist_sq, range_rate, rel_spd_sq
+
+
+def urgency_from_states(pos_i, vel_i, pos_j, vel_j):
     """Urgency of the conflict between two aircraft given their planar state (NM, NM/s).
 
     Returns:
       > 1     active LoS    (1 at the sep boundary -> 10 at zero distance)
       0..1    predicted LoS (0 at t_warn -> 1 at t_los = 0, i.e. intrusion now)
       0       safe / diverging
+
+    The LoS branch starts at 1 exactly where the predicted branch tops out, so an active
+    loss always outranks every predicted one.
     """
-    d_east  = pos_j[0] - pos_i[0]
-    d_north = pos_j[1] - pos_i[1]
-    dist_sq = d_east ** 2 + d_north ** 2
-    sep     = CONFIG['sep_nm']
+    sep = CONFIG['sep_nm']
+    dist_sq, range_rate, rel_spd_sq = relative_motion(pos_i, vel_i, pos_j, vel_j)
 
     if dist_sq < sep ** 2:
         return 1.0 + 9.0 * (1.0 - math.sqrt(dist_sq) / sep)
 
-    dv_east    = vel_j[0] - vel_i[0]
-    dv_north   = vel_j[1] - vel_i[1]
-    rel_spd_sq = dv_east ** 2 + dv_north ** 2
-    range_rate = d_east * dv_east + d_north * dv_north   # r.v; negative = converging
-
-    t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+    t_los = time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep)
     if t_los is None or t_los > CONFIG['t_warn']:
         return 0.0                                       # no intrusion, or beyond the horizon
     return (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']  # t_los in [0, t_warn] -> u in [0, 1]
 
 
-def pair_urgency(idx_i, idx_j):
+def urgency_between(idx_i, idx_j):
     """Urgency between the two BlueSky aircraft at indices idx_i and idx_j."""
-    pos_i, vel_i = aircraft_state(idx_i)
-    pos_j, vel_j = aircraft_state(idx_j)
-    return urgency_from_state(pos_i, vel_i, pos_j, vel_j)
+    pos_i, vel_i = aircraft_position_and_velocity(idx_i)
+    pos_j, vel_j = aircraft_position_and_velocity(idx_j)
+    return urgency_from_states(pos_i, vel_i, pos_j, vel_j)
 
 
-def return_blocked(cs, active_callsigns, route_hdg):
+def route_return_blocked(cs, active_callsigns, route_hdg):
     """Binary {0, 1}: 1 if returning aircraft cs to its route is NOT free.
 
     Puts the ownship on its route heading and checks it against every other aircraft on
@@ -80,35 +95,30 @@ def return_blocked(cs, active_callsigns, route_hdg):
     if idx < 0:
         return 0.0
 
-    sep = CONFIG['sep_nm']
+    sep     = CONFIG['sep_nm']
     own_pos = aircraft_position_nm(idx)
-    own_ve, own_vn = heading_to_velocity(aircraft_speed_nms(idx), route_hdg[cs])
+    own_vel = heading_to_velocity(aircraft_speed_nms(idx), route_hdg[cs])
 
     for other in active_callsigns:
         j = bs.traf.id2idx(other)
         if other == cs or j < 0:
             continue
 
-        pos_j   = aircraft_position_nm(j)
-        d_east  = pos_j[0] - own_pos[0]
-        d_north = pos_j[1] - own_pos[1]
-        dist_sq = d_east ** 2 + d_north ** 2
+        other_pos = aircraft_position_nm(j)
+        other_vel = heading_to_velocity(aircraft_speed_nms(j),
+                                        route_hdg.get(other, bs.traf.hdg[j]))
+        dist_sq, range_rate, rel_spd_sq = relative_motion(own_pos, own_vel,
+                                                          other_pos, other_vel)
         if dist_sq < sep * sep:
             return 1.0                                 # already in LoS
 
-        int_ve, int_vn = heading_to_velocity(aircraft_speed_nms(j),
-                                             route_hdg.get(other, bs.traf.hdg[j]))
-        dv_east, dv_north = int_ve - own_ve, int_vn - own_vn
-        rel_spd_sq = dv_east ** 2 + dv_north ** 2
-        range_rate = d_east * dv_east + d_north * dv_north
-
-        t_los = time_to_los(dist_sq, range_rate, rel_spd_sq, sep)
+        t_los = time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep)
         if t_los is not None and t_los <= CONFIG['t_warn']:
             return 1.0                                 # route corridors lose sep within t_warn
     return 0.0
 
 
-def any_los(active_callsigns):
+def any_loss_of_separation(active_callsigns):
     """True if any pair of currently-flying aircraft is within sep_nm of each other."""
     flying = [cs for cs in active_callsigns if bs.traf.id2idx(cs) >= 0]
     sep_sq = CONFIG['sep_nm'] ** 2

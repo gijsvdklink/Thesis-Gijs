@@ -1,28 +1,67 @@
-EXPERIMENT 1 -- action-response delays. Three arms, same env, same seed, only --delay varies.
+EXPERIMENT 1 -- ACTION-RESPONSE DELAYS
+Three arms, one environment (Environments/v4), same seed. Only --delay varies.
 
-# each terminal
-cd "/Users/gijsvdklink/Documents/Documents - MacBook Pro van Gijs/Gijs/Thesis/Thesis Gijs Github/Thesis-Gijs"
+  none            pilot executes instantly (baseline)
+  deterministic   25 s for the first advisory of an urgency cycle, 12.5 s once one has executed
+  probabilistic   log-normal around the same means (sigma 0.4), capped at 120 s
+
+All three arms share an identical 27-feature observation, so a checkpoint from any arm
+loads against any other -- that is what makes Validation/cross_evaluate.py possible.
+'pending' and 'wait_s' are simply constant 0 in the baseline.
+
+
+# ---- each terminal ----------------------------------------------------------
+cd /path/to/Thesis-Gijs
 source ~/.venvs/RL/bin/activate
+
+# One BLAS thread per process. Without this, every SubprocVecEnv worker spawns its own
+# thread pool, the three arms oversubscribe the cores, and all of them run slower.
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
-# terminal 1  baseline (no delay)
-python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 8
 
-# terminal 2  deterministic (25 s first advisory, 12.5 s subsequent)
-python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 8
+# ---- 48-core server: 16 workers per arm, 3 arms at once = 48 ----------------
+# Keep --seed identical across the arms: same sectors, same traffic, same spawn order,
+# so any difference between the curves is the delay and nothing else.
 
-# terminal 3  probabilistic (log-normal, same means)
-python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 8
+# terminal 1  baseline
+python -m Training.v4_experiments_train --delay none          --seed 42 --n-envs 16
+
+# terminal 2  deterministic
+python -m Training.v4_experiments_train --delay deterministic --seed 42 --n-envs 16
+
+# terminal 3  probabilistic
+python -m Training.v4_experiments_train --delay probabilistic --seed 42 --n-envs 16
 
 # terminal 4  -> http://localhost:6006
 tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
 
+# Running the arms one at a time instead? Give each the whole machine: --n-envs 48
 
-# cross-evaluation after training (train under one condition, test under another)
+
+# ---- what to watch ----------------------------------------------------------
+# rollout/ep_rew_mean        the headline curve
+# safety/los_events          separation violations per episode
+# safety/los_per_fh          the same, per flight hour (traffic-independent)
+# delay/mean_delay_s         realised delay -- must read 0.0 in the baseline (sanity check)
+# delay/pending_frac         share of steps with an instruction outstanding
+# delay/amendments           re-issues before the pilot acted
+# delay/amend_lead_s         how much deadline was left when an amendment came in
+# strategy/tlos_at_issue     how early the agent acts (seconds before predicted LoS)
+# arrival/on_route           lenient arrival criterion; xtrack and ref are stricter
+# cross/<mode>/...           live check against the other two conditions, every 200k steps
+
+
+# ---- cross-evaluation after training ----------------------------------------
+# Train under one condition, test under another. Prints an OOD factor per model: the
+# baseline never saw pending=1 or wait_s>0, so its off-diagonal cells mix a wrong
+# strategy with an out-of-distribution input. Do not report those as pure strategy.
 python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
 tensorboard --logdir Runs_saved/cross_eval
 
-# watch a trained policy (--vecnorm is mandatory: raw-unit observations)
+
+# ---- watch a trained policy -------------------------------------------------
+# --vecnorm is MANDATORY: the env emits raw NM/kt/s/rad and the policy was trained on
+# VecNormalize-standardised inputs. Without it the policy sees nonsense.
 python -m visualisation.visualise \
     --model   "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model.zip" \
     --vecnorm "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model_vecnorm.pkl" \

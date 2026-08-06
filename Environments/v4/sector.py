@@ -1,8 +1,8 @@
 """
-Sector generation and aircraft placement.
+Sector generation and aircraft routing.
 
-make_polygon builds a random, reasonably round convex sector of a target area.
-place_aircraft picks an entry point and an exit (reference) point on the boundary and
+make_sector_polygon builds a random, reasonably round convex sector of a target area.
+plan_entry_route picks an entry point and an exit (reference) point on the boundary and
 derives the straight route between them. All geometry is in the flat NM frame, so a held
 route heading reads as exactly zero drift.
 """
@@ -17,30 +17,47 @@ from .config import CONFIG, KM_TO_NM
 from .geometry import nm_to_latlon
 
 
-def make_polygon(area_km2):
-    """A random convex polygon of the requested area, centred at the origin (NM frame)."""
+def _circularity(polygon):
+    """4*pi*area / perimeter^2 -- 1.0 for a circle, lower for elongated shapes."""
+    return 4 * math.pi * polygon.area / polygon.length ** 2
+
+
+def make_sector_polygon(area_km2):
+    """A random convex polygon of the requested area, centred at the origin (NM frame).
+
+    Retries until the shape is reasonably round (circularity >= min_circularity). Slivers
+    are rejected because every route across one would be a short clip of a corner rather
+    than a genuine crossing.
+    """
     target_nm2 = area_km2 * KM_TO_NM ** 2
     scaled = None
     for _ in range(1000):
         raw   = ShapelyPolygon(random_convex_polygon(CONFIG['n_vertices']()))
         scale = math.sqrt(target_nm2 / raw.area)
         scaled = shapely_scale(raw, xfact=scale, yfact=scale, origin='centroid')
-        if 4 * math.pi * scaled.area / scaled.length ** 2 >= CONFIG['min_circularity']:
+        if _circularity(scaled) >= CONFIG['min_circularity']:
             break
+
     cx, cy = scaled.centroid.x, scaled.centroid.y
     return ShapelyPolygon([(x - cx, y - cy) for x, y in scaled.exterior.coords])
 
 
-def place_aircraft(polygon, sector, n_sectors):
-    """Place one aircraft on the polygon boundary and derive its route.
+def plan_entry_route(polygon, sector, n_sectors):
+    """Plan one aircraft's crossing: where it enters, where it should leave, and on what
+    heading. Returns lat/lon for spawn, destination and reference point plus the heading.
 
-    The entry and exit (reference) points sit at evenly spaced, jittered arc positions.
-    The route heading is the spawn->reference bearing; the destination is a far point along
-    that heading. Returns lat/lon for spawn, destination and reference plus the route heading.
+    Entry and exit points sit at evenly spaced, jittered positions along the boundary, so
+    the traffic is spread around the sector rather than clustered. The exit starts half a
+    perimeter from the entry and is jittered by +-0.5, which makes crossing directions
+    fully random.
 
-    ref_jitter spans [-0.5, 0.5], so t_ref can land arbitrarily close to t_spawn and produce a
-    near-zero chord. Such an aircraft exits within a step or two without ever really flying,
-    which pollutes the arrival statistics. Resample until the chord clears min_chord_nm.
+    The destination is placed dest_dist_factor sector-diameters BEYOND the exit point.
+    Being that far away, the bearing to it barely changes as the aircraft flies, so simply
+    holding a heading keeps the aircraft on route and "drift" stays well defined.
+
+    Because the exit jitter spans a full half-perimeter, it can land close to the entry and
+    produce a near-zero chord. Such an aircraft would leave within a step or two without
+    ever really flying, polluting the arrival statistics, so short chords are resampled.
     """
     minx, miny, maxx, maxy = polygon.bounds
     dest_dist = math.sqrt((maxx - minx) ** 2 + (maxy - miny) ** 2) * CONFIG['dest_dist_factor']

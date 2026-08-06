@@ -1,4 +1,4 @@
-"""
+﻿"""
 PPO training for the v4 ATC conflict-resolution environment (Environments/v4).
 
 VecNormalize standardises both observations and reward (norm_obs=True, norm_reward=True).
@@ -58,7 +58,7 @@ PPO_KWARGS = dict(
 
 class EpisodeStatsCallback(BaseCallback):
     """Log per-episode reward, LoS steps, arrival rate, and the action distribution."""
-    ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'direct', 'spd+', 'spd-']
+    ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'return', 'spd+', 'spd-']
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
@@ -73,7 +73,7 @@ class EpisodeStatsCallback(BaseCallback):
                 self.logger.record_mean(f'actions/{label}', count / total)
             if len(dist) >= 10:
                 # fractions, so they are comparable to the per-action fractions above
-                turns = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]   # 6 stack-turns (excl. hold/fly-direct/speed)
+                turns = sum(dist) - dist[3] - dist[7] - dist[8] - dist[9]   # 6 stack-turns (excl. hold/return/speed)
                 self.logger.record_mean('actions/turns_total', turns / total)
                 self.logger.record_mean('actions/speed_total', (dist[8] + dist[9]) / total)
         return True

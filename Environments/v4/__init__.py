@@ -13,15 +13,16 @@ Two properties define it:
 
        AirspaceEnv(delay_mode='none' | 'deterministic' | 'probabilistic')
 
-   The 'pending' observation feature (1 while an issued instruction has not yet been
-   executed) exists in all three modes, so the three delay arms share one observation
+   Two observation features report it: 'pending' (1 while an issued instruction has not
+   yet been executed) and 'wait_s' (how long it has been outstanding). Both exist in all
+   three modes -- constant 0 under 'none' -- so the delay arms share one observation
    space and policies can be cross-evaluated across them. Checkpoints from any earlier
-   25-feature version of this env are NOT loadable.
+   25- or 26-feature version of this env are NOT loadable.
 
 Public API (import from Environments.v4):
     AirspaceEnv          the gymnasium environment
     CONFIG               tunable settings dict
-    OBS_DIM              observation length (26)
+    OBS_DIM              observation length (27)
     OBS_OWNSHIP_LABELS   per-feature labels for the ownship part of the observation
     OBS_INTRUDER_LABELS  per-feature labels for each intruder slot
     latlon_to_nm, nm_to_latlon, wrap_to_180   coordinate helpers (used by the visualiser)

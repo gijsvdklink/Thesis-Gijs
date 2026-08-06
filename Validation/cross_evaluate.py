@@ -2,9 +2,9 @@
 Cross-evaluation for the delay experiment: train under one action-response condition,
 test under another. Writes TensorBoard scalars so the arms can be compared as curves.
 
-The three arms share an identical observation space (26 features) and action space
-(Discrete 10) BY DESIGN -- the 'pending' feature exists in the no-delay arm too, where it
-is simply always 0. That is what makes a checkpoint from one arm loadable against another,
+The three arms share an identical observation space (27 features) and action space
+(Discrete 10) BY DESIGN -- the 'pending' and 'wait_s' features exist in the no-delay arm
+too, where they are simply always 0. That makes a checkpoint from one arm loadable against another,
 and it is the question this script answers: what happens to a policy that learned assuming
 instant compliance when it meets pilots who take 25 s?
 
@@ -15,9 +15,9 @@ Each (trained, tested) pair becomes its own TensorBoard run named "<trained>_on_
 so the baseline row shows up as none_on_none / none_on_deterministic / none_on_probabilistic
 and can be overlaid directly.
 
-CAVEAT on the baseline row: a policy trained with delay_mode='none' never saw pending=1, so
-its VecNormalize statistics give that feature ~zero variance and the normaliser maps
-pending=1 to the clip bound at test time. Its off-diagonal cells therefore mix a wrong
+CAVEAT on the baseline row: a policy trained with delay_mode='none' never saw pending=1 or
+wait_s>0, so its VecNormalize statistics give both features ~zero variance and the normaliser
+maps them to the clip bound at test time. Its off-diagonal cells therefore mix a wrong
 strategy with an out-of-distribution input. The script prints an OOD factor per model so
 you can see how large that effect is; do not report those cells as a pure strategy result.
 """
@@ -37,7 +37,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.tensorboard import SummaryWriter
 
-from Environments.v4 import AirspaceEnv
+from Environments.v4 import AirspaceEnv, OBS_OWNSHIP_LABELS
 
 MODES = ('none', 'deterministic', 'probabilistic')
 
@@ -84,9 +84,10 @@ def find_checkpoint(runs_root, mode):
 def pending_ood_factor(vecnorm_path):
     """Normalised value that pending=1 takes under this model's training statistics.
     Near 1 means the model saw delays in training; a huge value means it never did."""
+    i = OBS_OWNSHIP_LABELS.index('pending')
     with open(vecnorm_path, 'rb') as f:
         vn = pickle.load(f)
-    mean, var = float(vn.obs_rms.mean[5]), float(vn.obs_rms.var[5])
+    mean, var = float(vn.obs_rms.mean[i]), float(vn.obs_rms.var[i])
     return (1.0 - mean) / np.sqrt(var + vn.epsilon)
 
 

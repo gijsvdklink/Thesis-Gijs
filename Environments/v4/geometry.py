@@ -42,6 +42,8 @@ def heading_to_velocity(speed, heading_deg):
 
 
 # -- BlueSky aircraft state (by simulator index) -------------------------------
+# These read live state out of BlueSky, so they are only valid for an index that is
+# currently airborne. Callers check `bs.traf.id2idx(cs) >= 0` first.
 
 def aircraft_speed_nms(idx):
     """True airspeed of the aircraft at simulator index idx, in NM/s."""
@@ -53,8 +55,12 @@ def aircraft_position_nm(idx):
     return latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
 
 
-def aircraft_state(idx):
-    """(position_nm, velocity_nms) of the aircraft at idx, east-north."""
+def aircraft_position_and_velocity(idx):
+    """(position_nm, velocity_nms) of the aircraft at idx, east-north.
+
+    The pair every separation calculation starts from: relative position gives the
+    range, relative velocity gives how that range is changing.
+    """
     pos = aircraft_position_nm(idx)
     vel = heading_to_velocity(aircraft_speed_nms(idx), float(bs.traf.hdg[idx]))
     return pos, vel

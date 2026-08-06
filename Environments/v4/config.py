@@ -59,10 +59,11 @@ CONFIG = {
     # Action-response delay: seconds between the controller issuing an instruction and the
     # pilot executing it. Lives in the transition function; see env._issue_action /
     # _flush_due_commands. The reduced 'next' delay models an already-engaged pilot, so it
-    # applies only AFTER an advisory has actually executed in the current urgency cycle.
+    # applies only after an advisory has executed while the aircraft holds the focus --
+    # the counter is reset whenever a new aircraft becomes the ownship.
     'delay_mode':            'none',        # 'none' | 'deterministic' | 'probabilistic'
-    'delay_first_s':         25.0,          # first advisory of an urgency cycle
-    'delay_next_s':          12.5,          # once one has executed in that cycle
+    'delay_first_s':         25.0,          # first advisory to a newly selected ownship
+    'delay_next_s':          12.5,          # once one has executed while it holds focus
     'delay_sigma':           0.4,           # log-normal shape (probabilistic only);
                                             # mean 25 s -> ~90% of draws within 14-39 s
     'delay_max_s':           120.0,         # cap: a tail draw must not outlive the conflict
@@ -87,7 +88,7 @@ NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
 
 N_NEIGHBOURS = CONFIG['n_neighbours']
-OBS_DIM      = 6 + N_NEIGHBOURS * 5   # 6 ownship + 4 intruders x 5 = 26
+OBS_DIM      = 7 + N_NEIGHBOURS * 5   # 7 ownship + 4 intruders x 5 = 27
 
 CRUISE_SPD_NMS = CONFIG['ac_speed'] / 3600.0        # nominal cruise speed (NM/s); spawn checks
 NMS_TO_KT      = 3600.0                             # NM/s -> kt (observation reports kt)
@@ -111,10 +112,12 @@ EMPTY_RANGE_NM = 1000.0
 NO_CONFLICT_S  = CONFIG['t_warn']
 
 # -- Action layout (Discrete 10) -----------------------------------------------
-#   0-2, 4-6  heading turns (stack on commanded heading)   3  hold   7  fly-direct
+#   0-2, 4-6  heading turns (stack on commanded heading)   3  hold   7  return-to-route
 #   8  speed up   9  speed down
 TURN_DELTAS   = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 SPEED_ACTIONS = {8: +1, 9: -1}        # +1/-1 x mach_step on the commanded Mach
+HOLD_ACTION   = 3                     # true no-op: no instruction is transmitted at all
+RETURN_TO_ROUTE_ACTION = 7            # heading resolved at execution time, not at issue
 N_ACTIONS     = 10
 
 # -- Workload cost per instruction ---------------------------------------------
@@ -122,7 +125,7 @@ N_ACTIONS     = 10
 # commands: a single decisive turn must not cost more than splitting it across several
 # instructions, or the policy is rewarded for salami-slicing. Costs are hard-coded:
 # a 30-deg turn anchors at 0.5, a 60-deg turn at 0.75 (< 2x), a 45-deg turn at their
-# midpoint 0.625. Hold is free; fly-direct is cheap (0.25 x the 30-deg turn); a speed
+# midpoint 0.625. Hold is free; return-to-route is cheap (0.25 x the 30-deg turn); a speed
 # change costs half a 30-deg turn. r_work = -w_work * ACT_COST.
 
 _TURN_30 = 0.5                          # cost anchor: one 30-deg turn
@@ -135,13 +138,14 @@ ACT_COST = [
     0.5,                  # 4  turn +30
     0.625,                # 5  turn +45
     0.75,                 # 6  turn +60
-    0.25 * _TURN_30,      # 7  fly-direct (return to route: cheap)
+    0.25 * _TURN_30,      # 7  return to route (cheap: undoing a deviation)
     0.5  * _TURN_30,      # 8  speed up   (half a 30-deg turn)
     0.5  * _TURN_30,      # 9  speed down
 ]
 
 # -- Observation labels (used by the visualiser's obs panel) -------------------
-# Units: dpsi/a_cmd/theta/psi in rad, v_own/v_cmd/vint in kt, dist in NM, tlos in s.
+# Units: dpsi/a_cmd/theta/psi in rad, v_own/v_cmd/vint in kt, dist in NM, tlos/wait_s in s.
 # 'pending' is binary: 1 while an issued instruction has not yet been executed by the pilot.
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'pending']
+# 'wait_s' is how long that instruction has been outstanding (0 when none is).
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'pending', 'wait_s']
 OBS_INTRUDER_LABELS = ['dist', 'theta', 'psi', 'vint', 'tlos']
