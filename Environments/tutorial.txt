@@ -39,13 +39,24 @@ tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experi
 
 
 # ---- what to watch ----------------------------------------------------------
-# rollout/ep_rew_mean        the headline curve
+# eval/...                   THE HEADLINE. Actual performance: the policy asked for its
+#                            best action (deterministic=True), on held-out scenarios,
+#                            every 1M steps. reward_total, los_events, los_steps,
+#                            arrival_rate, length.
+#
+# Everything below comes from TRAINING rollouts, where PPO is still sampling exploratory
+# actions -- a useful trend, but it understates the agent. Expect eval/ to sit higher.
+#
+# rollout/ep_rew_mean        SB3's own training curve
 # episode/mean_reward        per-step reward, comparable across episode lengths
 # safety/los_events          distinct intrusions per episode (entries, not steps)
 # safety/los_steps           steps spent in loss of separation
 # arrival/rate               fraction of aircraft leaving the sector without drift
 # actions/<name>             share of each instruction; turns_total and speed_total too
-# cross/<mode>/...           live check against the other two conditions, every 200k steps
+# cross/<mode>/...           the same policy under all three delay conditions, short
+#                            rollouts -- the transfer question, live during training
+#
+# best_model is checkpointed on the eval/ score, not the training reward.
 #
 # Runs are reproducible: same --seed gives the same scenarios and the same trajectories,
 # in this process or any other.

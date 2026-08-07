@@ -47,12 +47,14 @@ from Environments.v4 import AirspaceEnv
 
 N_ENVS           = 48            # parallel environments (tune to the machine's cores)
 TOTAL_TIMESTEPS  = 20_000_000
-CHECKPOINT_EVERY = 200_000       # best-model check interval (steps)
 
-# Live cross-evaluation: how does the policy being trained cope with the OTHER two delay
-# conditions? Logged under cross/<mode>/... Set CROSS_EVAL_EVERY = 0 to switch off.
-CROSS_EVAL_EVERY = 200_000
-CROSS_EVAL_STEPS = 600           # short partial episode per condition (~25 s of overhead)
+# Periodic DETERMINISTIC evaluation -- the agent's actual performance. PPO's policy is
+# stochastic, so the episode/ curves come from an agent still sampling exploratory
+# actions and understate what it can really do. These run predict(deterministic=True)
+# on held-out scenarios and log under eval/. Set EVAL_EVERY = 0 to switch off.
+EVAL_EVERY       = 1_000_000     # ~20 evaluation points over a 20M-step run
+EVAL_SEEDS       = (10_001, 10_002)   # held-out scenarios, identical for all three arms
+CROSS_EVAL_STEPS = 600           # short partial episode for the transfer check
 
 RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'experiments'))
 
@@ -101,84 +103,88 @@ class EpisodeStatsCallback(BaseCallback):
         return True
 
 
-class CrossEvalCallback(BaseCallback):
-    """Every CROSS_EVAL_EVERY steps, run the CURRENT policy under all three delay
-    conditions and log the result, so the transfer question is visible during training
-    rather than only after it.
+class EvalCallback(BaseCallback):
+    """Every EVAL_EVERY steps, measure what the agent can ACTUALLY do.
 
-    Uses ONE evaluation environment in the training process, re-used sequentially with its
-    delay_mode swapped between conditions. BlueSky is a process-global singleton, so the
-    three conditions must not run concurrently -- but they are separated by a full reset(),
-    and the SubprocVecEnv training workers live in other processes entirely.
+    PPO's policy is stochastic: during training it samples from the action distribution,
+    so the episode/ curves include exploratory actions the agent would not choose if
+    asked for its best guess. These rollouts call predict(deterministic=True) instead --
+    argmax, no exploration -- on scenarios never trained on, and log under eval/. Expect
+    them to sit ABOVE the training curves.
 
-    The episodes are deliberately short (CROSS_EVAL_STEPS, well under a full ~2200-step
-    episode), so treat these as a comparable trend across the three conditions rather than
-    as final numbers -- Validation/cross_evaluate.py does the full-episode version.
+    Three jobs, in one place because they share the evaluation environment:
+      eval/...           full episodes in this run's own delay condition (the headline)
+      cross/<mode>/...   short rollouts under the other conditions (the transfer question)
+      best_model         checkpointed on the deterministic score, not the noisy training
+                         reward, so "best" means best measured performance
+
+    Uses ONE evaluation environment, re-used sequentially with its delay_mode swapped.
+    BlueSky is a process-global singleton, so these must not run concurrently -- they are
+    separated by a full reset(), and the SubprocVecEnv training workers are in other
+    processes entirely.
     """
     TAGS = [('ep_reward_total', 'reward_total'), ('ep_los_events', 'los_events'),
-            ('ep_los_steps', 'los_steps'), ('ep_arrival_rate', 'arrival_rate')]
+            ('ep_los_steps', 'los_steps'), ('ep_arrival_rate', 'arrival_rate'),
+            ('ep_length', 'length')]
 
-    def __init__(self, seed):
+    def __init__(self, save_path, seed, delay_mode):
         super().__init__()
-        self.seed = seed
-        self.last_step = 0
-        self.env = None
+        self.save_path  = save_path
+        self.seed       = seed
+        self.delay_mode = delay_mode
+        self.last_step  = 0
+        self.best       = -float('inf')
+        self.env        = None
+
+    def _rollout(self, mode, seed, max_steps=None):
+        """One deterministic rollout; returns the episode summary. Runs to the episode's
+        own truncation unless max_steps caps it short."""
+        vecnorm = self.model.get_env()        # training VecNormalize; supplies obs stats
+        self.env.delay_mode = mode
+        obs, _ = self.env.reset(seed=seed)
+        steps = 0
+        while True:
+            norm = vecnorm.normalize_obs(obs.reshape(1, -1))
+            action, _ = self.model.predict(norm, deterministic=True)
+            obs, _, _, truncated, _ = self.env.step(int(np.asarray(action).flat[0]))
+            steps += 1
+            if truncated or (max_steps and steps >= max_steps):
+                return self.env._episode_summary()
 
     def _on_step(self):
-        if not CROSS_EVAL_EVERY or self.num_timesteps - self.last_step < CROSS_EVAL_EVERY:
+        if not EVAL_EVERY or self.num_timesteps - self.last_step < EVAL_EVERY:
             return True
         self.last_step = self.num_timesteps
-
         if self.env is None:
             self.env = AirspaceEnv()          # first use: pays the BlueSky init once
-        vecnorm = self.model.get_env()        # training VecNormalize; supplies obs stats
 
+        # 1. actual performance: full episodes under this run's own delay condition
+        runs = [self._rollout(self.delay_mode, s) for s in EVAL_SEEDS]
+        mean = lambda key: sum(r[key] for r in runs) / len(runs)
+        for key, tag in self.TAGS:
+            self.logger.record(f'eval/{tag}', mean(key))
+
+        # 2. transfer: the same policy under every condition, short and comparable
         for mode in ('none', 'deterministic', 'probabilistic'):
-            self.env.delay_mode = mode
-            obs, _ = self.env.reset(seed=self.seed)     # same scenario for every condition
-            for _ in range(CROSS_EVAL_STEPS):
-                norm = vecnorm.normalize_obs(obs.reshape(1, -1))
-                action, _ = self.model.predict(norm, deterministic=True)
-                obs, _, _, _, _ = self.env.step(int(np.asarray(action).flat[0]))
-            summary = self.env._episode_summary()
+            summary = self._rollout(mode, EVAL_SEEDS[0], max_steps=CROSS_EVAL_STEPS)
             for key, tag in self.TAGS:
                 self.logger.record(f'cross/{mode}/{tag}', summary[key])
-        return True
 
-
-class BestModelCallback(BaseCallback):
-    """Every CHECKPOINT_EVERY steps, save best_model (+ vecnorm) when the recent mean
-    episode reward improves on the best seen so far. Rewards come from VecMonitor (inside
-    VecNormalize), so they are un-normalised."""
-    def __init__(self, save_path, seed):
-        super().__init__()
-        self.save_path = save_path
-        self.seed      = seed
-        self.last_step = 0
-        self.best      = -float('inf')
-
-    def _on_step(self):
-        if self.num_timesteps - self.last_step < CHECKPOINT_EVERY:
-            return True
-        self.last_step = self.num_timesteps
-
-        episodes = self.model.ep_info_buffer
-        if not episodes:                       # no completed episodes yet
-            return True
-        mean_reward = sum(ep['r'] for ep in episodes) / len(episodes)
-        if mean_reward <= self.best:
-            print(f'[{self.seed}] {self.num_timesteps:,}  mean_ep_reward={mean_reward:.3f} '
-                  f'(best {self.best:.3f}, not saved)', flush=True)
+        # 3. checkpoint on the measured score rather than the exploring one
+        score = mean('ep_reward_total')
+        if score <= self.best:
+            print(f'[{self.seed}] {self.num_timesteps:,}  eval_reward={score:.1f} '
+                  f'(best {self.best:.1f}, not saved)', flush=True)
             return True
 
-        self.best = mean_reward
+        self.best = score
         stem = os.path.join(self.save_path, 'best_model')
         self.model.save(stem)
         env = self.model.get_env()
         if isinstance(env, VecNormalize):
             env.save(stem + '_vecnorm.pkl')
-        print(f'[{self.seed}] {self.num_timesteps:,}  NEW BEST mean_ep_reward='
-              f'{mean_reward:.3f} -> saved best_model', flush=True)
+        print(f'[{self.seed}] {self.num_timesteps:,}  NEW BEST eval_reward={score:.1f} '
+              f'-> saved best_model', flush=True)
         return True
 
 
@@ -227,8 +233,7 @@ def train(seed, delay_mode, n_envs, tag=''):
     callbacks = CallbackList([
         ProgressCallback(seed),
         EpisodeStatsCallback(),
-        CrossEvalCallback(seed),
-        BestModelCallback(ckpt_dir, seed),
+        EvalCallback(ckpt_dir, seed, delay_mode),
     ])
 
     print(f'[{seed}] delay={delay_mode}  n_envs={n_envs}  -> {run_dir}', flush=True)
