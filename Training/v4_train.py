@@ -46,13 +46,15 @@ from Environments.v4 import AirspaceEnv
 # -- Settings ------------------------------------------------------------------
 
 N_ENVS           = 48            # parallel environments (tune to the machine's cores)
-TOTAL_TIMESTEPS  = 20_000_000
+TOTAL_TIMESTEPS  = 100_000_000
 
 # Periodic DETERMINISTIC evaluation -- the agent's actual performance. PPO's policy is
 # stochastic, so the episode/ curves come from an agent still sampling exploratory
 # actions and understate what it can really do. These run predict(deterministic=True)
 # on held-out scenarios and log under eval/. Set EVAL_EVERY = 0 to switch off.
-EVAL_EVERY       = 1_000_000     # ~20 evaluation points over a 20M-step run
+EVAL_EVERY       = 1_000_000     # 100 evaluation points over a 100M-step run; also the
+                                 # best_model save cadence -- it is checkpointed whenever
+                                 # this deterministic score beats the best seen so far
 EVAL_SEEDS       = (10_001, 10_002)   # held-out scenarios, identical for all three arms
 CROSS_EVAL_STEPS = 600           # short partial episode for the transfer check
 

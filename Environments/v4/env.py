@@ -594,7 +594,7 @@ class AirspaceEnv(gym.Env):
                 own.spd * NMS_TO_KT,
                 a_cmd,
                 v_cmd,
-                retn_conf,      # retn_conf ("safe to return"); dummied to 0.0 when ablated
+                retn_conf,      # 1 = returning to route is BLOCKED (not "safe to return")
                 # Whether an instruction is outstanding -- the honest observable: under a
                 # probabilistic delay the controller knows the pilot has not acted yet, but
                 # not when they will. Both are constant 0.0 when delay_mode='none'.
