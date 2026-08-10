@@ -14,49 +14,56 @@ loads against any other -- that is what makes Validation/cross_evaluate.py possi
 cd /path/to/Thesis-Gijs
 source ~/.venvs/RL/bin/activate
 
-# One BLAS thread per process. Without this, every SubprocVecEnv worker spawns its own
-# thread pool, the three arms oversubscribe the cores, and all of them run slower.
+# One BLAS thread per process, so the three arms do not fight over cores.
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 
-# ---- 48-core server: 16 workers per arm, 3 arms at once = 48 ----------------
+# ---- three arms, one environment each, stock PPO ----------------------------
 # Keep --seed identical across the arms: same sectors, same traffic, same spawn order,
 # so any difference between the curves is the delay and nothing else.
 
 # terminal 1  baseline
-python -m Training.v4_train --delay none          --seed 42 --n-envs 16
+python -m Training.v4_train --delay none          --seed 42
 
 # terminal 2  deterministic
-python -m Training.v4_train --delay deterministic --seed 42 --n-envs 16
+python -m Training.v4_train --delay deterministic --seed 42
 
 # terminal 3  probabilistic
-python -m Training.v4_train --delay probabilistic --seed 42 --n-envs 16
+python -m Training.v4_train --delay probabilistic --seed 42
 
 # terminal 4  -> http://localhost:6006
 tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
 
-# Running the arms one at a time instead? Give each the whole machine: --n-envs 48
+# THROUGHPUT. A single environment with stock PPO runs at about 44 steps/s: the
+# defaults do 10 epochs x 32 minibatches = 320 gradient updates per 2048 env steps,
+# which costs more than the simulation itself. That is roughly
+#     1M steps ~ 6 h      5M steps ~ 32 h      100M steps ~ 26 days
+# TOTAL_TIMESTEPS is set to 5M in Training/v4_train.py; change it there.
+# The terminal prints progress every 10k steps:
+#     250,000 / 5,000,000 (  5.0%)     44.2 steps/s   elapsed  1.57 h   eta  29.8 h
 
 
 # ---- what to watch ----------------------------------------------------------
 # eval/...                   THE HEADLINE. Actual performance: the policy asked for its
-#                            best action (deterministic=True), on held-out scenarios,
-#                            every 1M steps. reward_total, los_events, los_steps,
-#                            arrival_rate, length.
+#                            best action (deterministic=True), two full episodes on
+#                            held-out seeds, every 25k steps (~200 points over 5M).
+#                            reward_total, length, los_events, los_steps, arrival_rate.
 #
 # Everything below comes from TRAINING rollouts, where PPO is still sampling exploratory
 # actions -- a useful trend, but it understates the agent. Expect eval/ to sit higher.
 #
 # rollout/ep_rew_mean        SB3's own training curve
-# episode/mean_reward        per-step reward, comparable across episode lengths
-# safety/los_events          distinct intrusions per episode (entries, not steps)
-# safety/los_steps           steps spent in loss of separation
-# arrival/rate               fraction of aircraft leaving the sector without drift
-# actions/<name>             share of each instruction; turns_total and speed_total too
-# cross/<mode>/...           the same policy under all three delay conditions, short
-#                            rollouts -- the transfer question, live during training
+# episode/reward_total       per-episode reward
+# episode/los_events         distinct intrusions per episode (entries, not steps)
+# episode/los_steps          steps spent in loss of separation
+# episode/arrival_rate       fraction of aircraft leaving the sector without drift
+# episode/length             episode length in steps
+# actions/<name>             share of each instruction
 #
-# best_model is checkpointed on the eval/ score, not the training reward.
+# best_model is checkpointed on the eval/ score, not the training reward. It is written
+# the moment a new best is measured, and re-written at least every 100k steps, so the
+# copy on disk is never far behind. best_model.zip and best_model_vecnorm.pkl are
+# always saved together -- the policy is useless without its observation statistics.
 #
 # Runs are reproducible: same --seed gives the same scenarios and the same trajectories,
 # in this process or any other.
@@ -74,6 +81,6 @@ tensorboard --logdir Runs_saved/cross_eval
 # --vecnorm is MANDATORY: the env emits raw NM/kt/s/rad and the policy was trained on
 # VecNormalize-standardised inputs. Without it the policy sees nonsense.
 python -m visualisation.visualise \
-    --model   "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model.zip" \
-    --vecnorm "Runs_saved/experiments/none/v4exp_none_seed42_<ts>/checkpoints/best_model_vecnorm.pkl" \
+    --model   "Runs_saved/experiments/none/v4_none_seed42_<ts>/best_model.zip" \
+    --vecnorm "Runs_saved/experiments/none/v4_none_seed42_<ts>/best_model_vecnorm.pkl" \
     --n_ac 20 --density 8e-05

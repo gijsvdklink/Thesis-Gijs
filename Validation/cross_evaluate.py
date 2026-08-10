@@ -57,11 +57,14 @@ HEADLINE = ['ep_los_events', 'ep_los_steps', 'ep_arrival_rate', 'ep_reward_total
 def find_checkpoint(runs_root, mode):
     """Newest best_model.zip (falling back to final_model.zip) for one training arm.
 
-    best_model lives in <run>/checkpoints/ beside best_model_vecnorm.pkl; final_model lives
-    in <run>/ beside final_vecnorm.pkl -- different depths, so resolve the normaliser
-    relative to each model rather than assuming one layout.
+    Tried in preference order. The current trainer writes best_model straight into
+    <run>/; older runs put it in <run>/checkpoints/. final_model always sits in <run>/
+    beside final_vecnorm.pkl. Different depths and different normaliser names, so resolve
+    the .pkl relative to each model rather than assuming one layout.
     """
-    for stem, vecname in (('checkpoints/best_model', None), ('final_model', 'final_vecnorm.pkl')):
+    for stem, vecname in (('best_model', None),
+                          ('checkpoints/best_model', None),
+                          ('final_model', 'final_vecnorm.pkl')):
         hits = sorted(glob.glob(os.path.join(runs_root, mode, '*', f'{stem}.zip')))
         if not hits:
             continue
