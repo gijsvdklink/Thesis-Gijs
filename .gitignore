@@ -5,6 +5,10 @@ __pycache__/
 # Large media files (exceed GitHub's 100 MB limit)
 *.mp4
 
+# Training output: TensorBoard event files and model checkpoints, written
+# continuously during a run. Regenerate by training, not by cloning.
+Runs_saved/
+
 # macOS
 .DS_Store
 
