@@ -27,14 +27,14 @@ ACTION-RESPONSE DELAY (delay_mode = none | deterministic | probabilistic)
   it, delay_s later. Only execution reaches BlueSky and only execution updates
   _commanded_heading / _commanded_mach, so the a_cmd observation and the drift reward
   never credit a turn that has not started. The queue is checked every simulated second
-  (inside the action_freq loop), so 12.5 s means 12.5 s and not "2 or 3 RL steps".
+  (inside the action_freq loop), so 15 s means 15 s and not "3 RL steps".
   Amendments: re-issuing while an instruction is outstanding replaces the payload but
   INHERITS the original deadline -- the clock belongs to the pilot's engagement, not to
   the message. The reduced delay_next_s applies only once an advisory has actually
   EXECUTED while this aircraft holds the focus; the counter resets the moment the focus
   moves to another aircraft, so a returning aircraft starts from delay_first_s again.
 
-Reward (purely negative): -w_los*1[LoS] - w_drift*(1-cos(dpsi))/2 - w_work*ACT_COST[action].
+Reward (purely negative): -w_los*1[LoS] - w_drift*(1-cos(dpsi)) - w_work*ACT_COST[action].
 Workload is charged at ISSUE time: the radio call happens whether or not the pilot complies.
 """
 
@@ -202,7 +202,7 @@ class AirspaceEnv(gym.Env):
         """Propagate one RL step of simulated time, releasing instructions as their
         deadlines pass. The agent observes once per RL step (action_freq x sim_dt = 5 s),
         but the pilot may act on any simulated second, so the queue is flushed at 1 s
-        resolution -- that is what makes a 12.5 s delay mean 12.5 s.
+        resolution -- that is what makes a 15 s delay mean 15 s.
         """
         for _ in range(CONFIG['action_freq']):
             self._execute_due_instructions()
@@ -355,10 +355,14 @@ class AirspaceEnv(gym.Env):
         return best_cs
 
     def _heading_drift(self, cs, idx):
-        """(1 - cos) / 2 of the gap between the commanded heading and the route heading:
-        0 when on route, 1 when reversed. The same shape the drift reward uses."""
+        """1 - cos of the gap between the commanded heading and the route heading:
+        0 when on route, 2 when reversed. The same shape the drift reward uses.
+
+        The factor 1/2 that used to normalise this to [0, 1] now lives in w_drift, so the
+        reward is unchanged. Anything else comparing this against an absolute constant --
+        drift_switch_margin in _select_drifter_to_recover -- is on the [0, 2] scale."""
         hdg_err = wrap_to_180(self._route_hdg[cs] - self._commanded_heading.get(cs, bs.traf.hdg[idx]))
-        return (1 - math.cos(math.radians(hdg_err))) / 2
+        return 1 - math.cos(math.radians(hdg_err))
 
     def _select_drifter_to_recover(self, flying):
         """Pick the most-drifted aircraft that can safely be sent back to its route.

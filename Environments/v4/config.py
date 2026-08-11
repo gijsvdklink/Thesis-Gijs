@@ -61,22 +61,26 @@ CONFIG = {
     # applies only after an advisory has executed while the aircraft holds the focus --
     # the counter is reset whenever a new aircraft becomes the ownship.
     'delay_mode':            'none',        # 'none' | 'deterministic' | 'probabilistic'
-    'delay_first_s':         25.0,          # first advisory to a newly selected ownship
-    'delay_next_s':          12.5,          # once one has executed while it holds focus
+    'delay_first_s':         30.0,          # first advisory to a newly selected ownship
+    'delay_next_s':          15.0,          # once one has executed while it holds focus
     'delay_sigma':           0.4,           # log-normal shape (probabilistic only);
-                                            # mean 25 s -> ~90% of draws within 14-39 s
+                                            # mean 30 s -> 80% of draws within 17-46 s
+                                            # (mean 15 s -> 8-23 s), median below the mean
     'delay_max_s':           120.0,         # cap: a tail draw must not outlive the conflict
     # Observation
     'n_neighbours':          4,
     # Focus selection
     'focus_clear_steps':     5,
     'focus_emergency_u':     0.67,          # ~2 min before CPA at t_warn = 360 s
-    'drift_switch_margin':   0.01,          # drift a rival must beat the current focus by
+    'drift_switch_margin':   0.02,          # drift a rival must beat the current focus by, on the
+                                            # [0, 2] scale of _heading_drift (~11.5 deg of heading)
     # Reward weights
     'w_los':                 10.00,         # heavy: separation violation
-    'w_drift':               1.00,          # cosine drift penalty. ACT_COST scales with this, so w_drift
-                                            # also sets the action-cost magnitude (doubling it doubles
-                                            # both the drift penalty and every turn/speed cost).
+    'w_drift':               0.50,          # cosine drift penalty. Drift is 1 - cos, spanning [0, 2],
+                                            # so 0.5 makes a fully reversed aircraft cost 1.0 per step
+                                            # -- the unit ACT_COST is calibrated against. ACT_COST
+                                            # scales with this, so w_drift also sets the action-cost
+                                            # magnitude (doubling it doubles both).
     'w_work':                1.00,          # master scale for ACT_COST; tune magnitudes via w_drift
     'seed':                  None,
 }
