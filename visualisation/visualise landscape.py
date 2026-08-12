@@ -385,11 +385,12 @@ def main():
     OBS_INTRUDER_LABELS = getattr(envmod, 'OBS_INTRUDER_LABELS',
                                   ['rho', 'theta', 'psi', 'vint', 'tau'])
 
-    CONFIG['n_aircraft'] = lambda: args.n_ac
-    CONFIG['rho']        = lambda: args.density
+    # The samplers take the env's scenario generator; these overrides pin the values.
+    CONFIG['n_aircraft'] = lambda rng: args.n_ac
+    CONFIG['rho']        = lambda rng: args.density
     if args.ref_jitter is not None:
         j = args.ref_jitter
-        CONFIG['ref_jitter'] = lambda: random.uniform(-j, j)
+        CONFIG['ref_jitter'] = lambda rng: rng.uniform(-j, j)
 
     det = not args.stochastic
     if args.hold:

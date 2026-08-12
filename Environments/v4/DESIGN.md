@@ -431,24 +431,34 @@ N_ACTIONS     = 10
 ```
 
 ```python
-# A turn stacks onto the controller's last STATED intent: the outstanding target if
-# one exists (the pilot has not acted on it yet), otherwise the flying heading.
+# The delta is measured from the last EXECUTED state, never from an instruction still
+# waiting to be flown, so re-issuing REPLACES the outstanding one instead of stacking.
 if action_idx in SPEED_ACTIONS:
-    base = pending['target_mach'] if pending and 'target_mach' in pending \
-           else self._commanded_mach.get(cs, CONFIG['ac_mach'])
+    base = self._commanded_mach.get(cs, CONFIG['ac_mach'])
     mach = base + SPEED_ACTIONS[action_idx] * CONFIG['mach_step']
     cmd['target_mach'] = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
 elif action_idx in TURN_DELTAS:
-    base = pending['target_hdg'] if pending and 'target_hdg' in pending \
-           else self._commanded_heading.get(cs, bs.traf.hdg[idx])
+    base = self._commanded_heading.get(cs, self._hdg[self._row_of[cs]])
     cmd['target_hdg'] = (base + TURN_DELTAS[action_idx]) % 360
 elif action_idx == RETURN_TO_ROUTE_ACTION:
     cmd['return_to_route'] = True
 ```
 
-**Turns stack on the commanded heading**, i.e. the controller's last stated intent, not the
-current flying heading. Two consecutive +30 deg instructions mean +60 deg from what was asked,
-which is how a controller reasons -- and it stays coherent when the pilot has not acted yet.
+**Turns do not stack while an instruction is outstanding.** The delta applies to the
+aircraft's commanded heading -- what it has actually been told to fly -- not to a target the
+pilot has not acted on yet. Under a delay the agent gets several decisions inside one
+response window, and only the last of them survives:
+
+| chosen while pending, from heading 090 | resulting target |
+| --- | --- |
+| `+30` | 120 |
+| `+30`, `+30`, `+30` | 120 -- one 30 deg turn, not 90 |
+| `+30` then `-30` | 060 -- the last instruction wins, not a cancellation back to 090 |
+| `+30`, `+45`, `-60` | 030 |
+
+Stacking onto the outstanding target instead would let the agent accumulate a manoeuvre it
+never asked for: three +30s would become a 90 deg turn, and +30 followed by -30 would leave
+the aircraft 30 deg right of where it started. The same rule applies to speed.
 
 **Return-to-route resolves at execution time**, not at issue: the route heading drifts while the
 pilot delays, so "go direct" means direct from where the aircraft *is* when it finally

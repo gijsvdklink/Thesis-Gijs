@@ -1,86 +1,179 @@
-EXPERIMENT 1 -- ACTION-RESPONSE DELAYS
-Three arms, one environment (Environments/v4), same seed. Only --delay varies.
+================================================================================
+ACTION-RESPONSE DELAY EXPERIMENT -- HOW TO RUN IT
+================================================================================
 
-  none            pilot executes instantly (baseline)
-  deterministic   25 s for the first advisory of an urgency cycle, 12.5 s once one has executed
-  probabilistic   log-normal around the same means (sigma 0.4), capped at 120 s
+THE QUESTION
+    How does an air traffic controller policy change when pilots do not comply
+    instantly, and does the SHAPE of the delay distribution matter, or only its
+    mean?
 
-All three arms share an identical 27-feature observation, so a checkpoint from any arm
-loads against any other -- that is what makes Validation/cross_evaluate.py possible.
-'pending' and 'wait_s' are simply constant 0 in the baseline.
+THE FOUR ARMS
+    All three delayed arms have the SAME mean response time, 30 s / 15 s. They
+    differ only in shape, which is the experimental variable.
 
+    none            0 s.  The baseline: pilots comply immediately.
 
-# ---- each terminal ----------------------------------------------------------
-cd /path/to/Thesis-Gijs
-source ~/.venvs/RL/bin/activate
+    deterministic   Exactly 30 s for the first advisory to a focus ship, exactly
+                    15 s once that pilot has executed one. No randomness, so the
+                    controller could count down to the exact second.
 
-# One BLAS thread per process, so the three arms do not fight over cores.
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+    lognormal       Random, mean 30 s / 15 s, sigma 0.4, CLIPPED AT 70 s. Mass
+                    concentrated near the mean: a long silence means a response
+                    is overdue, so waiting is informative.
 
+    probabilistic   The Markov chain. Each simulated second the pilot either
+                    stays in "not executed" (29/30, or 14/15 once engaged) or
+                    acts. NO forced response and no ceiling -- the tail is
+                    unbounded, and a delay past 120 s is rare but possible.
+                    Memoryless: how long the pilot has already been silent tells
+                    the controller nothing about when they will act, and an
+                    immediate response is always on the table.
 
-# ---- three arms, one environment each, stock PPO ----------------------------
-# Keep --seed identical across the arms: same sectors, same traffic, same spawn order,
-# so any difference between the curves is the delay and nothing else.
+ENGAGEMENT ("has the pilot already executed an advisory?")
+    Identical in all four arms. It is FALSE every time the focus moves to a new
+    aircraft. It becomes TRUE the moment an advisory to that aircraft executes,
+    and stays true for as long as that aircraft keeps the focus. Only then does
+    the faster 15 s / (1/15) branch apply.
 
-# terminal 1  baseline
-python -m Training.v4_train --delay none          --seed 42
+    Watch delay/engaged_branch_frac in TensorBoard: it is the fraction of
+    advisories that took the faster branch.
 
-# terminal 2  deterministic
-python -m Training.v4_train --delay deterministic --seed 42
+--------------------------------------------------------------------------------
+BEFORE TRAINING -- CHECK THE PLUMBING
+--------------------------------------------------------------------------------
 
-# terminal 3  probabilistic
-python -m Training.v4_train --delay probabilistic --seed 42
+    python -m Environments.v4.test_delays
+        Checks the delay models on their own: means, ceilings, memorylessness,
+        reproducibility. Takes about 20 s. Should end "all checks passed".
 
-# terminal 4  -> http://localhost:6006
-tensorboard --logdir_spec none:Runs_saved/experiments/none,det:Runs_saved/experiments/deterministic,prob:Runs_saved/experiments/probabilistic
+    python -m Validation.delay_diagnostics --episodes 2 --steps 600
+        Runs all four arms and prints:
+          - whether the arms see IDENTICAL scenarios at the same seed
+          - the realised delay histogram per arm
+          - how often the faster engagement branch fires
+          - the KPIs the arms are compared on
+        Add --model <best_model.zip> to run a trained policy instead of random
+        actions.
 
-# THROUGHPUT. A single environment with stock PPO runs at about 44 steps/s: the
-# defaults do 10 epochs x 32 minibatches = 320 gradient updates per 2048 env steps,
-# which costs more than the simulation itself. That is roughly
-#     1M steps ~ 6 h      5M steps ~ 32 h      100M steps ~ 26 days
-# TOTAL_TIMESTEPS is set to 5M in Training/v4_train.py; change it there.
-# The terminal prints progress every 10k steps:
-#     250,000 / 5,000,000 (  5.0%)     44.2 steps/s   elapsed  1.57 h   eta  29.8 h
+--------------------------------------------------------------------------------
+THE EXPERIMENT -- FIVE TERMINALS
+--------------------------------------------------------------------------------
 
+Each arm gets its own process. --n-envs is how many cores that arm uses. Use the
+SAME --seed everywhere: that is what makes the arms share their scenarios.
 
-# ---- what to watch ----------------------------------------------------------
-# eval/...                   THE HEADLINE. Actual performance: the policy asked for its
-#                            best action (deterministic=True), two full episodes on
-#                            held-out seeds, every 25k steps (~200 points over 5M).
-#                            reward_total, length, los_events, los_steps, arrival_rate.
-#
-# Everything below comes from TRAINING rollouts, where PPO is still sampling exploratory
-# actions -- a useful trend, but it understates the agent. Expect eval/ to sit higher.
-#
-# rollout/ep_rew_mean        SB3's own training curve
-# episode/reward_total       per-episode reward
-# episode/los_events         distinct intrusions per episode (entries, not steps)
-# episode/los_steps          steps spent in loss of separation
-# episode/arrival_rate       fraction of aircraft leaving the sector without drift
-# episode/length             episode length in steps
-# actions/<name>             share of each instruction
-#
-# best_model is checkpointed on the eval/ score, not the training reward. It is written
-# the moment a new best is measured, and re-written at least every 100k steps, so the
-# copy on disk is never far behind. best_model.zip and best_model_vecnorm.pkl are
-# always saved together -- the policy is useless without its observation statistics.
-#
-# Runs are reproducible: same --seed gives the same scenarios and the same trajectories,
-# in this process or any other.
+    # terminal 1 -- baseline, no delay
+    python -m Training.v4_train --delay none          --seed 0 --n-envs 2
 
+    # terminal 2 -- deterministic 30 s / 15 s
+    python -m Training.v4_train --delay deterministic --seed 0 --n-envs 2
 
-# ---- cross-evaluation after training ----------------------------------------
-# Train under one condition, test under another. Prints an OOD factor per model: the
-# baseline never saw pending=1 or wait_s>0, so its off-diagonal cells mix a wrong
-# strategy with an out-of-distribution input. Do not report those as pure strategy.
-python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
-tensorboard --logdir Runs_saved/cross_eval
+    # terminal 3 -- log-normal, mean 30 s / 15 s, capped at 70 s
+    python -m Training.v4_train --delay lognormal     --seed 0 --n-envs 2
 
+    # terminal 4 -- probabilistic, 1/30 (1/15) per second, forced at 70 s
+    python -m Training.v4_train --delay probabilistic --seed 0 --n-envs 2
 
-# ---- watch a trained policy -------------------------------------------------
-# --vecnorm is MANDATORY: the env emits raw NM/kt/s/rad and the policy was trained on
-# VecNormalize-standardised inputs. Without it the policy sees nonsense.
-python -m visualisation.visualise \
-    --model   "Runs_saved/experiments/none/v4_none_seed42_<ts>/best_model.zip" \
-    --vecnorm "Runs_saved/experiments/none/v4_none_seed42_<ts>/best_model_vecnorm.pkl" \
-    --n_ac 20 --density 8e-05
+    # terminal 5 -- TensorBoard
+    tensorboard --logdir Runs_saved/experiments --port 6006
+
+Defaults: 50,000,000 timesteps, 2 envs, evaluation every 100,000 steps on five
+fixed held-out scenarios (~12% overhead). Override with --timesteps,
+--eval-every and --eval-episodes. Push --eval-every much below 100,000 and the
+evaluation starts costing more than the training it interrupts; drop
+--eval-episodes first if you need points closer together than that.
+
+    # short smoke run before committing to the full budget
+    python -m Training.v4_train --delay probabilistic --timesteps 200000
+
+--------------------------------------------------------------------------------
+WHAT TO LOOK AT IN TENSORBOARD
+--------------------------------------------------------------------------------
+
+Six tags, deliberately. Anything that barely moved between arms was dropped;
+Validation/delay_diagnostics.py still reports the rest when you want them.
+
+    safety/los_events_per_flight_hour
+        THE safety number. Separation losses per flight hour. Episodes differ in
+        aircraft count, sector size and length, so a raw LoS count is not
+        comparable between them -- this is.
+
+    route/exit_deviation_nm
+        How far from its planned exit point an aircraft actually left the
+        sector: the lateral displacement the avoidance cost.
+
+    route/arrival_rate
+        Fraction that left on their route heading rather than still sitting in
+        an avoidance turn.
+
+        BOTH ROUTE METRICS ARE SCORED OVER MANOEUVRED AIRCRAFT ONLY. Only one
+        aircraft is controlled per step, so ~80% of traffic crosses untouched
+        and exits perfectly on route. Including it pushed the arrival rate to
+        ~91% and the deviation to ~21 NM regardless of policy -- it was
+        measuring how many aircraft were ignored. Over manoeuvred aircraft the
+        same episode reads 55% and 74 NM, which actually responds to the policy.
+
+    delay/mean_response_s
+        The delay pilots actually received, as opposed to the nominal 30/15.
+
+    delay/instructions_discarded
+        Advisories replaced before the pilot could act on them. The agent paid
+        for those radio calls but they never flew. By design, but worth knowing:
+        it runs to several hundred per episode.
+
+    episode/reward_total
+
+        NOTE ON THE X-AXIS: it counts individual environment steps, summed over
+        the parallel workers -- not episodes. One step is one advisory decision
+        and 5 s of simulated time. The plotted value is the sum of rewards over
+        a whole episode, recorded at the step the episode ended.
+
+        One episode is 2,100-4,800 steps, i.e. 3.0-6.6 hours of simulated
+        traffic and 45-200 aircraft-flight-hours. A 50M-step arm is therefore
+        roughly 12,000-24,000 episodes.
+
+        The eval/ curves are the same metrics measured with a DETERMINISTIC
+        policy on fixed held-out scenarios. Expect them above the training
+        curves, which include exploratory actions.
+
+--------------------------------------------------------------------------------
+AFTER TRAINING
+--------------------------------------------------------------------------------
+
+    python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
+    tensorboard --logdir Runs_saved/cross_eval
+        Trains under one condition, tests under another: a 4x4 grid. Answers
+        what happens to a policy that assumed instant compliance when it meets
+        pilots who take 30 s. Read the baseline row with care -- see the caveat
+        in the script's header.
+
+    python -m Validation.mc_evaluate --model <path>/best_model.zip --episodes 30
+        Monte-Carlo sweep over aircraft count and density.
+
+    python figures/plot_delays.py
+        Regenerates figures/delays.png, the three delay distributions. It samples
+        delays.py directly, so it cannot drift out of sync with the environment.
+
+--------------------------------------------------------------------------------
+WHERE THINGS LIVE
+--------------------------------------------------------------------------------
+
+    Environments/v4/delays.py     the four response models -- change delays HERE
+    Environments/v4/config.py     everything else that is tunable
+    Environments/v4/env.py        the environment; runs the queue, not the timing
+    Environments/v4/conflict.py   separation geometry, vectorised over all pairs
+    Environments/v4/sector.py     sector polygons and entry routes
+    Training/v4_train.py          the PPO trainer
+    Validation/                   diagnostics, cross-evaluation, Monte Carlo
+
+RANDOMNESS
+    Each episode derives three independent generators from one seed: one for the
+    scenario (sector, aircraft count, density, initial traffic), one for
+    replacement aircraft, one for the response delays. Keeping them apart is
+    what lets the arms share scenarios -- if the delay draws came from the same
+    stream, every random decision after the first advisory would shift, and the
+    arms would be training on different traffic.
+
+    Worker w, episode k always lands on the same scenario in every arm, as long
+    as the arms are launched with the same --seed. What happens after that
+    depends on the policy and diverges by design.

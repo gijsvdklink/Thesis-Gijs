@@ -29,6 +29,8 @@ from collections import deque
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+# Repo root too, so Environments.* resolves however the script is launched.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # -- NumPy unpickle shim so SB3 checkpoints load across numpy versions ------------
 class _NumpyShim(pickle.Unpickler):
@@ -60,6 +62,8 @@ import pygame
 from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
+
+from Environments.v4.delays import DELAY_MODES   # for the --delay choices
 
 WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
 CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
@@ -317,6 +321,10 @@ def main():
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')
     ap.add_argument('--density', type=float, default=1 / 10000, help='density (ac/km^2)')
+    ap.add_argument('--delay', default='none', choices=list(DELAY_MODES),
+                    help='action-response delay condition to fly under. Match the arm the '
+                         'model was trained on, or set it deliberately to see how the '
+                         'policy copes with pilots it never met.')
     ap.add_argument('--hold', action='store_true',
                     help='do-nothing policy: always select HOLD (no model loaded)')
     ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
@@ -344,21 +352,22 @@ def main():
     OBS_INTRUDER_LABELS = getattr(envmod, 'OBS_INTRUDER_LABELS',
                                   ['rho', 'theta', 'psi', 'vint', 'tau'])
 
-    CONFIG['n_aircraft'] = lambda: args.n_ac
-    CONFIG['rho']        = lambda: args.density
+    # The samplers take the env's scenario generator; these overrides pin the values.
+    CONFIG['n_aircraft'] = lambda rng: args.n_ac
+    CONFIG['rho']        = lambda rng: args.density
     if args.ref_jitter is not None:
         j = args.ref_jitter
-        CONFIG['ref_jitter'] = lambda: random.uniform(-j, j)
+        CONFIG['ref_jitter'] = lambda rng: rng.uniform(-j, j)
 
     det = not args.stochastic
     if args.hold:
         model, norm = None, None      # do-nothing policy: no model, no obs normalisation
-        env = AirspaceEnv()
+        env = AirspaceEnv(delay_mode=args.delay)
         mode = 'HOLD-only (do-nothing)'
         print('do-nothing policy: HOLD selected every step', flush=True)
     else:
         model = load_model(args.model)
-        env = AirspaceEnv()
+        env = AirspaceEnv(delay_mode=args.delay)
         norm = None
         if args.vecnorm:
             norm = load_vecnorm_stats(args.vecnorm)

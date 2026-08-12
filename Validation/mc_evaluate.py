@@ -121,8 +121,9 @@ def parse_float_list(text, fallback):
 
 
 def configure_cell(n_ac, rho):
-    CONFIG['n_aircraft'] = lambda n=n_ac: n
-    CONFIG['rho']        = lambda r=rho:  r
+    # The samplers take the env's scenario generator; these two ignore it and pin the cell.
+    CONFIG['n_aircraft'] = lambda rng, n=n_ac: n
+    CONFIG['rho']        = lambda rng, r=rho:  r
 
 
 def load_vecnorm(path, venv):

@@ -1,131 +1,127 @@
-"""
-Separation geometry: time-to-loss-of-separation, pairwise urgency (which drives focus
-selection and intruder ordering), the "safe to return" check, and the live LoS check.
-
-All functions are pure (no env state): they read the live BlueSky traffic by callsign
-or index and take any extra state (active callsigns, route headings) as arguments.
-"""
+# Separation geometry: time-to-LoS, pairwise urgency (which drives focus selection and
+# intruder ordering), the "safe to return" check, and the live LoS check.
+#
+# The pairwise functions take POSITION AND VELOCITY ARRAYS and work on the whole traffic
+# picture at once. With 15-30 aircraft that is 100-450 pairs every step, so doing it in
+# numpy rather than a Python loop is where most of the environment's CPU time was going.
 
 import math
+
+import numpy as np
 import bluesky as bs
 
 from .config import CONFIG
-from .geometry import (aircraft_position_nm, aircraft_speed_nms,
-                       aircraft_position_and_velocity, heading_to_velocity)
+from .geometry import NMS_PER_MS
+
+_TINY = 1e-12
+
+
+def traffic_states(indices):
+    """Positions (NM, east/north) and velocities (NM/s) for BlueSky indices, as (n, 2) arrays."""
+    idx = np.asarray(indices, dtype=int)
+    ref_lat, ref_lon = CONFIG['center_ll']
+
+    east  = (bs.traf.lon[idx] - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
+    north = (bs.traf.lat[idx] - ref_lat) * 60.0
+    speed = bs.traf.tas[idx] * NMS_PER_MS
+    hdg   = np.radians(bs.traf.hdg[idx])
+
+    pos = np.stack([east, north], axis=1)
+    vel = np.stack([speed * np.sin(hdg), speed * np.cos(hdg)], axis=1)
+    return pos, vel
 
 
 def time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep):
-    """Seconds until two aircraft first LOSE SEPARATION (distance < sep), from their
-    current relative state. range_rate = r.v (negative = converging), rel_spd_sq = |v|^2.
+    """Seconds until two aircraft first lose separation, or None if they never do.
 
-    Returns the LoS-entry time (>= 0), or None if they never intrude (diverging, parallel,
-    or miss distance >= sep). This is EARLIER than time-to-CPA: a pair enters the protected
-    circle before closest approach, so it is the honest "time until intrusion".
+    range_rate = r.v (negative = converging). This is EARLIER than time-to-CPA: a pair
+    enters the protected circle before closest approach.
         t_los = tcpa - sqrt((sep^2 - dcpa^2) / |v|^2)
     """
-    if rel_spd_sq < 1e-12:
+    if rel_spd_sq < _TINY:
         return None
     tcpa = -range_rate / rel_spd_sq
     if tcpa < 0:
         return None                                    # diverging
-    # Clamped because the subtraction can round marginally negative for nearly
-    # collinear pairs, and it feeds a sqrt.
+    # Clamped: the subtraction can round marginally negative for collinear pairs.
     dcpa_sq = max(0.0, dist_sq - range_rate ** 2 / rel_spd_sq)
     if dcpa_sq >= sep * sep:
-        return None                                    # miss distance too large: never intrudes
+        return None                                    # miss distance too large
     return tcpa - math.sqrt((sep * sep - dcpa_sq) / rel_spd_sq)
 
 
-def relative_motion(pos_i, vel_i, pos_j, vel_j):
-    """Relative geometry of j as seen from i, as the three scalars every separation
-    calculation needs: (dist_sq, range_rate, rel_spd_sq).
+def _pairwise(pos, vel):
+    """(dist_sq, range_rate, rel_spd_sq, t_los) for every pair, as (n, n) arrays.
 
-    range_rate is the dot product r.v -- negative means closing.
+    t_los is +inf for pairs that never intrude, so a single comparison against the
+    horizon covers both "no conflict" and "too far off".
     """
-    d_east  = pos_j[0] - pos_i[0]
-    d_north = pos_j[1] - pos_i[1]
-    dv_east  = vel_j[0] - vel_i[0]
-    dv_north = vel_j[1] - vel_i[1]
+    d  = pos[None, :, :] - pos[:, None, :]        # d[i, j] = pos[j] - pos[i]
+    dv = vel[None, :, :] - vel[:, None, :]
 
-    dist_sq    = d_east ** 2 + d_north ** 2
-    rel_spd_sq = dv_east ** 2 + dv_north ** 2
-    range_rate = d_east * dv_east + d_north * dv_north
-    return dist_sq, range_rate, rel_spd_sq
+    dist_sq    = np.einsum('ijk,ijk->ij', d, d)
+    rel_spd_sq = np.einsum('ijk,ijk->ij', dv, dv)
+    range_rate = np.einsum('ijk,ijk->ij', d, dv)
+
+    safe_rel = np.where(rel_spd_sq < _TINY, 1.0, rel_spd_sq)
+    tcpa     = -range_rate / safe_rel
+    dcpa_sq  = np.maximum(0.0, dist_sq - range_rate ** 2 / safe_rel)
+
+    sep_sq   = CONFIG['sep_nm'] ** 2
+    intrudes = (rel_spd_sq >= _TINY) & (tcpa >= 0) & (dcpa_sq < sep_sq)
+    t_los    = np.where(intrudes,
+                        tcpa - np.sqrt(np.maximum(0.0, sep_sq - dcpa_sq) / safe_rel),
+                        np.inf)
+    return dist_sq, range_rate, rel_spd_sq, t_los
 
 
-def urgency_from_states(pos_i, vel_i, pos_j, vel_j):
-    """Urgency of the conflict between two aircraft given their planar state (NM, NM/s).
+def urgency_matrix(pos, vel):
+    """Symmetric pairwise urgency over the traffic picture.
 
-    Returns:
-      > 1     active LoS    (1 at the sep boundary -> 10 at zero distance)
-      0..1    predicted LoS (0 at t_warn -> 1 at t_los = 0, i.e. intrusion now)
+      > 1     active LoS    (1 at the separation boundary -> 10 at zero distance)
+      0..1    predicted LoS (0 at t_warn -> 1 at intrusion now)
       0       safe / diverging
 
-    The LoS branch starts at 1 exactly where the predicted branch tops out, so an active
-    loss always outranks every predicted one.
+    The LoS branch starts exactly where the predicted branch tops out, so an active loss
+    always outranks every predicted one.
     """
-    sep = CONFIG['sep_nm']
-    dist_sq, range_rate, rel_spd_sq = relative_motion(pos_i, vel_i, pos_j, vel_j)
+    n = len(pos)
+    if n < 2:
+        return np.zeros((n, n))
 
-    if dist_sq < sep ** 2:
-        return 1.0 + 9.0 * (1.0 - math.sqrt(dist_sq) / sep)
+    sep, t_warn = CONFIG['sep_nm'], CONFIG['t_warn']
+    dist_sq, _, _, t_los = _pairwise(pos, vel)
 
-    t_los = time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep)
-    if t_los is None or t_los > CONFIG['t_warn']:
-        return 0.0                                       # no intrusion, or beyond the horizon
-    return (CONFIG['t_warn'] - t_los) / CONFIG['t_warn']  # t_los in [0, t_warn] -> u in [0, 1]
+    urgency = np.where(t_los <= t_warn, (t_warn - np.clip(t_los, 0.0, t_warn)) / t_warn, 0.0)
+    in_los  = dist_sq < sep * sep
+    urgency = np.where(in_los, 1.0 + 9.0 * (1.0 - np.sqrt(dist_sq) / sep), urgency)
 
-
-def urgency_between(idx_i, idx_j):
-    """Urgency between the two BlueSky aircraft at indices idx_i and idx_j."""
-    pos_i, vel_i = aircraft_position_and_velocity(idx_i)
-    pos_j, vel_j = aircraft_position_and_velocity(idx_j)
-    return urgency_from_states(pos_i, vel_i, pos_j, vel_j)
+    np.fill_diagonal(urgency, 0.0)
+    return urgency
 
 
-def route_return_blocked(cs, active_callsigns, route_hdg):
-    """Binary {0, 1}: 1 if returning aircraft cs to its route is NOT free.
+def any_loss_of_separation(pos):
+    """True if any pair is within sep_nm of each other."""
+    if len(pos) < 2:
+        return False
+    d       = pos[None, :, :] - pos[:, None, :]
+    dist_sq = np.einsum('ijk,ijk->ij', d, d)
+    np.fill_diagonal(dist_sq, np.inf)
+    return bool((dist_sq < CONFIG['sep_nm'] ** 2).any())
 
-    Puts the ownship on its route heading and checks it against every other aircraft on
-    ITS route heading (using route headings, not transient ones, keeps this robust to
-    in-progress avoidance manoeuvres). Returns 1 if already in LoS with anyone, or if any
-    route-corridor pair would lose separation within the warning horizon t_warn.
+
+def route_return_blocked(pos, route_vel):
+    """Per aircraft, 1.0 if turning back onto its route is NOT free.
+
+    Every aircraft is put on its ROUTE heading (which is robust to in-progress avoidance
+    manoeuvres) and the resulting corridors are checked against each other. Blocked means
+    already in LoS with someone, or losing separation with them within t_warn.
     """
-    idx = bs.traf.id2idx(cs)
-    if idx < 0:
-        return 0.0
+    n = len(pos)
+    if n < 2:
+        return np.zeros(n)
 
-    sep     = CONFIG['sep_nm']
-    own_pos = aircraft_position_nm(idx)
-    own_vel = heading_to_velocity(aircraft_speed_nms(idx), route_hdg[cs])
-
-    for other in active_callsigns:
-        j = bs.traf.id2idx(other)
-        if other == cs or j < 0:
-            continue
-
-        other_pos = aircraft_position_nm(j)
-        other_vel = heading_to_velocity(aircraft_speed_nms(j),
-                                        route_hdg.get(other, bs.traf.hdg[j]))
-        dist_sq, range_rate, rel_spd_sq = relative_motion(own_pos, own_vel,
-                                                          other_pos, other_vel)
-        if dist_sq < sep * sep:
-            return 1.0                                 # already in LoS
-
-        t_los = time_to_loss_of_separation(dist_sq, range_rate, rel_spd_sq, sep)
-        if t_los is not None and t_los <= CONFIG['t_warn']:
-            return 1.0                                 # route corridors lose sep within t_warn
-    return 0.0
-
-
-def any_loss_of_separation(active_callsigns):
-    """True if any pair of currently-flying aircraft is within sep_nm of each other."""
-    flying = [cs for cs in active_callsigns if bs.traf.id2idx(cs) >= 0]
-    sep_sq = CONFIG['sep_nm'] ** 2
-    for a in range(len(flying)):
-        pos_a = aircraft_position_nm(bs.traf.id2idx(flying[a]))
-        for b in range(a + 1, len(flying)):
-            pos_b = aircraft_position_nm(bs.traf.id2idx(flying[b]))
-            if (pos_b[0] - pos_a[0]) ** 2 + (pos_b[1] - pos_a[1]) ** 2 < sep_sq:
-                return True
-    return False
+    dist_sq, _, _, t_los = _pairwise(pos, route_vel)
+    blocked = (dist_sq < CONFIG['sep_nm'] ** 2) | (t_los <= CONFIG['t_warn'])
+    np.fill_diagonal(blocked, False)
+    return blocked.any(axis=1).astype(float)

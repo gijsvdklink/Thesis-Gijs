@@ -8,9 +8,24 @@ per-instruction workload costs.
 Difference from v4: the observation carries RAW PHYSICAL UNITS (NM, kt, s, rad).
 There are no hand-picked normalisers and no clipping, so no constant here plays the
 role D_WARN used to. Scaling is left entirely to VecNormalize at training time.
-"""
 
-import random
+RANDOM SAMPLERS TAKE AN EXPLICIT GENERATOR
+    Every entry below whose value is a lambda is a per-episode sampler, and each one
+    is called as CONFIG['key'](rng) with a random.Random instance supplied by the
+    environment. Nothing in the scenario path reads Python's global `random` stream.
+    That matters because the action-response delay models are also random: if both
+    drew from the same stream, a single delay draw would shift every later scenario
+    decision, and the experiment arms would stop seeing comparable traffic. See
+    env.reset for the three streams and delays.py for the response models.
+
+    Overriding a sampler (the visualiser and the Monte-Carlo scripts do this to pin
+    the aircraft count or density) means matching that signature:
+
+        CONFIG['n_aircraft'] = lambda rng, n=my_n: n
+
+ACTION-RESPONSE DELAY SETTINGS ARE NOT HERE
+    They live in delays.py, next to the models that use them.
+"""
 
 # -- Tunable settings ----------------------------------------------------------
 
@@ -25,8 +40,8 @@ CONFIG = {
                                              # one step reaches the envelope edge from nominal
     'altitude':              350,
     'center_ll':             (0.0, 0.0),     # flat-earth equatorial: cos(0) = 1
-    'n_aircraft':            lambda: random.randint(15, 30),            # sampled per episode
-    'rho':                   lambda: random.uniform(1/25000, 1/10000),  # sampled per episode; area = n/rho
+    'n_aircraft':            lambda rng: rng.randint(15, 30),            # sampled per episode
+    'rho':                   lambda rng: rng.uniform(1/25000, 1/10000),  # sampled per episode; area = n/rho
     'sep_nm':                5.0,
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
@@ -39,14 +54,14 @@ CONFIG = {
     'buffer_nm':             10.0,           # spawn buffer: min distance to traffic = sep_nm + buffer_nm
     'spawn_conflict_free':   True,           # reject spawns whose route hits CPA < sep within t_warn
     # Sector polygon -- varied but reasonably round (random convex shapes, circularity >= 0.7)
-    'n_vertices':            lambda: random.randint(6, 12),
+    'n_vertices':            lambda rng: rng.randint(6, 12),
     'min_circularity':       0.7,
     'max_placement_tries':   50,
     'min_chord_nm':          15.0,           # reject spawn->ref routes shorter than this: they
                                              # exit before flying and pollute arrival statistics
     # Aircraft placement jitter
-    'spawn_jitter':          lambda: random.uniform(0.1, 0.9),
-    'ref_jitter':            lambda: random.uniform(-0.5, 0.5),       # fully random crossing/exit directions
+    'spawn_jitter':          lambda rng: rng.uniform(0.1, 0.9),
+    'ref_jitter':            lambda rng: rng.uniform(-0.5, 0.5),      # fully random crossing/exit directions
     # Simulation
     'sim_dt':                1.0,            # BlueSky integration timestep (DT) = 1 s
     'action_freq':           5,             # RL step = 5 s simulated (action_freq x sim_dt)
@@ -55,18 +70,11 @@ CONFIG = {
                                             # 0 beyond t_warn) and has been removed.
     'crossings_per_episode': 4.0,
     'spawn_delay_s':         (0, 0),
-    # Action-response delay: seconds between the controller issuing an instruction and the
-    # pilot executing it. Lives in the transition function; see env._issue_action /
-    # _flush_due_commands. The reduced 'next' delay models an already-engaged pilot, so it
-    # applies only after an advisory has executed while the aircraft holds the focus --
-    # the counter is reset whenever a new aircraft becomes the ownship.
-    'delay_mode':            'none',        # 'none' | 'deterministic' | 'probabilistic'
-    'delay_first_s':         30.0,          # first advisory to a newly selected ownship
-    'delay_next_s':          15.0,          # once one has executed while it holds focus
-    'delay_sigma':           0.4,           # log-normal shape (probabilistic only);
-                                            # mean 30 s -> 80% of draws within 17-46 s
-                                            # (mean 15 s -> 8-23 s), median below the mean
-    'delay_max_s':           120.0,         # cap: a tail draw must not outlive the conflict
+    # Action-response delay: the timing law and its parameters live in delays.py. The
+    # arm is chosen per environment instance -- AirspaceEnv(delay_mode=...) -- rather
+    # than through CONFIG, because SubprocVecEnv workers do not inherit a parent-process
+    # CONFIG edit under spawn.
+    'delay_mode':            'none',        # default arm; see delays.DELAY_MODES
     # Observation
     'n_neighbours':          4,
     # Focus selection
@@ -82,13 +90,21 @@ CONFIG = {
                                             # scales with this, so w_drift also sets the action-cost
                                             # magnitude (doubling it doubles both).
     'w_work':                1.00,          # master scale for ACT_COST; tune magnitudes via w_drift
-    'seed':                  None,
+    # Fallback scenario seed used when nobody passes one to reset(). Episodes then walk
+    # SEED_STRIDE apart from here, so a bare AirspaceEnv() is reproducible out of the box.
+    'seed':                  0,
 }
+
+# Successive episodes of one environment step this far through the seed space. A large
+# prime keeps parallel workers (which start at seed + rank) from ever colliding.
+SEED_STRIDE = 7919
 
 # -- Derived constants ---------------------------------------------------------
 
 NM_TO_KM = 1.852
 KM_TO_NM = 1.0 / NM_TO_KM
+
+STEP_DURATION_S = CONFIG['action_freq'] * CONFIG['sim_dt']   # simulated seconds per RL step
 
 N_NEIGHBOURS = CONFIG['n_neighbours']
 OBS_DIM      = 7 + N_NEIGHBOURS * 5   # 7 ownship + 4 intruders x 5 = 27

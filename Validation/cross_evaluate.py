@@ -2,24 +2,22 @@
 Cross-evaluation for the delay experiment: train under one action-response condition,
 test under another. Writes TensorBoard scalars so the arms can be compared as curves.
 
-The three arms share an identical observation space (27 features) and action space
-(Discrete 10) BY DESIGN -- the 'pending' and 'wait_s' features exist in the no-delay arm
-too, where they are simply always 0. That makes a checkpoint from one arm loadable against another,
-and it is the question this script answers: what happens to a policy that learned assuming
-instant compliance when it meets pilots who take 25 s?
-
     python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
     tensorboard --logdir Runs_saved/cross_eval
 
-Each (trained, tested) pair becomes its own TensorBoard run named "<trained>_on_<tested>",
-so the baseline row shows up as none_on_none / none_on_deterministic / none_on_probabilistic
-and can be overlaid directly.
+The four arms share an identical observation space (27 features) and action space
+(Discrete 10) BY DESIGN -- 'pending' and 'wait_s' exist in the no-delay arm too, where
+they are always 0 -- so a checkpoint from one arm is loadable against another. That is
+the question this script answers: what happens to a policy that learned assuming instant
+compliance when it meets pilots who take 30 s?
 
-CAVEAT on the baseline row: a policy trained with delay_mode='none' never saw pending=1 or
-wait_s>0, so its VecNormalize statistics give both features ~zero variance and the normaliser
-maps them to the clip bound at test time. Its off-diagonal cells therefore mix a wrong
-strategy with an out-of-distribution input. The script prints an OOD factor per model so
-you can see how large that effect is; do not report those cells as a pure strategy result.
+Each (trained, tested) pair becomes its own TensorBoard run, "<trained>_on_<tested>".
+
+CAVEAT on the baseline row: a policy trained with delay_mode='none' never saw pending=1,
+so its VecNormalize statistics give that feature ~zero variance and the normaliser maps
+it to the clip bound at test time. Its off-diagonal cells mix a wrong strategy with an
+out-of-distribution input. The script prints an OOD factor per model; do not report those
+cells as a pure strategy result.
 """
 
 import argparse
@@ -37,21 +35,23 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.tensorboard import SummaryWriter
 
-from Environments.v4 import AirspaceEnv, OBS_OWNSHIP_LABELS
+from Environments.v4 import AirspaceEnv, DELAY_MODES, OBS_OWNSHIP_LABELS
 
-MODES = ('none', 'deterministic', 'probabilistic')
+MODES = DELAY_MODES
 
 # (episode-summary key, TensorBoard tag)
 METRICS = [
-    ('ep_reward_total', 'episode/reward_total'),
-    ('ep_length',       'episode/length'),
-    ('ep_los_events',   'safety/los_events'),
-    ('ep_los_steps',    'safety/los_steps'),
-    ('ep_arrival_rate', 'arrival/rate'),
+    ('ep_reward_total',      'episode/reward_total'),
+    ('ep_length',            'episode/length'),
+    ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
+    ('ep_arrival_rate',      'route/arrival_rate'),
+    ('ep_exit_deviation_nm', 'route/exit_deviation_nm'),
+    ('ep_delay_mean_s',      'delay/mean_response_s'),
 ]
 
 # Shown in the terminal summary; the rest are TensorBoard-only.
-HEADLINE = ['ep_los_events', 'ep_los_steps', 'ep_arrival_rate', 'ep_reward_total']
+HEADLINE = ['ep_los_events_per_fh', 'ep_exit_deviation_nm', 'ep_arrival_rate',
+            'ep_reward_total']
 
 
 def find_checkpoint(runs_root, mode):
@@ -116,7 +116,7 @@ def main():
                     help='root holding none/ deterministic/ probabilistic/ run directories')
     ap.add_argument('--out', default='Runs_saved/cross_eval',
                     help='TensorBoard output root')
-    ap.add_argument('--trained', nargs='*', choices=MODES, default=None,
+    ap.add_argument('--trained', nargs='*', choices=list(MODES), default=None,
                     help='which trained arms to evaluate (default: all found). '
                          'Use "--trained none" for just the baseline row.')
     ap.add_argument('--episodes', type=int, default=10, help='episodes per cell')
@@ -152,10 +152,10 @@ def main():
                 *ckpts[trained], tested, args.episodes, args.n_envs, args.seed, writer)
             writer.close()
 
-    print(f'\n{"":<28}' + ''.join(f'{k.replace("ep_", ""):>18}' for k in HEADLINE))
+    print(f'\n{"":<32}' + ''.join(f'{k.replace("ep_", ""):>24}' for k in HEADLINE))
     for (trained, tested), res in summary.items():
         label = f'{trained} on {tested}'
-        print(f'{label:<28}' + ''.join(f'{res[k]:>18.3f}' for k in HEADLINE))
+        print(f'{label:<32}' + ''.join(f'{res[k]:>24.3f}' for k in HEADLINE))
 
     print(f'\nTensorBoard:  tensorboard --logdir {args.out}')
     print('Each cell is a separate run, so overlay e.g. none_on_* to see how the baseline')

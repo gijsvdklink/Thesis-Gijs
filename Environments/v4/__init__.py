@@ -1,43 +1,21 @@
-"""
-v4 ATC conflict-resolution environment.
-
-Two properties define it:
-
-1. The observation is reported in RAW PHYSICAL UNITS (NM, kt, s, rad). There are no
-   hand-picked normalisers -- no D_WARN range scale, no division by cruise speed, no
-   clipping to [0, 1] -- so all scaling is left to VecNormalize(norm_obs=True). Training
-   and evaluation MUST load the matching *_vecnorm.pkl; raw observations fed to the
-   policy directly produce nonsense.
-2. Instructions are subject to an ACTION-RESPONSE DELAY: the pilot acts delay_s after
-   the controller issues, selected per environment instance via
-
-       AirspaceEnv(delay_mode='none' | 'deterministic' | 'probabilistic')
-
-   Two observation features report it: 'pending' (1 while an issued instruction has not
-   yet been executed) and 'wait_s' (how long it has been outstanding). Both exist in all
-   three modes -- constant 0 under 'none' -- so the delay arms share one observation
-   space and policies can be cross-evaluated across them. Checkpoints from any earlier
-   25- or 26-feature version of this env are NOT loadable.
-
-Public API (import from Environments.v4):
-    AirspaceEnv          the gymnasium environment
-    CONFIG               tunable settings dict
-    OBS_DIM              observation length (27)
-    OBS_OWNSHIP_LABELS   per-feature labels for the ownship part of the observation
-    OBS_INTRUDER_LABELS  per-feature labels for each intruder slot
-    latlon_to_nm, nm_to_latlon, wrap_to_180   coordinate helpers (used by the visualiser)
-
-Internal layout:
-    config.py    settings, derived constants, action layout, workload costs
-    geometry.py  coordinate transforms and aircraft-state helpers
-    conflict.py  separation geometry (time-to-LoS, urgency, conflict score, LoS checks)
-    sector.py    sector polygon generation and aircraft placement
-    env.py       the AirspaceEnv class
-"""
+# v4 ATC conflict-resolution environment.
+#
+# Two properties define it:
+#   1. The observation is in RAW PHYSICAL UNITS -- VecNormalize does all the scaling, so
+#      training and evaluation MUST load the matching *_vecnorm.pkl.
+#   2. Instructions are subject to an ACTION-RESPONSE DELAY, selected per instance:
+#          AirspaceEnv(delay_mode='none' | 'deterministic' | 'lognormal' | 'probabilistic')
+#      The 'pending' and 'wait_s' observation features exist in all four modes (constant 0
+#      under 'none'), so the arms share one observation space and can be cross-evaluated.
+#
+# Layout:  config.py  settings and constants      delays.py    response-delay models
+#          geometry.py coordinate transforms      conflict.py  separation geometry
+#          sector.py  sector and route generation env.py       the AirspaceEnv class
 
 from .config import (CONFIG, OBS_DIM, OBS_OWNSHIP_LABELS, OBS_INTRUDER_LABELS, NM_TO_KM)
+from .delays import DELAY_MODES
 from .geometry import latlon_to_nm, nm_to_latlon, wrap_to_180
 from .env import AirspaceEnv
 
-__all__ = ['AirspaceEnv', 'CONFIG', 'OBS_DIM', 'OBS_OWNSHIP_LABELS', 'OBS_INTRUDER_LABELS',
-           'NM_TO_KM', 'latlon_to_nm', 'nm_to_latlon', 'wrap_to_180']
+__all__ = ['AirspaceEnv', 'CONFIG', 'DELAY_MODES', 'OBS_DIM', 'OBS_OWNSHIP_LABELS',
+           'OBS_INTRUDER_LABELS', 'NM_TO_KM', 'latlon_to_nm', 'nm_to_latlon', 'wrap_to_180']

@@ -1,48 +1,53 @@
-"""Plot the action-response delay distributions: deterministic vs probabilistic.
+# The three action-response delay distributions, drawn straight from delays.py so the
+# figure cannot drift out of sync with the environment.
+#   python figures/plot_delays.py
 
-Keep the four numbers below in sync with Environments/v4/config.py.
-Regenerate with:  python figures/plot_delays.py
-"""
-import math
 import os
+import sys
+from random import Random
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import lognorm
 
-FIRST = 30      # config delay_first_s: first advisory to a newly selected ownship
-NEXT  = 15      # config delay_next_s:  once one has executed while it holds focus
-SIGMA = 0.4     # config delay_sigma:   log-normal shape (probabilistic only)
-XMAX  = 70      # shared by all four panels, so they are directly comparable
-YMAX  = 0.10
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from Environments.v4.delays import ResponseDelay, FIRST_S, NEXT_S, LOGNORM_MAX_S
 
-x = np.linspace(0.5, XMAX, 1000)
+N_SAMPLES = 400_000
+XMAX = 90.0                      # display range; the probabilistic tail runs past it
+BINS = np.arange(0, XMAX + 1)    # 1 s bins
 
-# Row 0 deterministic, row 1 probabilistic. Shared axes, so the reader cannot mistake a
-# scale change for a difference between the conditions.
-fig, axes = plt.subplots(2, 2, figsize=(9, 6), sharex=True, sharey=True)
+ROWS = [('deterministic', 'Deterministic', 'C0'),
+        ('lognormal',     'Log-normal',    'C1'),
+        ('probabilistic', 'Probabilistic', 'C2')]
 
-for col, mean in enumerate((FIRST, NEXT)):
-    # scipy's `scale` is the MEDIAN, so shift it to put the MEAN on `mean` -- the same
-    # parameterisation env._draw_response_delay uses. Passing `mean` as the scale
-    # directly is the classic log-normal mistake and shifts the curve ~8% right.
-    dist = lognorm(SIGMA, scale=mean * math.exp(-SIGMA ** 2 / 2))
+fig, axes = plt.subplots(3, 2, figsize=(9, 8), sharex=True, sharey=True)
 
-    axes[0, col].axvline(mean, color='C0', lw=2)          # all mass on one value
-    axes[1, col].plot(x, dist.pdf(x), color='C1', lw=2)
-    axes[1, col].axvline(mean, color='grey', lw=1, ls='--')
+for row, (mode, label, colour) in enumerate(ROWS):
+    for col, target in enumerate((FIRST_S, NEXT_S)):
+        ax = axes[row, col]
+        model  = ResponseDelay(mode, Random(row * 10 + col))
+        sample = [model.draw(engaged=bool(col)) for _ in range(N_SAMPLES)]
 
-    for row, label in ((0, f'{mean:g} s'), (1, f'mean {mean:g} s')):
-        axes[row, col].annotate(label, xy=(mean, YMAX * 0.92), xytext=(6, 0),
-                                textcoords='offset points', va='top')
-    axes[1, col].set_xlabel('Action-response delay [s]')
+        ax.hist(sample, bins=BINS, density=True, color=colour,
+                histtype='stepfilled', alpha=0.85)
+        ax.axvline(np.mean(sample), color='grey', lw=1, ls='--')
+        ax.annotate(f'mean {np.mean(sample):.1f} s', xy=(0.97, 0.9),
+                    xycoords='axes fraction', ha='right', va='top')
 
-axes[0, 0].set_title('First instruction')
-axes[0, 1].set_title('Follow-up instruction')
-axes[0, 0].set_ylabel('Deterministic\n\nProbability density')
-axes[1, 0].set_ylabel('Probabilistic\n\nProbability density')
+    axes[row, 0].set_ylabel(f'{label}\n\nProbability density')
+
+axes[0, 0].set_title(f'First instruction (target {FIRST_S:g} s)')
+axes[0, 1].set_title(f'Follow-up instruction (target {NEXT_S:g} s)')
+for ax in axes[2]:
+    ax.set_xlabel('Action-response delay [s]')
+
+# Shared axes so the reader cannot mistake a scale change for a difference between arms.
 axes[0, 0].set_xlim(0, XMAX)
-axes[0, 0].set_ylim(0, YMAX)
+axes[0, 0].set_ylim(0, 0.10)
+
+# The lognormal clip is a real feature of that arm; the probabilistic one has no ceiling.
+for ax in axes[1]:
+    ax.axvline(LOGNORM_MAX_S, color='k', lw=0.8, ls=':')
 
 fig.tight_layout()
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'delays.png')
