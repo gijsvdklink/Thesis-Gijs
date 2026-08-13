@@ -3,10 +3,11 @@
 #
 #   none            0 s                                          (baseline)
 #   deterministic   30 s, or 15 s once engaged
-#   lognormal       mean 30 s / 15 s, clipped at 70 s
+#   lognormal       mean 30 s / 15 s
 #   probabilistic   1/30 chance per second, or 1/15 once engaged  (the Markov chain)
 #
-# All three delayed arms have the same mean; they differ only in shape.
+# All three delayed arms have exactly the same mean and no ceiling; they differ only in
+# shape, which is what the experiment isolates.
 #
 # `engaged` = has this pilot already executed an advisory? The env decides it, and the
 # rule is the same in every arm: False whenever the focus moves to a new aircraft, True
@@ -19,9 +20,7 @@ DELAY_MODES = ('none', 'deterministic', 'lognormal', 'probabilistic')
 FIRST_S = 30.0    # first advisory to a new focus ship
 NEXT_S  = 15.0    # once an advisory has executed and the aircraft still has the focus
 
-SIGMA        = 0.4    # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
-LOGNORM_MAX_S = 70.0  # lognormal clip. The probabilistic arm is NOT clipped: its Markov
-                      # chain has no forced-response state, only the per-second hazard.
+SIGMA   = 0.4     # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
 
 
 class ResponseDelay:
@@ -51,7 +50,7 @@ class ResponseDelay:
         if self.mode == 'lognormal':
             # Parameterised on the mean, not the median: E[X] = exp(mu + sigma^2/2).
             mu = math.log(target) - SIGMA ** 2 / 2.0
-            return min(self.rng.lognormvariate(mu, SIGMA), LOGNORM_MAX_S)
+            return self.rng.lognormvariate(mu, SIGMA)
 
         # Markov chain: each second the pilot either stays in "not executed" (29/30, or
         # 14/15 once engaged) or executes. That is a geometric distribution, and the
@@ -66,6 +65,5 @@ class ResponseDelay:
         if self.mode == 'none':
             return 0.0
         # Geometric with p = 1/target has mean target, and the lognormal is parameterised
-        # on its mean, so every delayed arm lands on the same number. The lognormal clip
-        # pulls it down by well under 1%, which is not worth correcting for.
+        # on its mean, so all three delayed arms land on exactly the same number.
         return NEXT_S if engaged else FIRST_S

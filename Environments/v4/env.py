@@ -96,7 +96,6 @@ class AirspaceEnv(gym.Env):
         # -- per-aircraft state, all keyed by callsign --
         self._destination_ll      = {}   # far point along the route (visualisation only)
         self._exit_ref_nm         = {}   # where a straight flight would leave the sector
-        self._spawn_step          = {}   # step at spawn (to drop aircraft that never flew)
         self._route_hdg           = {}   # live bearing (deg) to destination
         self._commanded_heading   = {}   # last EXECUTED heading instruction
         self._commanded_mach      = {}   # last EXECUTED speed instruction
@@ -108,7 +107,7 @@ class AirspaceEnv(gym.Env):
 
         # Registry so _forget_aircraft clears every trace of a departed aircraft.
         self._per_aircraft_state = [
-            self._destination_ll, self._exit_ref_nm, self._spawn_step, self._route_hdg,
+            self._destination_ll, self._exit_ref_nm, self._route_hdg,
             self._commanded_heading, self._commanded_mach, self._returning_to_route,
             self._steps_since_urgency, self._pending_cmd, self._executed_count,
             self._manoeuvred,
@@ -704,8 +703,6 @@ class AirspaceEnv(gym.Env):
         dist_sq = np.einsum('ij,ij->i', d, d)
         if (dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any():
             return False                                    # static buffer
-        if not CONFIG.get('spawn_conflict_free', True):
-            return True
 
         dv         = vel - cand_vel
         rel_spd_sq = np.einsum('ij,ij->i', dv, dv)
@@ -745,7 +742,6 @@ class AirspaceEnv(gym.Env):
         self._exit_ref_nm[cs]         = latlon_to_nm(CONFIG['center_ll'],
                                                      float(route['ref_ll'][0]),
                                                      float(route['ref_ll'][1]))
-        self._spawn_step[cs]          = self._step_count
         self._route_hdg[cs]           = float(route['heading'])
         self._commanded_heading[cs]   = float(route['heading'])
         self._commanded_mach[cs]      = CONFIG['ac_mach']
@@ -792,14 +788,12 @@ class AirspaceEnv(gym.Env):
     def _score_arrival(self, cs, idx):
         """Score one exiting aircraft: on-route heading, and how far off it left.
 
-        Metrics only. Aircraft that register as outside before really flying are excluded,
-        and so are aircraft that were never manoeuvred -- they crossed untouched and would
-        score a free perfect arrival, which says nothing about the policy.
+        Metrics only. Aircraft that were never manoeuvred are skipped -- they crossed
+        untouched and would score a free perfect arrival, which says nothing about the
+        policy. That filter also subsumes the old minimum-lifetime rule: aircraft spawn on
+        the boundary and can register as outside within a step or two, but reaching the
+        focus and having an advisory execute takes far longer, so none of them are scored.
         """
-        life = self._step_count - self._spawn_step.get(cs, 0)
-        if life <= CONFIG['arrival_min_life_steps']:
-            return
-
         self._ep_stats['exits'] += 1
         if cs not in self._manoeuvred:
             return

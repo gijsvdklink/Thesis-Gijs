@@ -5,7 +5,7 @@ import statistics
 import sys
 from random import Random
 
-from .delays import ResponseDelay, DELAY_MODES, FIRST_S, NEXT_S, LOGNORM_MAX_S
+from .delays import ResponseDelay, DELAY_MODES, FIRST_S, NEXT_S
 
 N = 100_000
 failures = []
@@ -30,9 +30,6 @@ def main():
     for mode in DELAY_MODES:
         check(f'{mode}: reproducible from a seed',
               draws(mode, False, 500, 7) == draws(mode, False, 500, 7))
-        if mode == 'lognormal':
-            check(f'{mode}: clipped at {LOGNORM_MAX_S:g} s',
-                  max(draws(mode, True, 20_000) + draws(mode, False, 20_000)) <= LOGNORM_MAX_S)
         model = ResponseDelay(mode, Random(0))
         check(f'{mode}: engaged branch is never slower',
               model.mean_s(True) <= model.mean_s(False))
@@ -59,10 +56,10 @@ def main():
     for engaged, target in ((False, FIRST_S), (True, NEXT_S)):
         sample = draws('probabilistic', engaged)
         p = 1.0 / target
-        # The Markov chain has no forced-response state, so the delay is unbounded.
+        # No arm has a ceiling any more, so both stochastic ones must run past 70 s.
         check(f'probabilistic/{target:g}: whole seconds from 1, unbounded above',
               all(float(d).is_integer() for d in sample)
-              and min(sample) == 1.0 and max(sample) > LOGNORM_MAX_S)
+              and min(sample) == 1.0 and max(sample) > 70.0)
 
         # Memorylessness: the chance of responding in the next second does not depend on
         # how long the pilot has already been silent. This is what separates it from

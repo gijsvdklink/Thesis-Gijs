@@ -8,8 +8,9 @@ THE QUESTION
     mean?
 
 THE FOUR ARMS
-    All three delayed arms have the SAME mean response time, 30 s / 15 s. They
-    differ only in shape, which is the experimental variable.
+    All three delayed arms have the SAME mean response time, 30 s / 15 s, and
+    none of them has a ceiling. They differ only in shape, which is the
+    experimental variable.
 
     none            0 s.  The baseline: pilots comply immediately.
 
@@ -17,17 +18,24 @@ THE FOUR ARMS
                     15 s once that pilot has executed one. No randomness, so the
                     controller could count down to the exact second.
 
-    lognormal       Random, mean 30 s / 15 s, sigma 0.4, CLIPPED AT 70 s. Mass
+    lognormal       Random, mean 30 s / 15 s, sigma 0.4, unbounded. Mass
                     concentrated near the mean: a long silence means a response
-                    is overdue, so waiting is informative.
+                    is overdue, so waiting is informative. The delay is drawn
+                    ONCE at issue time and held as hidden state -- the agent
+                    sees that something is pending and how long it has waited,
+                    never when it will land.
 
     probabilistic   The Markov chain. Each simulated second the pilot either
                     stays in "not executed" (29/30, or 14/15 once engaged) or
-                    acts. NO forced response and no ceiling -- the tail is
-                    unbounded, and a delay past 120 s is rare but possible.
-                    Memoryless: how long the pilot has already been silent tells
-                    the controller nothing about when they will act, and an
-                    immediate response is always on the table.
+                    acts. No forced response, so the tail is unbounded and a
+                    delay past 120 s is rare but possible. Memoryless: how long
+                    the pilot has already been silent tells the controller
+                    nothing about when they will act, and an immediate response
+                    is always on the table.
+                    Implementation note: the code samples the equivalent
+                    geometric delay once at issue rather than rolling a die each
+                    second. Identical distribution -- the per-second chance
+                    cannot change while an instruction is outstanding.
 
 ENGAGEMENT ("has the pilot already executed an advisory?")
     Identical in all four arms. It is FALSE every time the focus moves to a new
@@ -43,7 +51,7 @@ BEFORE TRAINING -- CHECK THE PLUMBING
 --------------------------------------------------------------------------------
 
     python -m Environments.v4.test_delays
-        Checks the delay models on their own: means, ceilings, memorylessness,
+        Checks the delay models on their own: means, tails, memorylessness,
         reproducibility. Takes about 20 s. Should end "all checks passed".
 
     python -m Validation.delay_diagnostics --episodes 2 --steps 600
@@ -68,10 +76,10 @@ SAME --seed everywhere: that is what makes the arms share their scenarios.
     # terminal 2 -- deterministic 30 s / 15 s
     python -m Training.v4_train --delay deterministic --seed 0 --n-envs 2
 
-    # terminal 3 -- log-normal, mean 30 s / 15 s, capped at 70 s
+    # terminal 3 -- log-normal, mean 30 s / 15 s
     python -m Training.v4_train --delay lognormal     --seed 0 --n-envs 2
 
-    # terminal 4 -- probabilistic, 1/30 (1/15) per second, forced at 70 s
+    # terminal 4 -- probabilistic, 1/30 (1/15) per second, Markov chain
     python -m Training.v4_train --delay probabilistic --seed 0 --n-envs 2
 
     # terminal 5 -- TensorBoard

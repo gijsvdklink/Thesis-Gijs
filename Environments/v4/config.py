@@ -46,13 +46,12 @@ CONFIG = {
     'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
                                              # near-constant and a held heading stays on route
     # Arrival scoring -- METRIC ONLY, not part of the reward (which is los + drift + work).
-    # An aircraft "arrives" if it leaves the sector without drift, i.e. within this many
-    # degrees of its route heading rather than still in an avoidance deviation.
+    # An aircraft "arrives" if it leaves within this many degrees of its route heading
+    # rather than still sitting in an avoidance deviation. The metric is insensitive to
+    # the exact value: the heading error is bimodal, so 2, 5 and 10 degrees give arrival
+    # rates within one point of each other.
     'arrival_hdg_tol_deg':   5.0,
-    'arrival_min_life_steps': 3,             # aircraft alive fewer steps than this never
-                                             # really flew; excluded from the rate entirely
     'buffer_nm':             10.0,           # spawn buffer: min distance to traffic = sep_nm + buffer_nm
-    'spawn_conflict_free':   True,           # reject spawns whose route hits CPA < sep within t_warn
     # Sector polygon -- varied but reasonably round (random convex shapes, circularity >= 0.7)
     'n_vertices':            lambda rng: rng.randint(6, 12),
     'min_circularity':       0.7,

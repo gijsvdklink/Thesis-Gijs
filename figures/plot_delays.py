@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from Environments.v4.delays import ResponseDelay, FIRST_S, NEXT_S, LOGNORM_MAX_S
+from Environments.v4.delays import ResponseDelay, FIRST_S, NEXT_S
 
 N_SAMPLES = 400_000
 XMAX = 90.0                      # display range; the probabilistic tail runs past it
@@ -45,9 +45,6 @@ for ax in axes[2]:
 axes[0, 0].set_xlim(0, XMAX)
 axes[0, 0].set_ylim(0, 0.10)
 
-# The lognormal clip is a real feature of that arm; the probabilistic one has no ceiling.
-for ax in axes[1]:
-    ax.axvline(LOGNORM_MAX_S, color='k', lw=0.8, ls=':')
 
 fig.tight_layout()
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'delays.png')
