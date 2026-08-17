@@ -151,13 +151,18 @@ def reset_episode(env, seed):
     return obs, poly, scale, prot_px
 
 
-def policy_step(env, model, obs, deterministic, norm, st):
+def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None):
     """Advance one RL step (obs normalised if norm given) and update stats in place.
 
-    model=None is the HOLD-only (do-nothing) policy: every step selects action 3 (HOLD),
-    so no instruction reaches the simulator and aircraft fly their spawned routes."""
+    fixed_seq overrides everything below it: a list of action indices cycled through,
+    one per step, regardless of model or hold. A single-element list is a constant
+    action. model=None (with fixed_seq=None) is the HOLD-only (do-nothing) policy: every
+    step selects action 3 (HOLD), so no instruction reaches the simulator and aircraft
+    fly their spawned routes."""
     acting_cs = env._focus_cs
-    if model is None:
+    if fixed_seq:
+        a = fixed_seq[st['step_n'] % len(fixed_seq)]
+    elif model is None:
         a = 3   # HOLD-only: do-nothing baseline
     else:
         o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
@@ -238,7 +243,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         pygame.draw.polygon(screen, DIM, [to_screen(v[0], v[1], scale) for v in poly], 2)
 
     urg = urgency(env)
-    dest_map = getattr(env, '_destination_ll', {})
+    init_hdg_map = getattr(env, '_initial_hdg', {})
     for cs in env._active_callsigns:
         idx = bs.traf.id2idx(cs)
         if idx < 0:
@@ -250,14 +255,13 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         hdg_deg = float(bs.traf.hdg[idx])
         gs_kt = float(bs.traf.tas[idx]) * KT
 
-        dest = dest_map.get(cs)
-        if dest is not None:
-            dpos = latlon_to_nm(CONFIG['center_ll'], float(dest[0]), float(dest[1]))
-            sdx, sdy = dpos[0] - pos[0], -(dpos[1] - pos[1])
-            sn = math.hypot(sdx, sdy)
-            if sn > 1e-6:
-                dashed_line(screen, WP, (px, py),
-                            (px + sdx / sn * DIAG, py + sdy / sn * DIAG))
+        # Dashed ray along the aircraft's INITIAL heading: the reference turn actions are
+        # offsets from, and the line it would have flown had it never turned.
+        init_hdg = init_hdg_map.get(cs)
+        if init_hdg is not None:
+            h0 = math.radians(init_hdg)
+            dashed_line(screen, WP, (px, py),
+                        (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
         # 2.5 NM protected-zone ring (two overlapping == intrusion / LoS). The ownship
         # (focus) ring is blue, drawn at the same 2.5 NM radius.
@@ -296,18 +300,18 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
 
 
 def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
-               fps, det, norm, mode):
+               fps, det, norm, mode, fixed_seq=None, max_steps=None):
     import cv2
     writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (WIN_W, WIN_H))
     if not writer.isOpened():
         raise RuntimeError(f'could not open video writer for {path}')
     st = fresh_stats()
     while True:
-        obs, trunc = policy_step(env, model, obs, det, norm, st)
+        obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq)
         draw_frame(screen, fonts, env, scale, poly, prot_px, st, False, mode, obs)
         frame = np.transpose(pygame.surfarray.array3d(screen), (1, 0, 2))
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        if trunc:
+        if trunc or (max_steps is not None and st['step_n'] >= max_steps):
             break
     writer.release()
     print(f'saved {path}  ({st["step_n"]} steps, reward {st["cum_r"]:+.1f}, LoS {st["los"]})')
@@ -327,6 +331,16 @@ def main():
                          'policy copes with pilots it never met.')
     ap.add_argument('--hold', action='store_true',
                     help='do-nothing policy: always select HOLD (no model loaded)')
+    ap.add_argument('--fixed-action', type=int, default=None, metavar='N',
+                    help='ignore the model/hold policy and always select action N every '
+                         f'step, e.g. 0 = {ACTION_LABELS[0]} (turn -60). For isolating '
+                         'the effect of one repeated action.')
+    ap.add_argument('--action-seq', default=None, metavar='A,B,C',
+                    help='cycle through this comma-separated list of action indices, one '
+                         'per step, e.g. "0,3" alternates turn -60 with HOLD. Overrides '
+                         '--fixed-action.')
+    ap.add_argument('--steps', type=int, default=None, metavar='N',
+                    help='stop after this many RL steps (mp4 only); default: full episode')
     ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
                     help='exit-point jitter range: ref_jitter ~ uniform(-J, +J); '
                          'J=0.5 gives fully random crossing directions')
@@ -360,7 +374,20 @@ def main():
         CONFIG['ref_jitter'] = lambda rng: rng.uniform(-j, j)
 
     det = not args.stochastic
-    if args.hold:
+    fixed_seq = None
+    if args.action_seq:
+        fixed_seq = [int(t) for t in args.action_seq.split(',') if t.strip() != '']
+    elif args.fixed_action is not None:
+        fixed_seq = [args.fixed_action]
+
+    if fixed_seq:
+        model, norm = None, None      # fixed policy: no model, no obs normalisation
+        env = AirspaceEnv(delay_mode=args.delay)
+        labels = ' -> '.join(ACTION_LABELS[a] for a in fixed_seq)
+        mode = (f'FIXED action {ACTION_LABELS[fixed_seq[0]]} every step' if len(fixed_seq) == 1
+                else f'FIXED cycle: {labels}')
+        print(f'fixed policy: cycling {labels}', flush=True)
+    elif args.hold:
         model, norm = None, None      # do-nothing policy: no model, no obs normalisation
         env = AirspaceEnv(delay_mode=args.delay)
         mode = 'HOLD-only (do-nothing)'
@@ -393,7 +420,7 @@ def main():
 
     if args.mp4:
         record_mp4(args.mp4, screen, fonts, env, model, obs, poly, scale, prot_px,
-                   args.fps, det, norm, mode)
+                   args.fps, det, norm, mode, fixed_seq, args.steps)
         pygame.quit()
         return
 
@@ -417,7 +444,7 @@ def main():
                     st = fresh_stats()
 
         if not paused:
-            obs, trunc = policy_step(env, model, obs, det, norm, st)
+            obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq)
             if trunc:
                 seed = random.randint(0, 99_999)
                 obs, poly, scale, prot_px = reset_episode(env, seed)

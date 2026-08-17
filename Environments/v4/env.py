@@ -1,6 +1,11 @@
 # v4 ATCO conflict-resolution environment. One aircraft (the focus) is controlled per
 # step. delays.py decides when the pilot acts on an instruction. reset() derives three
 # independent random streams so the experiment arms share their scenarios.
+#
+# Each aircraft is assigned an INITIAL HEADING at spawn that never changes. It is the
+# reference for everything directional: turn actions are absolute offsets from it, drift
+# is the angle between the current heading and it, and the arrival KPI measures how far
+# from its no-turn exit point the aircraft actually left.
 
 import math
 from random import Random
@@ -16,7 +21,7 @@ from bluesky.stack.stackbase import Stack as _BsStack
 from .config import (CONFIG, SEED_STRIDE, STEP_DURATION_S, OBS_DIM, N_ACTIONS, N_NEIGHBOURS,
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, EMPTY_RANGE_NM, NO_CONFLICT_S,
                      TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION, ACT_COST)
-from .delays import DELAY_MODES, ResponseDelay
+from .delays import DELAY_MODES, TIMING_FIELDS, ResponseDelay
 from .geometry import latlon_to_nm, nm_to_latlon, wrap_to_180, heading_to_velocity
 from .conflict import (traffic_states, urgency_matrix, any_loss_of_separation,
                        route_return_blocked, time_to_loss_of_separation)
@@ -41,7 +46,7 @@ class AirspaceEnv(gym.Env):
     # Empty intruder slot: unreachably far, stationary, no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self, delay_mode=None, seed=None):
+    def __init__(self, delay_mode=None, seed=None, delay_first_s=None, delay_next_s=None):
         super().__init__()
         global _bs_initialized
 
@@ -53,6 +58,12 @@ class AirspaceEnv(gym.Env):
 
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
+
+        # Delay magnitude: the experiment's second factor. Travels via env_kwargs for
+        # the same reason delay_mode does. next defaults to half of first inside
+        # ResponseDelay, so one number per run is enough.
+        self.delay_first_s = delay_first_s
+        self.delay_next_s  = delay_next_s
 
         self._seed_base     = int(seed if seed is not None else CONFIG['seed'])
         self._episode_index = 0
@@ -94,12 +105,10 @@ class AirspaceEnv(gym.Env):
         self._return_blocked  = np.zeros(0)           # 1 = cannot turn back onto route
 
         # -- per-aircraft state, all keyed by callsign --
-        self._destination_ll      = {}   # far point along the route (visualisation only)
+        self._initial_hdg         = {}   # heading (deg) assigned at spawn; NEVER changes
         self._exit_ref_nm         = {}   # where a straight flight would leave the sector
-        self._route_hdg           = {}   # live bearing (deg) to destination
         self._commanded_heading   = {}   # last EXECUTED heading instruction
         self._commanded_mach      = {}   # last EXECUTED speed instruction
-        self._returning_to_route  = {}   # return-to-route mode latched on
         self._steps_since_urgency = {}   # steps since this aircraft last had a conflict
         self._pending_cmd         = {}   # issued-but-not-executed instruction
         self._executed_count      = {}   # instructions executed while holding the focus
@@ -107,8 +116,8 @@ class AirspaceEnv(gym.Env):
 
         # Registry so _forget_aircraft clears every trace of a departed aircraft.
         self._per_aircraft_state = [
-            self._destination_ll, self._exit_ref_nm, self._route_hdg,
-            self._commanded_heading, self._commanded_mach, self._returning_to_route,
+            self._initial_hdg, self._exit_ref_nm,
+            self._commanded_heading, self._commanded_mach,
             self._steps_since_urgency, self._pending_cmd, self._executed_count,
             self._manoeuvred,
         ]
@@ -126,7 +135,10 @@ class AirspaceEnv(gym.Env):
             'manoeuvred_exits': 0,
             'on_route': 0,         # ...of which left within the heading tolerance
             'deviation_nm': 0.0,   # ...summed distance from the no-turn exit point
-            'delay_next': 0, 'delay_sum_s': 0.0, 'delay_drawn': 0,
+            # Drift, summed over aircraft and steps: how far traffic sits from the
+            # headings it was assigned. Divided by aircraft-steps to get a mean angle.
+            'drift_deg_sum': 0.0, 'drift_samples': 0,
+            'delay_next': 0, 'delay_sum_s': 0.0, 'delay_served': 0,
             'focus_spells': 0, 'focus_spell_steps': 0,
             'discarded': 0,        # instructions replaced before the pilot could fly them
         }
@@ -145,7 +157,10 @@ class AirspaceEnv(gym.Env):
         self.scenario_rng   = Random(self.episode_seed)
         self.traffic_rng    = Random(self.episode_seed ^ _TRAFFIC_SEED_XOR)
         self.delay_rng      = Random(self.episode_seed ^ _DELAY_SEED_XOR)
-        self.response_delay = ResponseDelay(self.delay_mode, self.delay_rng)
+        self.response_delay = ResponseDelay(
+            self.delay_mode, self.delay_rng,
+            **({'first_s': self.delay_first_s} if self.delay_first_s is not None else {}),
+            **({'next_s': self.delay_next_s} if self.delay_next_s is not None else {}))
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -168,14 +183,12 @@ class AirspaceEnv(gym.Env):
     def step(self, action):
         action = int(action)
         self._spawn_due_aircraft()
-        self._update_route_headings()
 
         # The aircraft that HELD the focus when this action was chosen. Reward is charged
         # to it, not to whichever aircraft the focus moves to at the end of the step.
         acting_cs = self._focus_cs
         if acting_cs:
             self._issue_instruction(acting_cs, action)
-        self._update_return_to_route_headings()
 
         self._advance_simulation()
 
@@ -249,10 +262,10 @@ class AirspaceEnv(gym.Env):
         self._urgency_matrix = urgency_matrix(self._pos, self._vel)
 
         # Whether each aircraft could turn back onto its route: same geometry, but with
-        # everyone flying their ROUTE heading instead of their current one.
+        # everyone flying their INITIAL heading instead of their current one.
         speed      = np.hypot(self._vel[:, 0], self._vel[:, 1])
-        route_hdg  = np.radians([self._route_hdg.get(cs, h) for cs, h in zip(flying, self._hdg)])
-        route_vel  = np.stack([speed * np.sin(route_hdg), speed * np.cos(route_hdg)], axis=1)
+        init_hdg   = np.radians([self._initial_hdg.get(cs, h) for cs, h in zip(flying, self._hdg)])
+        route_vel  = np.stack([speed * np.sin(init_hdg), speed * np.cos(init_hdg)], axis=1)
         self._return_blocked = route_return_blocked(self._pos, route_vel)
 
     def _pairs_in_loss_of_separation(self):
@@ -278,6 +291,13 @@ class AirspaceEnv(gym.Env):
         # LoS counts comparable between episodes of different size and density.
         s['flight_s'] += len(self._urgency_cs_list) * STEP_DURATION_S
 
+        # Drift of every airborne aircraft from the heading it was assigned at spawn.
+        for cs in self._urgency_cs_list:
+            if cs in self._initial_hdg:
+                s['drift_deg_sum'] += abs(wrap_to_180(
+                    self._hdg[self._row_of[cs]] - self._initial_hdg[cs]))
+                s['drift_samples'] += 1
+
         # Count LoS ENTRIES, not steps-in-LoS: one long intrusion is one event.
         los_pairs = self._pairs_in_loss_of_separation()
         s['los_events'] += len(los_pairs - self._prev_los_pairs)
@@ -287,8 +307,14 @@ class AirspaceEnv(gym.Env):
         """End-of-episode metrics, logged by the training callbacks."""
         s = self._ep_stats
         flight_hours = max(s['flight_s'] / 3600.0, 1e-9)
-        drawn        = max(s['delay_drawn'], 1)
+        served       = max(s['delay_served'], 1)
         handled      = s['manoeuvred_exits']
+
+        # Instructions issued, split by kind. Read off the action histogram, which is
+        # already collected, so this costs nothing extra.
+        counts = np.bincount(s['actions'], minlength=N_ACTIONS)
+        turns  = int(counts[list(TURN_DELTAS)].sum() + counts[RETURN_TO_ROUTE_ACTION])
+        speeds = int(counts[list(SPEED_ACTIONS)].sum())
 
         return {
             'mean_episode_reward': s['reward'] / max(s['steps'], 1),
@@ -311,10 +337,16 @@ class AirspaceEnv(gym.Env):
             'ep_manoeuvred_exits':  handled,
             'ep_exits':             s['exits'],
 
+            # How far traffic sits from its assigned headings, and how many instructions
+            # of each kind it took to get there.
+            'ep_mean_drift_deg':  s['drift_deg_sum'] / max(s['drift_samples'], 1),
+            'ep_turns':           turns,
+            'ep_speed_changes':   speeds,
+
             # Diagnostics -- not logged to TensorBoard; Validation/delay_diagnostics.py
             # reports them.
-            'ep_delay_mean_s':     s['delay_sum_s'] / drawn,
-            'ep_delay_next_frac':  s['delay_next'] / drawn,
+            'ep_delay_mean_s':     s['delay_sum_s'] / served,
+            'ep_delay_next_frac':  s['delay_next'] / served,
             'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
             'ep_discarded':        s['discarded'],
         }
@@ -416,10 +448,15 @@ class AirspaceEnv(gym.Env):
         return best_cs
 
     def _heading_drift(self, cs):
-        """1 - cos(commanded heading - route heading): 0 on route, 2 reversed."""
-        row     = self._row_of.get(cs)
-        flying  = self._hdg[row] if row is not None else 0.0
-        hdg_err = wrap_to_180(self._route_hdg[cs] - self._commanded_heading.get(cs, flying))
+        """1 - cos(current heading - initial heading): 0 on the assigned heading, 2 reversed.
+
+        Measured on the ACTUAL heading, so the penalty ramps as the aircraft physically
+        turns rather than jumping the moment an instruction executes.
+        """
+        row = self._row_of.get(cs)
+        if row is None:
+            return 0.0
+        hdg_err = wrap_to_180(self._initial_hdg[cs] - self._hdg[row])
         return 1 - math.cos(math.radians(hdg_err))
 
     def _select_drifter_to_recover(self, flying):
@@ -428,7 +465,7 @@ class AirspaceEnv(gym.Env):
         Focusing a drifter that cannot return only burns steps, so blocked ones are
         filtered out -- unless every drifter is blocked, in which case the filter drops.
         """
-        drift = {cs: self._heading_drift(cs) for cs in flying if cs in self._route_hdg}
+        drift = {cs: self._heading_drift(cs) for cs in flying if cs in self._initial_hdg}
 
         free = [cs for cs in drift
                 if drift[cs] > 0 and not self._return_blocked[self._row_of[cs]]]
@@ -445,40 +482,18 @@ class AirspaceEnv(gym.Env):
             return self._focus_cs
         return best_cs
 
-    # -- Route tracking --------------------------------------------------------
-
-    def _update_route_headings(self):
-        """Route heading = live bearing to the (far) destination, so it self-corrects."""
-        center = CONFIG['center_ll']
-        for cs in self._active_callsigns:
-            idx  = bs.traf.id2idx(cs)
-            dest = self._destination_ll.get(cs)
-            if idx < 0 or dest is None:
-                continue
-            dest_nm = latlon_to_nm(center, float(dest[0]), float(dest[1]))
-            pos     = latlon_to_nm(center, bs.traf.lat[idx], bs.traf.lon[idx])
-            self._route_hdg[cs] = math.degrees(
-                math.atan2(dest_nm[0] - pos[0], dest_nm[1] - pos[1])) % 360.0
-
-    def _update_return_to_route_headings(self):
-        """Re-aim returning aircraft each step, so they track the route not a frozen bearing."""
-        for cs, on in self._returning_to_route.items():
-            if on and bs.traf.id2idx(cs) >= 0 and cs in self._route_hdg:
-                self._commanded_heading[cs] = self._route_hdg[cs]
-                bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
-
     # -- Reward ----------------------------------------------------------------
 
     def _compute_reward(self, acting_cs, action_idx):
-        """Purely negative: separation loss, drift off route, and the radio call itself.
+        """Purely negative: separation loss, drift off the assigned heading, and the call.
 
-        Drift uses the COMMANDED heading, which only moves at execution, so a turn the
-        pilot has not made yet earns no credit.
+        Drift uses the ACTUAL heading, so it ramps as the aircraft physically turns
+        rather than jumping the moment an instruction executes.
         """
         r_los = -CONFIG['w_los'] if self._los_this_step else 0.0
 
         r_drift = 0.0
-        if acting_cs and acting_cs in self._route_hdg and acting_cs in self._row_of:
+        if acting_cs and acting_cs in self._initial_hdg and acting_cs in self._row_of:
             r_drift = -CONFIG['w_drift'] * self._heading_drift(acting_cs)
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
@@ -489,13 +504,13 @@ class AirspaceEnv(gym.Env):
     def _build_instruction(self, cs, action_idx):
         """Action index -> instruction payload.
 
-        The delta is measured from the aircraft's last EXECUTED state, never from an
-        instruction still waiting to be flown. Re-issuing therefore REPLACES the
-        outstanding instruction instead of stacking onto it: +30 chosen three times in a
-        row is one 30 deg turn, and +30 followed by -30 is a 30 deg turn to the left.
+        Turn actions are ABSOLUTE OFFSETS from the aircraft's initial heading, so the
+        same action always commands the same heading: -30 chosen three times in a row is
+        one 30 deg turn, and +30 followed by -30 ends 30 deg left of the initial heading.
+        Return-to-route is simply the zero-offset case.
 
-        Return-to-route carries no heading; it is resolved at execution, since the route
-        bearing moves while the pilot delays.
+        As deltas on the last commanded heading these compounded and wrapped past 360, so
+        a repeated turn cycled through six headings and the aircraft only wobbled.
         """
         cmd = {'action': action_idx}
 
@@ -505,11 +520,10 @@ class AirspaceEnv(gym.Env):
             cmd['target_mach'] = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
 
         elif action_idx in TURN_DELTAS:
-            base = self._commanded_heading.get(cs, self._hdg[self._row_of[cs]])
-            cmd['target_hdg'] = (base + TURN_DELTAS[action_idx]) % 360
+            cmd['target_hdg'] = (self._initial_hdg[cs] + TURN_DELTAS[action_idx]) % 360
 
         elif action_idx == RETURN_TO_ROUTE_ACTION:
-            cmd['return_to_route'] = True
+            cmd['target_hdg'] = self._initial_hdg[cs] % 360
 
         return cmd
 
@@ -522,31 +536,36 @@ class AirspaceEnv(gym.Env):
         cmd     = self._build_instruction(cs, action_idx)
 
         if pending is not None:
-            # Amendment: new payload, inherited clock -- re-issuing cannot restart the
-            # delay. The instruction it replaces is DISCARDED, never flown, and the agent
-            # was charged for that radio call all the same.
-            cmd['execute_at_s'] = pending['execute_at_s']
-            cmd['issued_at_s']  = pending['issued_at_s']
+            # Amendment: new payload, inherited timing -- re-issuing cannot restart the
+            # clock or redraw the delay. The instruction it replaces is DISCARDED, never
+            # flown, and the agent was charged for that radio call all the same.
+            cmd.update({k: pending[k] for k in TIMING_FIELDS if k in pending})
             self._ep_stats['discarded'] += 1
         else:
             # Engaged = an advisory executed while this aircraft holds the focus.
             engaged = self._executed_count.get(cs, 0) > 0
-            delay   = self.response_delay.draw(engaged)
-            cmd['execute_at_s'] = self._sim_time_s + delay
-            cmd['issued_at_s']  = self._sim_time_s
-
-            self._ep_stats['delay_next']  += int(engaged)
-            self._ep_stats['delay_sum_s'] += delay
-            self._ep_stats['delay_drawn'] += 1
+            cmd['issued_at_s'] = self._sim_time_s
+            cmd['engaged']     = engaged
+            cmd.update(self.response_delay.on_issue(engaged, self._sim_time_s))
 
         self._pending_cmd[cs] = cmd
 
     def _execute_due_instructions(self):
-        """Execute due instructions -- the only path to BlueSky and the commanded state."""
+        """Execute due instructions -- the only path to BlueSky and the commanded state.
+
+        Called once per simulated second, which is what lets the probabilistic arm roll
+        its Markov chain one transition at a time.
+        """
         for cs, cmd in list(self._pending_cmd.items()):
-            if cmd['execute_at_s'] > self._sim_time_s:
+            if not self.response_delay.is_due(cmd, self._sim_time_s):
                 continue
             del self._pending_cmd[cs]
+
+            # The delay the pilot actually took, measured rather than assumed -- the
+            # probabilistic arm has no deadline to read off.
+            self._ep_stats['delay_sum_s']  += self._sim_time_s - cmd['issued_at_s']
+            self._ep_stats['delay_next']   += int(cmd.get('engaged', False))
+            self._ep_stats['delay_served'] += 1
 
             idx = bs.traf.id2idx(cs)
             if idx < 0:
@@ -556,11 +575,10 @@ class AirspaceEnv(gym.Env):
                 self._commanded_mach[cs] = cmd['target_mach']
                 bs.stack.stack(f'SPD {cs} {cmd["target_mach"]:.3f}')
             else:
-                returning = bool(cmd.get('return_to_route'))
-                self._returning_to_route[cs] = returning
-                self._commanded_heading[cs] = (self._route_hdg.get(cs, bs.traf.hdg[idx])
-                                               if returning else cmd['target_hdg'])
-                bs.stack.stack(f'HDG {cs} {self._commanded_heading[cs]:.1f}')
+                # Absolute target, fixed at issue time: the initial heading it is an
+                # offset from never moves, so there is nothing to re-resolve or re-aim.
+                self._commanded_heading[cs] = cmd['target_hdg']
+                bs.stack.stack(f'HDG {cs} {cmd["target_hdg"]:.1f}')
 
             # Only an EXECUTED advisory counts towards engagement, and only an executed
             # one means this aircraft was actually manoeuvred (which the route-keeping
@@ -583,14 +601,19 @@ class AirspaceEnv(gym.Env):
         return np.array(obs, dtype=np.float32)
 
     def _ownship_features(self, cs):
-        """The 7 ownship features. dpsi is what the aircraft is doing, a_cmd what was asked."""
-        row       = self._row_of[cs]
-        own_hdg   = self._hdg[row]
-        route_hdg = self._route_hdg[cs]
-        cmd_hdg   = self._commanded_heading.get(cs, own_hdg)
+        """The 7 ownship features. dpsi is what the aircraft is doing, a_cmd what was asked.
 
-        dpsi_act = math.radians(wrap_to_180(own_hdg - route_hdg))   # actual heading error
-        a_cmd    = math.radians(wrap_to_180(cmd_hdg - route_hdg))   # commanded heading error
+        Both are measured against the INITIAL heading, so dpsi is exactly the drift angle
+        and a_cmd is exactly the offset the last instruction asked for -- one of the seven
+        action offsets, bounded to +-60 deg.
+        """
+        row      = self._row_of[cs]
+        own_hdg  = self._hdg[row]
+        init_hdg = self._initial_hdg[cs]
+        cmd_hdg  = self._commanded_heading.get(cs, own_hdg)
+
+        dpsi_act = math.radians(wrap_to_180(own_hdg - init_hdg))   # drift from assigned heading
+        a_cmd    = math.radians(wrap_to_180(cmd_hdg - init_hdg))   # commanded offset
         v_own    = math.hypot(self._vel[row, 0], self._vel[row, 1]) * NMS_TO_KT
         v_cmd    = self._commanded_mach.get(cs, CONFIG['ac_mach']) * KT_PER_MACH
 
@@ -738,14 +761,12 @@ class AirspaceEnv(gym.Env):
         bs.stack.stack(f'SPD {cs} {mach}')
         bs.stack.stack(f'ALT {cs} FL{CONFIG["altitude"]}')
 
-        self._destination_ll[cs]      = route['dest_ll']
         self._exit_ref_nm[cs]         = latlon_to_nm(CONFIG['center_ll'],
                                                      float(route['ref_ll'][0]),
                                                      float(route['ref_ll'][1]))
-        self._route_hdg[cs]           = float(route['heading'])
+        self._initial_hdg[cs]         = float(route['heading'])
         self._commanded_heading[cs]   = float(route['heading'])
         self._commanded_mach[cs]      = CONFIG['ac_mach']
-        self._returning_to_route[cs]  = False
         self._executed_count[cs]      = 0
         self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs
@@ -808,10 +829,10 @@ class AirspaceEnv(gym.Env):
             self._ep_stats['deviation_nm'] += math.hypot(pos[0] - exit_ref[0],
                                                          pos[1] - exit_ref[1])
 
-        route_hdg = self._route_hdg.get(cs)
-        if route_hdg is None:
+        init_hdg = self._initial_hdg.get(cs)
+        if init_hdg is None:
             return
-        if abs(wrap_to_180(float(bs.traf.hdg[idx]) - route_hdg)) <= CONFIG['arrival_hdg_tol_deg']:
+        if abs(wrap_to_180(float(bs.traf.hdg[idx]) - init_hdg)) <= CONFIG['arrival_hdg_tol_deg']:
             self._ep_stats['on_route'] += 1
 
     # -- Misc ------------------------------------------------------------------

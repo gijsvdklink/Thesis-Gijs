@@ -30,9 +30,17 @@ def run_episode(mode, seed, steps, policy):
     env = AirspaceEnv(delay_mode=mode)
     obs, _ = env.reset(seed=seed)
 
-    # Record each draw as it happens; the episode summary only keeps the running mean.
-    recorded, real_draw = [], env.response_delay.draw
-    env.response_delay.draw = lambda engaged: recorded.append(real_draw(engaged)) or recorded[-1]
+    # Record the realised delay of every instruction the pilots actually flew; the
+    # episode summary only keeps a running mean. Measured at execution rather than at
+    # issue, because the probabilistic arm has no deadline to read off.
+    recorded, real_is_due = [], env.response_delay.is_due
+
+    def spy(cmd, now):
+        due = real_is_due(cmd, now)
+        if due:
+            recorded.append(now - cmd['issued_at_s'])
+        return due
+    env.response_delay.is_due = spy
 
     scenario = {'n_aircraft': env.n_aircraft, 'ep_length': env._max_steps,
                 'sector_nm2': float(abs(env._polygon_shape.area))}

@@ -280,7 +280,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         pygame.draw.polygon(screen, DIM, [to_screen(v[0], v[1], scale) for v in poly], 2)
 
     urg = urgency(env)
-    dest_map = getattr(env, '_destination_ll', {})
+    init_hdg_map = getattr(env, '_initial_hdg', {})
     for cs in env._active_callsigns:
         idx = bs.traf.id2idx(cs)
         if idx < 0:
@@ -292,14 +292,13 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         is_own = cs == env._focus_cs
         hdg_deg = float(bs.traf.hdg[idx])
 
-        dest = dest_map.get(cs)
-        if dest is not None:
-            dpos = latlon_to_nm(CONFIG['center_ll'], float(dest[0]), float(dest[1]))
-            sdx, sdy = dpos[0] - pos[0], -(dpos[1] - pos[1])
-            sn = math.hypot(sdx, sdy)
-            if sn > 1e-6:
-                dashed_line(screen, WP, (px, py),
-                            (px + sdx / sn * DIAG, py + sdy / sn * DIAG))
+        # Dashed ray along the aircraft's INITIAL heading: the reference turn actions are
+        # offsets from, and the line it would have flown had it never turned.
+        init_hdg = init_hdg_map.get(cs)
+        if init_hdg is not None:
+            h0 = math.radians(init_hdg)
+            dashed_line(screen, WP, (px, py),
+                        (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
         h = math.radians(hdg_deg)
         lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale

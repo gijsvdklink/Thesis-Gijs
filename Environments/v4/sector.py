@@ -63,29 +63,25 @@ def make_sector_polygon(area_km2, rng):
 
 
 def plan_entry_route(polygon, sector, n_sectors, rng):
-    """Plan one aircraft's crossing: where it enters, where it should leave, and on what
-    heading. Returns lat/lon for spawn, destination and reference point plus the heading.
+    """Plan one aircraft's crossing: where it enters, on what heading, and where it would
+    leave if it never turned.
 
     Entry and exit points sit at evenly spaced, jittered positions along the boundary, so
     the traffic is spread around the sector rather than clustered. The exit starts half a
     perimeter from the entry and is jittered by +-0.5, which makes crossing directions
     fully random.
 
-    The destination is placed dest_dist_factor sector-diameters BEYOND the exit point.
-    Being that far away, the bearing to it barely changes as the aircraft flies, so simply
-    holding a heading keeps the aircraft on route and "drift" stays well defined.
+    'heading' is the aircraft's INITIAL HEADING: fixed for its whole life, the reference
+    that turn actions are offsets from and that drift is measured against.
 
     Because the exit jitter spans a full half-perimeter, it can land close to the entry and
     produce a near-zero chord. Such an aircraft would leave within a step or two without
     ever really flying, polluting the arrival statistics, so short chords are resampled.
 
-    The returned 'ref_ll' is where this aircraft would cross the boundary if it flew the
-    whole way without ever turning. env._score_arrival keeps it and measures the exit
-    deviation against it, which is why it is returned even though the simulation itself
-    never uses it.
+    'ref_ll' is where this aircraft would cross the boundary flying that initial heading
+    the whole way. env._score_arrival measures the exit deviation against it; the
+    simulation itself never uses it.
     """
-    minx, miny, maxx, maxy = polygon.bounds
-    dest_dist = math.sqrt((maxx - minx) ** 2 + (maxy - miny) ** 2) * CONFIG['dest_dist_factor']
     min_chord = CONFIG['min_chord_nm']
 
     for _ in range(CONFIG['max_placement_tries']):
@@ -96,15 +92,12 @@ def plan_entry_route(polygon, sector, n_sectors, rng):
         if math.hypot(ref_pt.x - spawn_pt.x, ref_pt.y - spawn_pt.y) >= min_chord:
             break
 
-    route_hdg = math.degrees(math.atan2(ref_pt.x - spawn_pt.x,
-                                        ref_pt.y - spawn_pt.y)) % 360.0
-    dest_e = spawn_pt.x + dest_dist * math.sin(math.radians(route_hdg))
-    dest_n = spawn_pt.y + dest_dist * math.cos(math.radians(route_hdg))
+    initial_hdg = math.degrees(math.atan2(ref_pt.x - spawn_pt.x,
+                                          ref_pt.y - spawn_pt.y)) % 360.0
 
     center = CONFIG['center_ll']
     return {
         'sp_ll':   nm_to_latlon(center, spawn_pt.x, spawn_pt.y),
-        'dest_ll': nm_to_latlon(center, dest_e,     dest_n),
         'ref_ll':  nm_to_latlon(center, ref_pt.x,   ref_pt.y),
-        'heading': route_hdg,
+        'heading': initial_hdg,
     }

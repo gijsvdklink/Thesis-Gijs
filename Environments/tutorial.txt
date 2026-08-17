@@ -1,98 +1,118 @@
 ================================================================================
 ACTION-RESPONSE DELAY EXPERIMENT -- HOW TO RUN IT
+11 terminals on the NLR server, 2 environments each
 ================================================================================
 
 THE QUESTION
     How does an air traffic controller policy change when pilots do not comply
-    instantly, and does the SHAPE of the delay distribution matter, or only its
-    mean?
+    instantly? Two factors are crossed:
 
-THE FOUR ARMS
-    All three delayed arms have the SAME mean response time, 30 s / 15 s, and
-    none of them has a ceiling. They differ only in shape, which is the
-    experimental variable.
+      SHAPE      deterministic / log-normal / probabilistic
+      MAGNITUDE  15 s / 30 s / 45 s for the first advisory
 
-    none            0 s.  The baseline: pilots comply immediately.
+    Within a magnitude all three shapes have EXACTLY the same mean, so any
+    difference between them is the shape of the distribution and nothing else.
+    Across magnitudes the shape is held fixed, so any difference there is how
+    long pilots take. Plus one no-delay baseline: 3 x 3 + 1 = 10 training arms.
 
-    deterministic   Exactly 30 s for the first advisory to a focus ship, exactly
-                    15 s once that pilot has executed one. No randomness, so the
-                    controller could count down to the exact second.
+THE THREE SHAPES
+    deterministic   Exactly first_s, then exactly next_s once the pilot is
+                    engaged. No randomness, so the controller could count down
+                    to the exact second.
 
-    lognormal       Random, mean 30 s / 15 s, sigma 0.4, unbounded. Mass
+    lognormal       Random, mean first_s / next_s, sigma 0.4, unbounded. Mass
                     concentrated near the mean: a long silence means a response
                     is overdue, so waiting is informative. The delay is drawn
-                    ONCE at issue time and held as hidden state -- the agent
-                    sees that something is pending and how long it has waited,
-                    never when it will land.
+                    ONCE at issue and held as hidden state -- the agent sees
+                    that something is pending and how long it has waited, never
+                    when it will land.
 
-    probabilistic   The Markov chain. Each simulated second the pilot either
-                    stays in "not executed" (29/30, or 14/15 once engaged) or
-                    acts. No forced response, so the tail is unbounded and a
-                    delay past 120 s is rare but possible. Memoryless: how long
-                    the pilot has already been silent tells the controller
-                    nothing about when they will act, and an immediate response
-                    is always on the table.
-                    Implementation note: the code samples the equivalent
-                    geometric delay once at issue rather than rolling a die each
-                    second. Identical distribution -- the per-second chance
-                    cannot change while an instruction is outstanding.
+    probabilistic   The Markov chain, rolled once per simulated second. The
+                    pilot either stays in "not executed" or acts, with
+                    probability 1/first_s per second (1/next_s once engaged).
+                    No forced response, so the tail is unbounded. Memoryless:
+                    how long the pilot has already been silent says nothing
+                    about when they will act, and an immediate response is
+                    always on the table.
+
+THE MAGNITUDE
+    --delay-first sets the mean for the FIRST advisory to a focus ship. The
+    follow-up delay is always half of it:
+
+        --delay-first 15   ->  15 s first,  7.5 s once engaged
+        --delay-first 30   ->  30 s first, 15   s once engaged
+        --delay-first 45   ->  45 s first, 22.5 s once engaged
 
 ENGAGEMENT ("has the pilot already executed an advisory?")
-    Identical in all four arms. It is FALSE every time the focus moves to a new
-    aircraft. It becomes TRUE the moment an advisory to that aircraft executes,
-    and stays true for as long as that aircraft keeps the focus. Only then does
-    the faster 15 s / (1/15) branch apply.
-
-    Watch delay/engaged_branch_frac in TensorBoard: it is the fraction of
-    advisories that took the faster branch.
+    Identical in all arms. FALSE every time the focus moves to a new aircraft.
+    TRUE from the moment an advisory to that aircraft executes, and stays true
+    while that aircraft keeps the focus. Only then does the faster branch apply.
+    Verified: over 46 focus spells, every first advisory used the slow branch.
 
 --------------------------------------------------------------------------------
 BEFORE TRAINING -- CHECK THE PLUMBING
 --------------------------------------------------------------------------------
 
     python -m Environments.v4.test_delays
-        Checks the delay models on their own: means, tails, memorylessness,
-        reproducibility. Takes about 20 s. Should end "all checks passed".
+        The delay models on their own: means, tails, memorylessness,
+        reproducibility. ~20 s. Should end "all checks passed".
 
     python -m Validation.delay_diagnostics --episodes 2 --steps 600
-        Runs all four arms and prints:
-          - whether the arms see IDENTICAL scenarios at the same seed
-          - the realised delay histogram per arm
-          - how often the faster engagement branch fires
-          - the KPIs the arms are compared on
-        Add --model <best_model.zip> to run a trained policy instead of random
-        actions.
+        Runs the shapes and prints whether they see IDENTICAL scenarios at the
+        same seed, the realised delay histograms, how often the fast branch
+        fires, and the KPIs. Add --model <best_model.zip> for a trained policy.
 
 --------------------------------------------------------------------------------
-THE EXPERIMENT -- FIVE TERMINALS
+THE EXPERIMENT -- 11 TERMINALS
 --------------------------------------------------------------------------------
 
-Each arm gets its own process. --n-envs is how many cores that arm uses. Use the
-SAME --seed everywhere: that is what makes the arms share their scenarios.
+Use the SAME --seed everywhere. That is what makes all ten arms train on the
+same sectors, aircraft counts, densities and initial traffic.
 
-    # terminal 1 -- baseline, no delay
-    python -m Training.v4_train --delay none          --seed 0 --n-envs 2
+    # ---- terminal 1: baseline, pilots comply instantly -------------------
+    python -m Training.v4_train --delay none --seed 0 --n-envs 2
 
-    # terminal 2 -- deterministic 30 s / 15 s
-    python -m Training.v4_train --delay deterministic --seed 0 --n-envs 2
+    # ---- terminals 2-4: 15 s first advisory, 7.5 s follow-up -------------
+    python -m Training.v4_train --delay deterministic --delay-first 15 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay lognormal     --delay-first 15 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay probabilistic --delay-first 15 --seed 0 --n-envs 2
 
-    # terminal 3 -- log-normal, mean 30 s / 15 s
-    python -m Training.v4_train --delay lognormal     --seed 0 --n-envs 2
+    # ---- terminals 5-7: 30 s first advisory, 15 s follow-up --------------
+    python -m Training.v4_train --delay deterministic --delay-first 30 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay lognormal     --delay-first 30 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay probabilistic --delay-first 30 --seed 0 --n-envs 2
 
-    # terminal 4 -- probabilistic, 1/30 (1/15) per second, Markov chain
-    python -m Training.v4_train --delay probabilistic --seed 0 --n-envs 2
+    # ---- terminals 8-10: 45 s first advisory, 22.5 s follow-up -----------
+    python -m Training.v4_train --delay deterministic --delay-first 45 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay lognormal     --delay-first 45 --seed 0 --n-envs 2
+    python -m Training.v4_train --delay probabilistic --delay-first 45 --seed 0 --n-envs 2
 
-    # terminal 5 -- TensorBoard
+    # ---- terminal 11: TensorBoard ----------------------------------------
     tensorboard --logdir Runs_saved/experiments --port 6006
 
-Defaults: 50,000,000 timesteps, 2 envs, evaluation every 100,000 steps on five
-fixed held-out scenarios (~12% overhead). Override with --timesteps,
---eval-every and --eval-episodes. Push --eval-every much below 100,000 and the
-evaluation starts costing more than the training it interrupts; drop
---eval-episodes first if you need points closer together than that.
+Each arm writes to Runs_saved/experiments/<arm>/, named by shape and magnitude:
 
-    # short smoke run before committing to the full budget
-    python -m Training.v4_train --delay probabilistic --timesteps 200000
+    none/               deterministic_15s/  deterministic_30s/  deterministic_45s/
+                        lognormal_15s/      lognormal_30s/      lognormal_45s/
+                        probabilistic_15s/  probabilistic_30s/  probabilistic_45s/
+
+so in TensorBoard you can filter "_30s" to compare shapes at a fixed magnitude,
+or "lognormal_" to compare magnitudes at a fixed shape.
+
+RESOURCES
+    10 training processes x 2 envs = 20 worker processes, plus 10 main processes
+    that idle except during evaluation. Budget ~24 cores. If the server is
+    tighter than that, run one magnitude block at a time (4 terminals) rather
+    than reducing --n-envs, so the arms stay comparable to each other.
+
+DEFAULTS
+    50,000,000 timesteps, evaluation every 100,000 steps on 5 fixed held-out
+    scenarios (~12% overhead). Override with --timesteps, --eval-every and
+    --eval-episodes.
+
+    # short smoke run before committing the full budget
+    python -m Training.v4_train --delay probabilistic --delay-first 45 \
+        --timesteps 30000 --eval-every 12000 --eval-episodes 1
 
 --------------------------------------------------------------------------------
 WHAT TO LOOK AT IN TENSORBOARD
@@ -116,21 +136,21 @@ Validation/delay_diagnostics.py still reports the rest when you want them.
 
         BOTH ROUTE METRICS ARE SCORED OVER MANOEUVRED AIRCRAFT ONLY. Only one
         aircraft is controlled per step, so ~80% of traffic crosses untouched
-        and exits perfectly on route. Including it pushed the arrival rate to
-        ~91% and the deviation to ~21 NM regardless of policy -- it was
-        measuring how many aircraft were ignored. Over manoeuvred aircraft the
-        same episode reads 55% and 74 NM, which actually responds to the policy.
+        and exits perfectly on route. Including it pinned the arrival rate near
+        91% regardless of policy -- it was measuring how many aircraft were
+        ignored. Over manoeuvred aircraft the same episode reads 55%.
 
     delay/mean_response_s
-        The delay pilots actually received, as opposed to the nominal 30/15.
+        The delay pilots actually took, measured at execution. Sanity check: it
+        should sit near the arm's nominal mean, below it in practice because the
+        fast branch dominates.
 
     delay/instructions_discarded
-        Advisories replaced before the pilot could act on them. The agent paid
-        for those radio calls but they never flew. By design, but worth knowing:
-        it runs to several hundred per episode.
+        Advisories replaced before the pilot could act. The agent paid for those
+        radio calls but they never flew. By design, but expect several hundred
+        per episode, and more at the larger magnitudes.
 
     episode/reward_total
-
         NOTE ON THE X-AXIS: it counts individual environment steps, summed over
         the parallel workers -- not episodes. One step is one advisory decision
         and 5 s of simulated time. The plotted value is the sum of rewards over
@@ -140,9 +160,9 @@ Validation/delay_diagnostics.py still reports the rest when you want them.
         traffic and 45-200 aircraft-flight-hours. A 50M-step arm is therefore
         roughly 12,000-24,000 episodes.
 
-        The eval/ curves are the same metrics measured with a DETERMINISTIC
-        policy on fixed held-out scenarios. Expect them above the training
-        curves, which include exploratory actions.
+        The eval/ curves are the same metrics under a DETERMINISTIC policy on
+        fixed held-out scenarios. Expect them above the training curves, which
+        include exploratory actions.
 
 --------------------------------------------------------------------------------
 AFTER TRAINING
@@ -150,23 +170,26 @@ AFTER TRAINING
 
     python -m Validation.cross_evaluate --runs Runs_saved/experiments --episodes 10
     tensorboard --logdir Runs_saved/cross_eval
-        Trains under one condition, tests under another: a 4x4 grid. Answers
-        what happens to a policy that assumed instant compliance when it meets
-        pilots who take 30 s. Read the baseline row with care -- see the caveat
-        in the script's header.
+        Train under one condition, test under another. Answers what happens to a
+        policy that assumed instant compliance when it meets slow pilots. Read
+        the baseline row with care -- see the caveat in the script's header.
+        NOTE: this script still walks one directory per SHAPE, so with the
+        magnitude factor added it will pick up whichever magnitude it finds
+        first. Point --runs at a subset, or extend it, before trusting the grid.
 
     python -m Validation.mc_evaluate --model <path>/best_model.zip --episodes 30
         Monte-Carlo sweep over aircraft count and density.
 
     python figures/plot_delays.py
-        Regenerates figures/delays.png, the three delay distributions. It samples
-        delays.py directly, so it cannot drift out of sync with the environment.
+        Regenerates figures/delays.png. It samples delays.py directly, so it
+        cannot drift out of sync with the environment. It draws the DEFAULT
+        magnitude (30 s); edit FIRST_S at the top for the others.
 
 --------------------------------------------------------------------------------
 WHERE THINGS LIVE
 --------------------------------------------------------------------------------
 
-    Environments/v4/delays.py     the four response models -- change delays HERE
+    Environments/v4/delays.py     the response models -- change delays HERE
     Environments/v4/config.py     everything else that is tunable
     Environments/v4/env.py        the environment; runs the queue, not the timing
     Environments/v4/conflict.py   separation geometry, vectorised over all pairs
@@ -175,13 +198,21 @@ WHERE THINGS LIVE
     Validation/                   diagnostics, cross-evaluation, Monte Carlo
 
 RANDOMNESS
-    Each episode derives three independent generators from one seed: one for the
-    scenario (sector, aircraft count, density, initial traffic), one for
-    replacement aircraft, one for the response delays. Keeping them apart is
-    what lets the arms share scenarios -- if the delay draws came from the same
-    stream, every random decision after the first advisory would shift, and the
-    arms would be training on different traffic.
+    Each episode derives three independent generators from one seed: scenario
+    (sector, aircraft count, density, initial traffic), replacement aircraft,
+    and response delays. Keeping them apart is what lets the arms share
+    scenarios -- if delay draws came from the same stream, every random decision
+    after the first advisory would shift and the arms would train on different
+    traffic.
 
-    Worker w, episode k always lands on the same scenario in every arm, as long
-    as the arms are launched with the same --seed. What happens after that
-    depends on the policy and diverges by design.
+    Worker w, episode k lands on the same scenario in every arm, provided the
+    arms are launched with the same --seed. What happens after that depends on
+    the policy and diverges by design.
+
+INSTRUCTION QUEUE
+    One instruction outstanding per aircraft. Issuing a new one REPLACES it, and
+    the delta is measured from the aircraft's last executed state -- so +30
+    chosen three times in a row is one 30 deg turn, and +30 then -30 is a 30 deg
+    turn to the left. The replaced instruction never flies, but the agent was
+    charged its workload cost anyway. An amendment inherits the original issue
+    time, so re-issuing cannot restart the delay clock.

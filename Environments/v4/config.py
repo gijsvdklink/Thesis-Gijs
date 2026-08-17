@@ -43,10 +43,8 @@ CONFIG = {
     'n_aircraft':            lambda rng: rng.randint(15, 30),            # sampled per episode
     'rho':                   lambda rng: rng.uniform(1/25000, 1/10000),  # sampled per episode; area = n/rho
     'sep_nm':                5.0,
-    'dest_dist_factor':      20.0,           # destination far beyond the sector, so the bearing to it is
-                                             # near-constant and a held heading stays on route
     # Arrival scoring -- METRIC ONLY, not part of the reward (which is los + drift + work).
-    # An aircraft "arrives" if it leaves within this many degrees of its route heading
+    # An aircraft "arrives" if it leaves within this many degrees of its INITIAL HEADING
     # rather than still sitting in an avoidance deviation. The metric is insensitive to
     # the exact value: the heading error is bimodal, so 2, 5 and 10 degrees give arrival
     # rates within one point of each other.
@@ -130,12 +128,17 @@ EMPTY_RANGE_NM = 1000.0
 NO_CONFLICT_S  = CONFIG['t_warn']
 
 # -- Action layout (Discrete 10) -----------------------------------------------
-#   0-2, 4-6  heading turns (stack on commanded heading)   3  hold   7  return-to-route
+#   0-2, 4-6  heading offsets   3  hold   7  return to the initial heading
 #   8  speed up   9  speed down
+#
+# Turn actions are ABSOLUTE OFFSETS from the aircraft's initial heading, not deltas on
+# the last commanded heading: target = initial_hdg + TURN_DELTAS[a]. Selecting -30 twice
+# still means -30. As deltas they compounded and wrapped past 360, so a repeated turn
+# cycled the commanded heading through six values and the aircraft just wobbled.
 TURN_DELTAS   = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 SPEED_ACTIONS = {8: +1, 9: -1}        # +1/-1 x mach_step on the commanded Mach
 HOLD_ACTION   = 3                     # true no-op: no instruction is transmitted at all
-RETURN_TO_ROUTE_ACTION = 7            # heading resolved at execution time, not at issue
+RETURN_TO_ROUTE_ACTION = 7            # the zero-offset action: fly the initial heading
 N_ACTIONS     = 10
 
 # -- Workload cost per instruction ---------------------------------------------

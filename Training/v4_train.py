@@ -31,6 +31,7 @@ torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Environments.v4 import AirspaceEnv, DELAY_MODES
+from Environments.v4.delays import FIRST_S as DEFAULT_FIRST_S
 
 # -- Settings ------------------------------------------------------------------
 
@@ -71,13 +72,21 @@ ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'return', 'sp
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
 
-    # Safety, normalised for traffic: episodes differ in aircraft count, sector size and
-    # length, so a raw LoS count is not comparable between them.
+    # Safety. The per-flight-hour rate is the comparable one -- episodes differ in
+    # aircraft count, sector size and length -- but the raw count is easier to sanity
+    # check against what you see in the visualiser, so both are logged.
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
+    ('ep_los_events',        'safety/los_events'),
 
-    # Route keeping, scored over MANOEUVRED aircraft only -- see env._score_arrival.
+    # Route keeping. Deviation and arrival rate are scored over MANOEUVRED aircraft
+    # only (see env._score_arrival); drift is over all airborne traffic, every step.
     ('ep_arrival_rate',      'route/arrival_rate'),
     ('ep_exit_deviation_nm', 'route/exit_deviation_nm'),
+    ('ep_mean_drift_deg',    'route/mean_drift_deg'),
+
+    # Instruction load, split by kind.
+    ('ep_turns',             'actions/total_turns'),
+    ('ep_speed_changes',     'actions/total_speed_changes'),
 
     # What the pilots actually did, and what the controller wasted.
     ('ep_delay_mean_s',      'delay/mean_response_s'),
@@ -187,15 +196,27 @@ class Progress(BaseCallback):
 
 # -- Training ------------------------------------------------------------------
 
-def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every):
-    run_name = f'v4_{delay_mode}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
-    run_dir  = os.path.join(RUNS_ROOT, delay_mode, run_name)
+def arm_name(delay_mode, delay_first_s):
+    """Directory name for one arm: shape and magnitude, e.g. 'lognormal_30s'.
+
+    The baseline has no magnitude, so it stays plain 'none' -- there is only one of it.
+    """
+    if delay_mode == 'none':
+        return 'none'
+    return f'{delay_mode}_{delay_first_s:g}s'
+
+
+def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, delay_first_s):
+    arm      = arm_name(delay_mode, delay_first_s)
+    run_name = f'v4_{arm}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
+    run_dir  = os.path.join(RUNS_ROOT, arm, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
     # delay_mode travels via env_kwargs so it reaches the worker processes; editing CONFIG
     # here would not survive the spawn.
+    env_kwargs = {'delay_mode': delay_mode, 'delay_first_s': delay_first_s}
     venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=SubprocVecEnv, seed=seed,
-                        env_kwargs={'delay_mode': delay_mode})
+                        env_kwargs=env_kwargs)
     env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                        clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
 
@@ -203,12 +224,12 @@ def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every):
     model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
                 n_steps=N_STEPS, batch_size=BATCH_SIZE, gamma=GAMMA, ent_coef=ENT_COEF)
 
-    eval_env  = AirspaceEnv(delay_mode=delay_mode)   # lives here, alone with BlueSky
+    eval_env  = AirspaceEnv(**env_kwargs)            # lives here, alone with BlueSky
     callbacks = CallbackList([
         Progress(), LogEpisodes(),
         EvaluateAndCheckpoint(eval_env, run_dir, eval_seeds, eval_every)])
 
-    print(f'{delay_mode}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
+    print(f'{arm}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
           f'eval every {eval_every:,} x{len(eval_seeds)} eps  -> {run_dir}', flush=True)
     try:
         model.learn(total_timesteps, callback=callbacks)
@@ -236,10 +257,14 @@ def main():
     parser.add_argument('--eval-every', type=int, default=EVAL_EVERY,
                         help=f'steps between evaluations (default {EVAL_EVERY:,}); '
                              f'0 disables evaluation and checkpointing entirely')
+    parser.add_argument('--delay-first', type=float, default=DEFAULT_FIRST_S,
+                        help=f'delay magnitude: mean seconds for the first advisory to a '
+                             f'focus ship (default {DEFAULT_FIRST_S:g}). The follow-up '
+                             f'delay is half of it. Ignored when --delay none.')
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          EVAL_SEEDS[:max(1, args.eval_episodes)], args.eval_every)
+          EVAL_SEEDS[:max(1, args.eval_episodes)], args.eval_every, args.delay_first)
 
 
 if __name__ == '__main__':
