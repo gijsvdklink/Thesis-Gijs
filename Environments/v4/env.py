@@ -20,7 +20,8 @@ from bluesky.stack.stackbase import Stack as _BsStack
 
 from .config import (CONFIG, SEED_STRIDE, STEP_DURATION_S, OBS_DIM, N_ACTIONS, N_NEIGHBOURS,
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, EMPTY_RANGE_NM, NO_CONFLICT_S,
-                     TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION, ACT_COST)
+                     TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION,
+                     MAX_TURN_OFFSET_DEG, ACT_COST)
 from .delays import DELAY_MODES, TIMING_FIELDS, ResponseDelay
 from .geometry import latlon_to_nm, nm_to_latlon, wrap_to_180, heading_to_velocity
 from .conflict import (traffic_states, urgency_matrix, any_loss_of_separation,
@@ -501,16 +502,23 @@ class AirspaceEnv(gym.Env):
 
     # -- Instructions: issue now, execute after the pilot's delay ---------------
 
+    def _current_offset(self, cs):
+        """Commanded offset from the initial heading, in degrees, from the last EXECUTED
+        instruction. Re-deriving it means there is no second copy of this state to drift."""
+        init = self._initial_hdg[cs]
+        return wrap_to_180(self._commanded_heading.get(cs, init) - init)
+
     def _build_instruction(self, cs, action_idx):
         """Action index -> instruction payload.
 
-        Turn actions are ABSOLUTE OFFSETS from the aircraft's initial heading, so the
-        same action always commands the same heading: -30 chosen three times in a row is
-        one 30 deg turn, and +30 followed by -30 ends 30 deg left of the initial heading.
-        Return-to-route is simply the zero-offset case.
+        Turns ACCUMULATE into an offset from the initial heading, clamped to
+        +-MAX_TURN_OFFSET_DEG: -30 twice really is -60, but -30 three times stays at -60
+        instead of running away. Return-to-route resets the offset to zero.
 
-        As deltas on the last commanded heading these compounded and wrapped past 360, so
-        a repeated turn cycled through six headings and the aircraft only wobbled.
+        The offset builds on the last EXECUTED instruction, so re-issuing while one is
+        still outstanding replaces it -- the pilot only ever flies one. Anchoring to the
+        fixed initial heading and clamping is what keeps this bounded; as unbounded deltas
+        on the last commanded heading they wrapped past 360 and the aircraft just wobbled.
         """
         cmd = {'action': action_idx}
 
@@ -520,7 +528,9 @@ class AirspaceEnv(gym.Env):
             cmd['target_mach'] = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
 
         elif action_idx in TURN_DELTAS:
-            cmd['target_hdg'] = (self._initial_hdg[cs] + TURN_DELTAS[action_idx]) % 360
+            offset = self._current_offset(cs) + TURN_DELTAS[action_idx]
+            offset = max(-MAX_TURN_OFFSET_DEG, min(MAX_TURN_OFFSET_DEG, offset))
+            cmd['target_hdg'] = (self._initial_hdg[cs] + offset) % 360
 
         elif action_idx == RETURN_TO_ROUTE_ACTION:
             cmd['target_hdg'] = self._initial_hdg[cs] % 360

@@ -128,13 +128,25 @@ EMPTY_RANGE_NM = 1000.0
 NO_CONFLICT_S  = CONFIG['t_warn']
 
 # -- Action layout (Discrete 10) -----------------------------------------------
-#   0-2, 4-6  heading offsets   3  hold   7  return to the initial heading
+#   0-2, 4-6  heading turns   3  hold   7  return to the initial heading
 #   8  speed up   9  speed down
 #
-# Turn actions are ABSOLUTE OFFSETS from the aircraft's initial heading, not deltas on
-# the last commanded heading: target = initial_hdg + TURN_DELTAS[a]. Selecting -30 twice
-# still means -30. As deltas they compounded and wrapped past 360, so a repeated turn
-# cycled the commanded heading through six values and the aircraft just wobbled.
+# A turn ACCUMULATES into an offset from the aircraft's INITIAL heading, and the total is
+# clamped to +-MAX_TURN_OFFSET_DEG:
+#
+#     offset = clamp(offset + TURN_DELTAS[a]),   target = initial_hdg + offset
+#
+# So -30 twice really is -60, but -30 three times stays at -60 rather than running away.
+# Everything is anchored to the fixed initial heading and bounded, which is what stops the
+# old failure: as unbounded deltas on the last COMMANDED heading these wrapped past 360,
+# so a repeated turn cycled through six headings and the aircraft only wobbled.
+#
+# The offset accumulates on the last EXECUTED instruction, so re-issuing while one is
+# still outstanding replaces it rather than stacking -- the pilot only ever flies one.
+#
+# Stacking is deliberately not free: ACT_COST below is sub-additive, so reaching -60 as
+# two -30s costs 1.0 against 0.75 for a single -60.
+MAX_TURN_OFFSET_DEG = 60.0
 TURN_DELTAS   = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 SPEED_ACTIONS = {8: +1, 9: -1}        # +1/-1 x mach_step on the commanded Mach
 HOLD_ACTION   = 3                     # true no-op: no instruction is transmitted at all
