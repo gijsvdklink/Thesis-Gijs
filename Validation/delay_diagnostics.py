@@ -2,7 +2,7 @@
 #
 # Answers two questions:
 #   1. Do the four arms actually see the same scenarios at the same seed?
-#   2. What delays do pilots actually get, and is the faster "engaged" branch ever used?
+#   2. What delays do pilots actually get, and what do they cost in re-issued instructions?
 #      If the arms behave alike, this is where it shows up.
 #
 #   python -m Validation.delay_diagnostics --episodes 2
@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Environments.v4 import AirspaceEnv, DELAY_MODES
-from Environments.v4.delays import FIRST_S, NEXT_S
+from Environments.v4.delays import MEAN_DELAY_S
 
 HIST_MAX_S = 90.0   # histogram range only; the probabilistic arm has no upper bound
 
@@ -30,17 +30,16 @@ def run_episode(mode, seed, steps, policy):
     env = AirspaceEnv(delay_mode=mode)
     obs, _ = env.reset(seed=seed)
 
-    # Record the realised delay of every instruction the pilots actually flew; the
-    # episode summary only keeps a running mean. Measured at execution rather than at
-    # issue, because the probabilistic arm has no deadline to read off.
-    recorded, real_is_due = [], env.response_delay.is_due
+    # Record every response delay the pilots were given. One sample is drawn per
+    # advisory, so wrapping the sampler catches them all -- including the ones whose
+    # aircraft left the sector before the advisory could be flown.
+    recorded, real_sample = [], env.response_delay.sample_delay_s
 
-    def spy(cmd, now):
-        due = real_is_due(cmd, now)
-        if due:
-            recorded.append(now - cmd['issued_at_s'])
-        return due
-    env.response_delay.is_due = spy
+    def spy():
+        delay_s = real_sample()
+        recorded.append(delay_s)
+        return delay_s
+    env.response_delay.sample_delay_s = spy
 
     scenario = {'n_aircraft': env.n_aircraft, 'ep_length': env._max_steps,
                 'sector_nm2': float(abs(env._polygon_shape.area))}
@@ -141,19 +140,18 @@ def main():
         for line in histogram(samples[mode]):
             print(line)
 
-    # 3. Is the faster branch ever reached?
-    print('\n=== ENGAGEMENT AND WORKLOAD ===')
-    print(f'  {"mode":<15} {"engaged %":>10} {"mean delay":>11} {"focus hold":>11} {"discarded":>12}')
+    # 3. What did the delay cost in workload?
+    print('\n=== RESPONSE AND WORKLOAD ===')
+    print(f'  {"mode":<15} {"mean delay":>11} {"focus hold":>11} {"discarded":>12}')
     for mode in DELAY_MODES:
         r = results[mode]
         print(f'  {mode:<15} '
-              f'{100 * statistics.fmean(x["ep_delay_next_frac"] for x in r):>9.1f}% '
               f'{statistics.fmean(x["ep_delay_mean_s"] for x in r):>10.1f}s '
               f'{statistics.fmean(x["ep_focus_hold_steps"] for x in r):>10.1f} '
               f'{statistics.fmean(x["ep_discarded"] for x in r):>12.0f}')
-    print(f'\n  "engaged %" is how often an advisory took the {NEXT_S:g} s branch rather than')
-    print(f'  the {FIRST_S:g} s one. Near 0 means the 30/15 split never fires and the arms are')
-    print(f'  effectively single-delay; near 100 means the {FIRST_S:g} s branch is the rare one.')
+    print(f'\n  Every advisory is delayed the same way, so the realised mean should sit at')
+    print(f'  the arm magnitude ({MEAN_DELAY_S:g} s by default). "discarded" counts advisories')
+    print(f'  replaced before the pilot ever flew them.')
 
     # 4. The KPIs the arms are compared on.
     print('\n=== KPIs ===')

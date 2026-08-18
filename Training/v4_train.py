@@ -31,7 +31,7 @@ torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Environments.v4 import AirspaceEnv, DELAY_MODES
-from Environments.v4.delays import FIRST_S as DEFAULT_FIRST_S
+from Environments.v4.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
 
 # -- Settings ------------------------------------------------------------------
 
@@ -196,25 +196,25 @@ class Progress(BaseCallback):
 
 # -- Training ------------------------------------------------------------------
 
-def arm_name(delay_mode, delay_first_s):
+def arm_name(delay_mode, delay_mean_s):
     """Directory name for one arm: shape and magnitude, e.g. 'lognormal_30s'.
 
     The baseline has no magnitude, so it stays plain 'none' -- there is only one of it.
     """
     if delay_mode == 'none':
         return 'none'
-    return f'{delay_mode}_{delay_first_s:g}s'
+    return f'{delay_mode}_{delay_mean_s:g}s'
 
 
-def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, delay_first_s):
-    arm      = arm_name(delay_mode, delay_first_s)
+def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, delay_mean_s):
+    arm      = arm_name(delay_mode, delay_mean_s)
     run_name = f'v4_{arm}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
     run_dir  = os.path.join(RUNS_ROOT, arm, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
     # delay_mode travels via env_kwargs so it reaches the worker processes; editing CONFIG
     # here would not survive the spawn.
-    env_kwargs = {'delay_mode': delay_mode, 'delay_first_s': delay_first_s}
+    env_kwargs = {'delay_mode': delay_mode, 'delay_mean_s': delay_mean_s}
     venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=SubprocVecEnv, seed=seed,
                         env_kwargs=env_kwargs)
     env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
@@ -257,14 +257,16 @@ def main():
     parser.add_argument('--eval-every', type=int, default=EVAL_EVERY,
                         help=f'steps between evaluations (default {EVAL_EVERY:,}); '
                              f'0 disables evaluation and checkpointing entirely')
-    parser.add_argument('--delay-first', type=float, default=DEFAULT_FIRST_S,
-                        help=f'delay magnitude: mean seconds for the first advisory to a '
-                             f'focus ship (default {DEFAULT_FIRST_S:g}). The follow-up '
-                             f'delay is half of it. Ignored when --delay none.')
+    # --delay-first is the old spelling, kept so existing run scripts still work.
+    parser.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
+                        type=float, default=DEFAULT_MEAN_S,
+                        help=f'delay magnitude: the MEAN pilot response time in seconds '
+                             f'(default {DEFAULT_MEAN_S:g}). Every advisory is drawn from '
+                             f'this distribution. Ignored when --delay none.')
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          EVAL_SEEDS[:max(1, args.eval_episodes)], args.eval_every, args.delay_first)
+          EVAL_SEEDS[:max(1, args.eval_episodes)], args.eval_every, args.delay_mean)
 
 
 if __name__ == '__main__':

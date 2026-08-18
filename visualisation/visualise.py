@@ -139,7 +139,10 @@ def load_vecnorm_stats(path):
 def fresh_stats():
     return {'cum_r': 0.0, 'last_r': 0.0, 'step_n': 0, 'los': 0,
             'last_action': 3, 'acting_cs': None,
-            'counts': [0] * 10, 'recent': deque(maxlen=14)}
+            'counts': [0] * 10, 'recent': deque(maxlen=14),
+            # Instruction timeline for the delay panel: what is outstanding now, and what
+            # the pilot last acted on. Both are read from the env, never predicted here.
+            'pending_seen': {}, 'executed': []}
 
 
 def reset_episode(env, seed):
@@ -151,17 +154,40 @@ def reset_episode(env, seed):
     return obs, poly, scale, prot_px
 
 
-def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None):
+def track_advisories(env, st):
+    """Mirror the env's outstanding-advisory queue into st, and record executions.
+
+    Nothing here reimplements the delay: _pending_advisory and _sim_time_s are read
+    straight off the environment, so what the panel shows is what the simulator is
+    doing. An advisory that has left the queue was flown by the pilot."""
+    pending = dict(env._pending_advisory)
+    for cs, advisory in st['pending_seen'].items():
+        if cs in pending:
+            continue
+        # The execution time was fixed when the advisory was issued, so it is exact --
+        # unlike the frame clock, which only samples every 5 s.
+        executed_at_s = advisory['execute_at_s']
+        st['executed'].append({'cs': cs, 'action': advisory['action'],
+                               'issued_at_s': advisory['issued_at_s'],
+                               'executed_at_s': executed_at_s,
+                               'waited_s': executed_at_s - advisory['issued_at_s']})
+    st['pending_seen'] = pending
+
+
+def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_once=False):
     """Advance one RL step (obs normalised if norm given) and update stats in place.
 
     fixed_seq overrides everything below it: a list of action indices cycled through,
     one per step, regardless of model or hold. A single-element list is a constant
-    action. model=None (with fixed_seq=None) is the HOLD-only (do-nothing) policy: every
+    action. With seq_once the list is played once and every later step selects HOLD --
+    one instruction, then silence, which is what isolates a single pilot response.
+    model=None (with fixed_seq=None) is the HOLD-only (do-nothing) policy: every
     step selects action 3 (HOLD), so no instruction reaches the simulator and aircraft
     fly their spawned routes."""
     acting_cs = env._focus_cs
     if fixed_seq:
-        a = fixed_seq[st['step_n'] % len(fixed_seq)]
+        n = st['step_n']
+        a = 3 if (seq_once and n >= len(fixed_seq)) else fixed_seq[n % len(fixed_seq)]
     elif model is None:
         a = 3   # HOLD-only: do-nothing baseline
     else:
@@ -174,6 +200,7 @@ def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None):
     st['counts'][a] += 1; st['recent'].appendleft((acting_cs, a))
     if env._los_this_step:
         st['los'] += 1
+    track_advisories(env, st)
     return obs, trunc
 
 
@@ -233,6 +260,50 @@ def draw_obs_panel(screen, font, font_hud, obs, focus_cs, intruder_cs):
             screen.blit(font.render(f'{lbl:>9} {val:+.2f}', True,
                                     DIM if empty else GREEN), (x + 10, y)); y += 15
         y += 4
+
+
+def draw_delay_panel(screen, fonts, env, st, x, y):
+    """The pilot-response clock: what has been transmitted, and when it will be flown.
+
+    The countdown is read off the advisory's own execute_at_s -- the time the env fixed
+    when the advisory was issued, and the same value it executes on -- so the number on
+    screen is the simulator's deadline rather than an estimate. Amending the advisory
+    changes the action shown, never the countdown."""
+    font, font_hud = fonts
+    now = env._sim_time_s
+    screen.blit(font_hud.render(f'PILOT RESPONSE   t = {now:6.0f} s', True, GREEN), (x, y))
+    y += 26
+    mode   = env.response_delay.mode
+    mean_s = env.response_delay.mean_s
+    screen.blit(font.render(f'delay model: {mode}  mean {mean_s:g}s', True, DIM),
+                (x, y)); y += 22
+
+    if st['pending_seen']:
+        for cs, advisory in st['pending_seen'].items():
+            label  = ACTION_LABELS[advisory['action']]
+            waited = now - advisory['issued_at_s']
+            left   = max(0.0, advisory['execute_at_s'] - now)
+            screen.blit(font.render(f'{cs}  {label} transmitted at '
+                                    f't={advisory["issued_at_s"]:.0f}s'
+                                    f'  (waiting {waited:.0f}s)', True, ORANGE), (x, y))
+            y += 20
+            screen.blit(font_hud.render(f'EXECUTES IN {left:5.0f} s', True, ORANGE),
+                        (x, y)); y += 26
+            # Drain bar: full at issue, empty when the pilot acts.
+            total = max(advisory['execute_at_s'] - advisory['issued_at_s'], 1e-9)
+            w, h = 320, 14
+            pygame.draw.rect(screen, DIM, (x, y, w, h), 1)
+            pygame.draw.rect(screen, ORANGE, (x + 1, y + 1,
+                                              int((w - 2) * (1 - left / total)), h - 2))
+            y += h + 10
+    else:
+        screen.blit(font.render('nothing outstanding', True, DIM), (x, y)); y += 26
+
+    for ev in st['executed'][-4:]:
+        screen.blit(font.render(f'{ev["cs"]}  {ACTION_LABELS[ev["action"]]} FLOWN at '
+                                f't={ev["executed_at_s"]:.0f}s  after '
+                                f'{ev["waited_s"]:.0f}s',
+                                True, CYAN), (x, y)); y += 18
 
 
 def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
@@ -295,19 +366,21 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
     recent = '  '.join(f'{cs}:{ACTION_LABELS[a]}' for cs, a in list(st['recent'])[:6])
     screen.blit(font.render(recent, True, DIM), (150, y0))
 
+    draw_delay_panel(screen, fonts, env, st, 14, 120)
+
     draw_obs_panel(screen, font, font_hud, obs, env._focus_cs,
                    getattr(env, '_last_intruder_cs', []))
 
 
 def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
-               fps, det, norm, mode, fixed_seq=None, max_steps=None):
+               fps, det, norm, mode, fixed_seq=None, max_steps=None, seq_once=False):
     import cv2
     writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (WIN_W, WIN_H))
     if not writer.isOpened():
         raise RuntimeError(f'could not open video writer for {path}')
     st = fresh_stats()
     while True:
-        obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq)
+        obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq, seq_once)
         draw_frame(screen, fonts, env, scale, poly, prot_px, st, False, mode, obs)
         frame = np.transpose(pygame.surfarray.array3d(screen), (1, 0, 2))
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -329,6 +402,12 @@ def main():
                     help='action-response delay condition to fly under. Match the arm the '
                          'model was trained on, or set it deliberately to see how the '
                          'policy copes with pilots it never met.')
+    # --delay-first is the old spelling, kept so existing commands still work.
+    ap.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
+                    type=float, default=None, metavar='S',
+                    help='delay magnitude: the MEAN pilot response time in seconds. Match '
+                         'the magnitude the model was trained at; default is the env '
+                         'default.')
     ap.add_argument('--hold', action='store_true',
                     help='do-nothing policy: always select HOLD (no model loaded)')
     ap.add_argument('--fixed-action', type=int, default=None, metavar='N',
@@ -339,6 +418,10 @@ def main():
                     help='cycle through this comma-separated list of action indices, one '
                          'per step, e.g. "0,3" alternates turn -60 with HOLD. Overrides '
                          '--fixed-action.')
+    ap.add_argument('--seq-once', action='store_true',
+                    help='play --action-seq / --fixed-action ONCE and then HOLD forever: '
+                         'one instruction, then silence. With --n_ac 1 this isolates a '
+                         'single pilot response, which is what the delay panel times.')
     ap.add_argument('--steps', type=int, default=None, metavar='N',
                     help='stop after this many RL steps (mp4 only); default: full episode')
     ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
@@ -382,19 +465,23 @@ def main():
 
     if fixed_seq:
         model, norm = None, None      # fixed policy: no model, no obs normalisation
-        env = AirspaceEnv(delay_mode=args.delay)
+        env = AirspaceEnv(delay_mode=args.delay, delay_mean_s=args.delay_mean)
         labels = ' -> '.join(ACTION_LABELS[a] for a in fixed_seq)
-        mode = (f'FIXED action {ACTION_LABELS[fixed_seq[0]]} every step' if len(fixed_seq) == 1
-                else f'FIXED cycle: {labels}')
-        print(f'fixed policy: cycling {labels}', flush=True)
+        if args.seq_once:
+            mode = f'FIXED once: {labels}, then HOLD'
+            print(f'fixed policy: {labels} once, then HOLD every step', flush=True)
+        else:
+            mode = (f'FIXED action {ACTION_LABELS[fixed_seq[0]]} every step'
+                    if len(fixed_seq) == 1 else f'FIXED cycle: {labels}')
+            print(f'fixed policy: cycling {labels}', flush=True)
     elif args.hold:
         model, norm = None, None      # do-nothing policy: no model, no obs normalisation
-        env = AirspaceEnv(delay_mode=args.delay)
+        env = AirspaceEnv(delay_mode=args.delay, delay_mean_s=args.delay_mean)
         mode = 'HOLD-only (do-nothing)'
         print('do-nothing policy: HOLD selected every step', flush=True)
     else:
         model = load_model(args.model)
-        env = AirspaceEnv(delay_mode=args.delay)
+        env = AirspaceEnv(delay_mode=args.delay, delay_mean_s=args.delay_mean)
         norm = None
         if args.vecnorm:
             norm = load_vecnorm_stats(args.vecnorm)
@@ -420,7 +507,7 @@ def main():
 
     if args.mp4:
         record_mp4(args.mp4, screen, fonts, env, model, obs, poly, scale, prot_px,
-                   args.fps, det, norm, mode, fixed_seq, args.steps)
+                   args.fps, det, norm, mode, fixed_seq, args.steps, args.seq_once)
         pygame.quit()
         return
 
@@ -444,7 +531,7 @@ def main():
                     st = fresh_stats()
 
         if not paused:
-            obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq)
+            obs, trunc = policy_step(env, model, obs, det, norm, st, fixed_seq, args.seq_once)
             if trunc:
                 seed = random.randint(0, 99_999)
                 obs, poly, scale, prot_px = reset_episode(env, seed)

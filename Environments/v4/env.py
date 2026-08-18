@@ -22,7 +22,7 @@ from .config import (CONFIG, SEED_STRIDE, STEP_DURATION_S, OBS_DIM, N_ACTIONS, N
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, EMPTY_RANGE_NM, NO_CONFLICT_S,
                      TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION,
                      MAX_TURN_OFFSET_DEG, ACT_COST)
-from .delays import DELAY_MODES, TIMING_FIELDS, ResponseDelay
+from .delays import DELAY_MODES, ResponseDelay
 from .geometry import latlon_to_nm, nm_to_latlon, wrap_to_180, heading_to_velocity
 from .conflict import (traffic_states, urgency_matrix, any_loss_of_separation,
                        route_return_blocked, time_to_loss_of_separation)
@@ -47,7 +47,7 @@ class AirspaceEnv(gym.Env):
     # Empty intruder slot: unreachably far, stationary, no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self, delay_mode=None, seed=None, delay_first_s=None, delay_next_s=None):
+    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None):
         super().__init__()
         global _bs_initialized
 
@@ -60,11 +60,10 @@ class AirspaceEnv(gym.Env):
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
 
-        # Delay magnitude: the experiment's second factor. Travels via env_kwargs for
-        # the same reason delay_mode does. next defaults to half of first inside
-        # ResponseDelay, so one number per run is enough.
-        self.delay_first_s = delay_first_s
-        self.delay_next_s  = delay_next_s
+        # Delay magnitude: the experiment's second factor, the MEAN response time in
+        # seconds. Travels via env_kwargs for the same reason delay_mode does. One number
+        # per run -- every advisory to every pilot is drawn from the same distribution.
+        self.delay_mean_s = delay_mean_s
 
         self._seed_base     = int(seed if seed is not None else CONFIG['seed'])
         self._episode_index = 0
@@ -111,15 +110,14 @@ class AirspaceEnv(gym.Env):
         self._commanded_heading   = {}   # last EXECUTED heading instruction
         self._commanded_mach      = {}   # last EXECUTED speed instruction
         self._steps_since_urgency = {}   # steps since this aircraft last had a conflict
-        self._pending_cmd         = {}   # issued-but-not-executed instruction
-        self._executed_count      = {}   # instructions executed while holding the focus
+        self._pending_advisory    = {}   # issued, not yet executed by the pilot
         self._manoeuvred          = {}   # aircraft that have had an instruction EXECUTED
 
         # Registry so _forget_aircraft clears every trace of a departed aircraft.
         self._per_aircraft_state = [
             self._initial_hdg, self._exit_ref_nm,
             self._commanded_heading, self._commanded_mach,
-            self._steps_since_urgency, self._pending_cmd, self._executed_count,
+            self._steps_since_urgency, self._pending_advisory,
             self._manoeuvred,
         ]
 
@@ -139,7 +137,7 @@ class AirspaceEnv(gym.Env):
             # Drift, summed over aircraft and steps: how far traffic sits from the
             # headings it was assigned. Divided by aircraft-steps to get a mean angle.
             'drift_deg_sum': 0.0, 'drift_samples': 0,
-            'delay_next': 0, 'delay_sum_s': 0.0, 'delay_served': 0,
+            'delay_sum_s': 0.0, 'delay_served': 0,
             'focus_spells': 0, 'focus_spell_steps': 0,
             'discarded': 0,        # instructions replaced before the pilot could fly them
         }
@@ -160,8 +158,7 @@ class AirspaceEnv(gym.Env):
         self.delay_rng      = Random(self.episode_seed ^ _DELAY_SEED_XOR)
         self.response_delay = ResponseDelay(
             self.delay_mode, self.delay_rng,
-            **({'first_s': self.delay_first_s} if self.delay_first_s is not None else {}),
-            **({'next_s': self.delay_next_s} if self.delay_next_s is not None else {}))
+            **({'mean_s': self.delay_mean_s} if self.delay_mean_s is not None else {}))
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -189,7 +186,7 @@ class AirspaceEnv(gym.Env):
         # to it, not to whichever aircraft the focus moves to at the end of the step.
         acting_cs = self._focus_cs
         if acting_cs:
-            self._issue_instruction(acting_cs, action)
+            self._issue_advisory(acting_cs, action)
 
         self._advance_simulation()
 
@@ -217,7 +214,7 @@ class AirspaceEnv(gym.Env):
         flushed at 1 s resolution.
         """
         for _ in range(CONFIG['action_freq']):
-            self._execute_due_instructions()
+            self._execute_due_advisories()
             bs.sim.step()
             self._sim_time_s += CONFIG['sim_dt']
 
@@ -347,7 +344,6 @@ class AirspaceEnv(gym.Env):
             # Diagnostics -- not logged to TensorBoard; Validation/delay_diagnostics.py
             # reports them.
             'ep_delay_mean_s':     s['delay_sum_s'] / served,
-            'ep_delay_next_frac':  s['delay_next'] / served,
             'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
             'ep_discarded':        s['discarded'],
         }
@@ -443,7 +439,6 @@ class AirspaceEnv(gym.Env):
                 self._ep_stats['focus_spells']      += 1
                 self._ep_stats['focus_spell_steps'] += self._focus_hold_steps + 1
             self._focus_hold_steps = 0
-            self._executed_count[best_cs] = 0   # new ownship: this pilot is not engaged yet
         else:
             self._focus_hold_steps += 1
         return best_cs
@@ -500,100 +495,103 @@ class AirspaceEnv(gym.Env):
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
         return float(r_los + r_drift + r_work)
 
-    # -- Instructions: issue now, execute after the pilot's delay ---------------
+    # -- Advisories: issued now, executed after the pilot's response delay -------
 
     def _current_offset(self, cs):
         """Commanded offset from the initial heading, in degrees, from the last EXECUTED
-        instruction. Re-deriving it means there is no second copy of this state to drift."""
+        advisory. Re-deriving it means there is no second copy of this state to drift."""
         init = self._initial_hdg[cs]
         return wrap_to_180(self._commanded_heading.get(cs, init) - init)
 
-    def _build_instruction(self, cs, action_idx):
-        """Action index -> instruction payload.
+    def _build_advisory(self, cs, action_idx):
+        """Action index -> what the pilot will be asked to fly.
 
         Turns ACCUMULATE into an offset from the initial heading, clamped to
         +-MAX_TURN_OFFSET_DEG: -30 twice really is -60, but -30 three times stays at -60
         instead of running away. Return-to-route resets the offset to zero.
 
-        The offset builds on the last EXECUTED instruction, so re-issuing while one is
-        still outstanding replaces it -- the pilot only ever flies one. Anchoring to the
+        The offset builds on the last EXECUTED advisory, so amending while one is still
+        outstanding replaces it -- the pilot only ever flies one. Anchoring to the
         fixed initial heading and clamping is what keeps this bounded; as unbounded deltas
         on the last commanded heading they wrapped past 360 and the aircraft just wobbled.
         """
-        cmd = {'action': action_idx}
+        advisory = {'action': action_idx}
 
         if action_idx in SPEED_ACTIONS:
             base = self._commanded_mach.get(cs, CONFIG['ac_mach'])
             mach = base + SPEED_ACTIONS[action_idx] * CONFIG['mach_step']
-            cmd['target_mach'] = min(CONFIG['ac_mach_max'], max(CONFIG['ac_mach_min'], mach))
+            advisory['target_mach'] = min(CONFIG['ac_mach_max'],
+                                          max(CONFIG['ac_mach_min'], mach))
 
         elif action_idx in TURN_DELTAS:
             offset = self._current_offset(cs) + TURN_DELTAS[action_idx]
             offset = max(-MAX_TURN_OFFSET_DEG, min(MAX_TURN_OFFSET_DEG, offset))
-            cmd['target_hdg'] = (self._initial_hdg[cs] + offset) % 360
+            advisory['target_hdg'] = (self._initial_hdg[cs] + offset) % 360
 
         elif action_idx == RETURN_TO_ROUTE_ACTION:
-            cmd['target_hdg'] = self._initial_hdg[cs] % 360
+            advisory['target_hdg'] = self._initial_hdg[cs] % 360
 
-        return cmd
+        return advisory
 
-    def _issue_instruction(self, cs, action_idx):
-        """Queue the instruction. Nothing reaches BlueSky until _execute_due_instructions."""
+    def _issue_advisory(self, cs, action_idx):
+        """Queue the advisory. Nothing reaches BlueSky until _execute_due_advisories.
+
+        The response delay is drawn ONCE, for the advisory that starts the wait, and the
+        execution time is fixed from then on. Amending only changes what the pilot will
+        fly: the clock is never restarted and the delay is never redrawn, so talking
+        again can neither buy a faster response nor postpone one. The agent pays the
+        normal action cost for the amendment, and the advisory it replaces is counted as
+        discarded -- issued, never flown.
+        """
         if action_idx == HOLD_ACTION or cs not in self._row_of:
-            return   # hold is a true no-op: no instruction is transmitted at all
+            return   # hold is a true no-op: no advisory is transmitted at all
 
-        pending = self._pending_cmd.get(cs)
-        cmd     = self._build_instruction(cs, action_idx)
+        pending  = self._pending_advisory.get(cs)
+        advisory = self._build_advisory(cs, action_idx)
 
         if pending is not None:
-            # Amendment: new payload, inherited timing -- re-issuing cannot restart the
-            # clock or redraw the delay. The instruction it replaces is DISCARDED, never
-            # flown, and the agent was charged for that radio call all the same.
-            cmd.update({k: pending[k] for k in TIMING_FIELDS if k in pending})
+            advisory['issued_at_s']  = pending['issued_at_s']
+            advisory['execute_at_s'] = pending['execute_at_s']
             self._ep_stats['discarded'] += 1
         else:
-            # Engaged = an advisory executed while this aircraft holds the focus.
-            engaged = self._executed_count.get(cs, 0) > 0
-            cmd['issued_at_s'] = self._sim_time_s
-            cmd['engaged']     = engaged
-            cmd.update(self.response_delay.on_issue(engaged, self._sim_time_s))
+            delay_s = self.response_delay.sample_delay_s()
+            advisory['issued_at_s']  = self._sim_time_s
+            advisory['execute_at_s'] = self._sim_time_s + delay_s
 
-        self._pending_cmd[cs] = cmd
+        self._pending_advisory[cs] = advisory
 
-    def _execute_due_instructions(self):
-        """Execute due instructions -- the only path to BlueSky and the commanded state.
+    def _execute_due_advisories(self):
+        """Fly every advisory whose execution time has come.
 
-        Called once per simulated second, which is what lets the probabilistic arm roll
-        its Markov chain one transition at a time.
+        The only path to BlueSky and the commanded state. Called once per simulated
+        second, so a delay drawn in whole or fractional seconds is honoured at 1 s
+        resolution even though the agent only acts every 5 s.
         """
-        for cs, cmd in list(self._pending_cmd.items()):
-            if not self.response_delay.is_due(cmd, self._sim_time_s):
+        for cs, advisory in list(self._pending_advisory.items()):
+            if self._sim_time_s < advisory['execute_at_s']:
                 continue
-            del self._pending_cmd[cs]
+            del self._pending_advisory[cs]
 
-            # The delay the pilot actually took, measured rather than assumed -- the
-            # probabilistic arm has no deadline to read off.
-            self._ep_stats['delay_sum_s']  += self._sim_time_s - cmd['issued_at_s']
-            self._ep_stats['delay_next']   += int(cmd.get('engaged', False))
+            # The delay the pilot actually took: the drawn value rounded up to the
+            # second the queue was next checked.
+            self._ep_stats['delay_sum_s']  += self._sim_time_s - advisory['issued_at_s']
             self._ep_stats['delay_served'] += 1
 
             idx = bs.traf.id2idx(cs)
             if idx < 0:
                 continue                     # aircraft left before the pilot acted
 
-            if 'target_mach' in cmd:
-                self._commanded_mach[cs] = cmd['target_mach']
-                bs.stack.stack(f'SPD {cs} {cmd["target_mach"]:.3f}')
+            if 'target_mach' in advisory:
+                self._commanded_mach[cs] = advisory['target_mach']
+                bs.stack.stack(f'SPD {cs} {advisory["target_mach"]:.3f}')
             else:
                 # Absolute target, fixed at issue time: the initial heading it is an
                 # offset from never moves, so there is nothing to re-resolve or re-aim.
-                self._commanded_heading[cs] = cmd['target_hdg']
-                bs.stack.stack(f'HDG {cs} {cmd["target_hdg"]:.1f}')
+                self._commanded_heading[cs] = advisory['target_hdg']
+                bs.stack.stack(f'HDG {cs} {advisory["target_hdg"]:.1f}')
 
-            # Only an EXECUTED advisory counts towards engagement, and only an executed
-            # one means this aircraft was actually manoeuvred (which the route-keeping
-            # metrics are scored over).
-            self._executed_count[cs] = self._executed_count.get(cs, 0) + 1
+            # Only an EXECUTED advisory means this aircraft was actually manoeuvred,
+            # which is what the route-keeping metrics are scored over.
             self._manoeuvred[cs] = True
 
     # -- Observation -----------------------------------------------------------
@@ -629,7 +627,7 @@ class AirspaceEnv(gym.Env):
 
         # Measured from the ORIGINAL issue: an amendment inherits both the deadline and
         # this clock, so wait_s always runs against the deadline the pilot is working to.
-        pending = self._pending_cmd.get(cs)
+        pending = self._pending_advisory.get(cs)
         wait_s  = self._sim_time_s - pending['issued_at_s'] if pending else 0.0
 
         return [dpsi_act,
@@ -777,7 +775,6 @@ class AirspaceEnv(gym.Env):
         self._initial_hdg[cs]         = float(route['heading'])
         self._commanded_heading[cs]   = float(route['heading'])
         self._commanded_mach[cs]      = CONFIG['ac_mach']
-        self._executed_count[cs]      = 0
         self._steps_since_urgency[cs] = CONFIG['focus_clear_steps']
         self._slots[slot]             = cs
         self._active_callsigns.add(cs)

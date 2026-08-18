@@ -26,10 +26,17 @@ arrivals are emergent OUTCOMES we measure, not inputs. Sampling the input grid
 uniformly is what guarantees the outcome space (including high- and low-LoS regimes)
 is well covered.
 
+TEST WORLD: --delay / --delay-mean choose the action-response delay the pilots fly with
+during evaluation, independently of what the model was trained on. Testing a policy in a
+world it never saw is the degradation measurement; the results CSV records the condition
+in its `delay` and `delay_mean_s` columns, and the default filename carries it too.
+
 Run (once you have a checkpoint + its *_vecnorm.pkl next to it):
     python -m Validation.mc_evaluate --model path/to/best_model.zip --episodes 30
     python -m Validation.mc_evaluate --model best_model.zip --baseline   # + HOLD baseline
     python -m Validation.mc_evaluate --quick                             # 2 eps/cell smoke test
+    python -m Validation.mc_evaluate --model best_model.zip \
+        --delay lognormal --delay-mean 45      # same policy, 45 s lognormal pilots
 """
 
 import sys, os, argparse, pickle, io, csv, time
@@ -70,16 +77,27 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from Environments.v4 import AirspaceEnv, CONFIG
+from Environments.v4.delays import DELAY_MODES, MEAN_DELAY_S as DEFAULT_MEAN_S
 
 ACTION_LABELS = ['L60', 'L45', 'L30', 'HOLD', 'R30', 'R45', 'R60', 'DIR', 'SPDup', 'SPDdn']
 HOLD_IDX = 3
 
 CSV_FIELDS = (
-    ['policy', 'pass', 'n_ac_target', 'rho', 'area_km2', 'n_ac_realized', 'seed',
+    # delay / delay_mean_s describe the TEST world, so rows stay self-describing once
+    # the per-condition CSVs are concatenated.
+    ['policy', 'delay', 'delay_mean_s',
+     'pass', 'n_ac_target', 'rho', 'area_km2', 'n_ac_realized', 'seed',
      'steps', 'los_steps', 'los_fraction', 'los_pair_steps',
      'actions_total', 'actions_nonhold']
     + [f'act_{lbl}' for lbl in ACTION_LABELS]
-    + ['exits', 'arrivals', 'arrival_rate', 'reward_total', 'reward_mean']
+    + ['exits', 'arrivals', 'arrival_rate', 'reward_total', 'reward_mean',
+       # From _episode_summary: traffic-normalised safety, what the intervention cost
+       # the flights, and the delay world's own diagnostics. realised_delay_s is the mean
+       # delay the pilots ACTUALLY took (delay_mean_s above is the world that was set), so
+       # the two together prove the arm is switched on; discarded counts advisories
+       # replaced before the pilot flew them.
+       'los_events', 'los_events_per_fh', 'flight_hours',
+       'exit_deviation_nm', 'mean_drift_deg', 'realised_delay_s', 'discarded']
 )
 
 
@@ -179,11 +197,20 @@ def run_episode(venv, model, seed):
         'reward_total':    float(last_info.get('ep_reward_total', 0.0)),
         'reward_mean':     float(last_info.get('mean_episode_reward', 0.0)),
         'n_ac_realized':   realized,
+
+        'los_events':        int(last_info.get('ep_los_events', 0)),
+        'los_events_per_fh': float(last_info.get('ep_los_events_per_fh', 0.0)),
+        'flight_hours':      float(last_info.get('ep_flight_hours', 0.0)),
+        'exit_deviation_nm': float(last_info.get('ep_exit_deviation_nm', 0.0)),
+        'mean_drift_deg':    float(last_info.get('ep_mean_drift_deg', 0.0)),
+        'realised_delay_s':  float(last_info.get('ep_delay_mean_s', 0.0)),
+        'discarded':         int(last_info.get('ep_discarded', 0)),
     }
 
 
-def make_venv(model_path, vecnorm_path):
-    venv = DummyVecEnv([lambda: AirspaceEnv()])
+def make_venv(model_path, vecnorm_path, delay_mode='none', delay_mean_s=None):
+    venv = DummyVecEnv([lambda: AirspaceEnv(delay_mode=delay_mode,
+                                            delay_mean_s=delay_mean_s)])
     model = None
     if model_path:
         if vecnorm_path and os.path.exists(vecnorm_path):
@@ -219,10 +246,11 @@ def build_tasks(policies, n_ac_grid, density_grid, passes, base_seed):
     return tasks
 
 
-def make_row(task, m):
+def make_row(task, m, delay_mode, delay_mean_s):
     policy_name, _use_model, pass_no, n_ac, rho, seed, _ci, _n_cells = task
     return {
-        'policy': policy_name, 'pass': pass_no, 'n_ac_target': n_ac, 'rho': rho,
+        'policy': policy_name, 'delay': delay_mode, 'delay_mean_s': delay_mean_s,
+        'pass': pass_no, 'n_ac_target': n_ac, 'rho': rho,
         'area_km2': round(n_ac / rho, 1),
         'n_ac_realized': m.get('n_ac_realized') if m.get('n_ac_realized') is not None else n_ac,
         'seed': seed,
@@ -235,14 +263,23 @@ def make_row(task, m):
         'arrival_rate': round(m['arrival_rate'], 4),
         'reward_total': round(m['reward_total'], 2),
         'reward_mean': round(m['reward_mean'], 4),
+        'los_events': m['los_events'],
+        'los_events_per_fh': round(m['los_events_per_fh'], 4),
+        'flight_hours': round(m['flight_hours'], 4),
+        'exit_deviation_nm': round(m['exit_deviation_nm'], 4),
+        'mean_drift_deg': round(m['mean_drift_deg'], 4),
+        'realised_delay_s': round(m['realised_delay_s'], 3),
+        'discarded': m['discarded'],
     }
 
 
 # -- Worker process: one persistent env + model, reused across tasks -----------
 _WORKER = {}
 
-def _init_worker(model_path, vecnorm_path):
-    venv, model = make_venv(model_path, vecnorm_path)
+def _init_worker(model_path, vecnorm_path, delay_mode, delay_mean_s):
+    # Workers are separate processes under spawn: the delay condition has to travel
+    # through initargs, exactly like the model paths.
+    venv, model = make_venv(model_path, vecnorm_path, delay_mode, delay_mean_s)
     _WORKER['venv'], _WORKER['model'] = venv, model
 
 def _run_task(task):
@@ -252,7 +289,8 @@ def _run_task(task):
     return task, m
 
 
-def run_tasks(writers, tasks, workers, model_path, vecnorm_path):
+def run_tasks(writers, tasks, workers, model_path, vecnorm_path,
+              delay_mode='none', delay_mean_s=0.0):
     """Execute all tasks (serial if workers<=1, else a process pool). Each row is
     routed to its policy's own writer (separate CSV per policy), written and flushed
     live from this single consumer process so every file stays valid."""
@@ -262,7 +300,7 @@ def run_tasks(writers, tasks, workers, model_path, vecnorm_path):
         nonlocal done
         policy_name = task[0]
         writer, fh = writers[policy_name]
-        writer.writerow(make_row(task, m))
+        writer.writerow(make_row(task, m, delay_mode, delay_mean_s))
         fh.flush()                      # live update
         done += 1
         elapsed = time.time() - t0
@@ -276,7 +314,7 @@ def run_tasks(writers, tasks, workers, model_path, vecnorm_path):
               f'elapsed {fmt_dur(elapsed)} ETA {fmt_dur(eta)}', flush=True)
 
     if workers <= 1:
-        venv, model = make_venv(model_path, vecnorm_path)
+        venv, model = make_venv(model_path, vecnorm_path, delay_mode, delay_mean_s)
         for task in tasks:
             _policy, use_model, _pass, n_ac, rho, seed, _ci, _nc = task
             configure_cell(n_ac, rho)
@@ -286,7 +324,8 @@ def run_tasks(writers, tasks, workers, model_path, vecnorm_path):
         import multiprocessing as mp
         print(f'  spawning {workers} worker processes...', flush=True)
         with mp.Pool(workers, initializer=_init_worker,
-                     initargs=(model_path, vecnorm_path)) as pool:
+                     initargs=(model_path, vecnorm_path,
+                               delay_mode, delay_mean_s)) as pool:
             for task, m in pool.imap_unordered(_run_task, tasks, chunksize=1):
                 handle(task, m)
 
@@ -305,6 +344,16 @@ def main():
     ap.add_argument('--density', default=None,
                     help='comma list of densities ac/km^2, "a/b" allowed '
                          '(default: 1/25000,1/20000,1/15000,1/12500,1/10000)')
+    ap.add_argument('--delay', default='none', choices=list(DELAY_MODES),
+                    help='action-response delay world to TEST in. Set it to the arm the '
+                         'model was trained on for a like-for-like result, or to a '
+                         'different one to measure how the policy degrades under pilots '
+                         'it never met.')
+    # --delay-first is the old spelling, kept so existing run scripts still work.
+    ap.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
+                    type=float, default=None, metavar='S',
+                    help='delay magnitude: the MEAN pilot response time in seconds. '
+                         'Ignored when --delay none; default is the env default.')
     ap.add_argument('--no-baseline', action='store_true',
                     help='skip the HOLD-only NO-policy baseline (included by default)')
     ap.add_argument('--baseline', action='store_true', help=argparse.SUPPRESS)  # deprecated: now default
@@ -325,7 +374,17 @@ def main():
             sys.exit(1)
         print('Proceeding with the HOLD-only NO-policy baseline only.')
     vecnorm_path = args.vecnorm or (model_path.replace('.zip', '_vecnorm.pkl') if model_path else None)
-    out_path = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mc_results.csv')
+
+    # The test world. 'none' has no magnitude, so it records 0 rather than the unused
+    # default -- the CSV then says exactly what was flown.
+    delay_mean_s = (0.0 if args.delay == 'none'
+                    else (args.delay_mean if args.delay_mean is not None else DEFAULT_MEAN_S))
+    delay_tag = 'none' if args.delay == 'none' else f'{args.delay}{delay_mean_s:g}s'
+
+    # The delay condition goes in the default filename: back-to-back runs of different
+    # worlds would otherwise overwrite each other's results.
+    out_path = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        f'mc_results_{delay_tag}.csv')
 
     # Trained policy AND the HOLD-only NO-policy baseline (default; --no-baseline to skip).
     # Per scenario (pass, cell) both run on the SAME seed -> paired comparison. Results go
@@ -342,6 +401,8 @@ def main():
     print(f'  n_ac     = {n_ac_grid}')
     print(f'  density  = {[f"{d:.2e}" for d in density_grid]}')
     print(f'  policies = {[p for p, _ in policies]}   workers = {workers}')
+    print(f'  delay    = {args.delay}' + ('' if args.delay == 'none'
+                                          else f'  mean {delay_mean_s:g}s'))
     print(f'  total    = {len(tasks)} episodes')
     for name, p in out_paths.items():
         print(f'  {name:6s} -> {p}')
@@ -355,7 +416,8 @@ def main():
             w.writeheader()
             files.append(fh)
             writers[name] = (w, fh)
-        run_tasks(writers, tasks, workers, model_path, vecnorm_path)
+        run_tasks(writers, tasks, workers, model_path, vecnorm_path,
+                  args.delay, delay_mean_s)
     finally:
         for fh in files:
             fh.close()
