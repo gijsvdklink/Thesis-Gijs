@@ -1,0 +1,459 @@
+% ===============================================================
+\chapter{Methodology}
+\label{ch:Methodology}
+% ===============================================================
+
+To be able to solve a CR problem via RL, a simulation environment has to be designed, a learning algorithm has to be selected and implemented, and the resulting models have to be evaluated. This chapter covers the methodology of those three steps.
+
+Section~\ref{sec:Environment} describes the set-up of the environment. Section~\ref{sec:learning algorithm} states which learning algorithm was used to train the models and on which hardware they were trained. Section~\ref{sec:Experiments} defines the key performance indicators and describes the three experiments conducted with them.
+
+\section{Environment}
+\label{sec:Environment}
+
+The environment used for the experiments was custom-developed for this research and inspired by existing BS-Gym environments \cite{groot2024}.  Each aircraft is modeled as an A-320 and the dynamics are handled by BS, while the actions, observations, and rewards are defined according to the guidelines of the Gymnasium API, an open-source Python library used to develop and test reinforcement learning algorithms.
+
+Subsection~\ref{subsec:Scenarios} explains how the aircraft and the airspaces are created. Subsection~\ref{subsec:Selection} explains how the single aircraft that the model advises is selected, based on an urgency score. Subsections~\ref{subsec:actions}, \ref{subsec:observations} and~\ref{subsec:rewards} then define the actions, observations and rewards. Finally, Subsection~\ref{subsec:action_response} covers the action-response delay distributions that have been implemented.
+
+\subsection{Scenarios}
+\label{subsec:Scenarios}
+
+The scenarios define the key characteristics of each episode, a single simulation run. At the beginning of a new episode, an airspace is generated, and the aircraft with starting positions and destinations are created. A new scenario is generated for every episode, following the steps in Figure~\ref{fig:scenario_steps}, so that the models are never trained or tested on the same traffic twice. 
+ 
+\begin{figure}[H]
+    \centering
+    \setlength{\fboxsep}{10pt}
+    \setlength{\fboxrule}{0.5pt}
+    \fcolorbox{gray!60}{white}{%
+    \begin{minipage}{0.94\textwidth}
+        \begin{minipage}[t]{0.48\textwidth}
+            \vspace{0pt}
+            \raggedright
+            \small
+            \begin{enumerate}[itemsep=4pt, topsep=0pt, leftmargin=*]
+                \item The number of aircraft $n_{ac} \sim \mathcal{U}\{15,\, 30\}$ and the
+                      traffic density $\rho \sim \mathcal{U}\!\left(\tfrac{1}{25000},\, \tfrac{1}{10000}\right)$
+                      (ac/km$^2$) are sampled, and the sector area follows from their ratio.
+                \item A random convex polygon of that area is generated as the sector.
+                \item Each aircraft is placed on the boundary with a random initial heading.
+                \item The simulation is propagated in BS.
+                \item When an aircraft leaves the sector it is removed and a new aircraft
+                      is spawned randomly on the boundary, under the condition that this cannot cause a predicted conflict within 360~s, so that the traffic density stays
+                      constant during an episode.
+                \item The episode is terminated when on average 4 $\times$ $n_{ac}$ aircraft have crossed the airspace.
+            \end{enumerate}
+        \end{minipage}
+        \hfill
+        \begin{minipage}[t]{0.46\textwidth}
+            \vspace{0pt}
+            \centering
+            \includegraphics[width=\textwidth]{images/midterm/sim_15ac.png}
+            \captionof{figure}{A pygame visualisation of an episode with 15 aircraft mid-episode.}
+            \label{fig:sim_15ac}
+        \end{minipage}
+    \end{minipage}%
+    }
+    \caption{Scenario generation sequence (left) followed each episode, and a pygame visualisation of a resulting episode with 15 aircraft mid-episode (right).}
+    \label{fig:scenario_steps}
+\end{figure}
+
+The scenarios are developed exclusively in two dimensions to reduce the required training time. One fundamental design consideration is the choice between structured and free flight airspace. In structured airspace, aircraft follow predefined airways, whereas in free flight airspace, trajectories are unconstrained, generating a richer distribution of multi-aircraft conflicts. To avoid overfitting, where the model learns to solve problems only in specific airway structures rather than resolving conflicts in general, the more conflict-rich free flight airspace was selected. The traffic density and the number of aircraft vary between episodes, but both are kept constant within a single episode.
+ 
+
+\subsection{Selection of the Focus Ship}
+\label{subsec:Selection}
+
+As discussed in Section~\ref{sec:recap_gap}, MARL is not suitable for an RL-based CR tool intended to advise ATCOs: it allows multiple actions to be selected at each time step, yet an ATCO is unlikely to issue heading instructions to several aircraft simultaneously. A single-agent RL approach was therefore chosen for this research, inspired by the work of \textcite{sui2025}. The core idea is an explicit ranking mechanism that scores the urgency of all predicted conflicts in the airspace and selects the most critical aircraft to be the focus ship for the RL agent, based on the highest urgency score (Section~\ref{subsubsec:urgency}).
+
+\subsubsection{Urgency}
+\label{subsubsec:urgency}
+For a pair of aircraft $(i, j)$, the pairwise urgency $u_{ij}$ is calculated by
+\begin{equation}
+    u_{ij} =
+    \begin{cases}
+        1 + 9\left(1 - \dfrac{d}{d_\mathrm{sep}}\right),
+            & d < d_\mathrm{sep}, \\[1.0em]
+        \dfrac{t_\mathrm{warn} - t_\mathrm{los}}{t_\mathrm{warn}},
+            & 0 \le t_\mathrm{los} \le t_\mathrm{warn}, \\[1.0em]
+        0, & \text{otherwise,}
+    \end{cases}
+    \label{eq:urgency}
+\end{equation}
+where $d$ is the current distance between aircraft $i$ and $j$, $d_\mathrm{sep} = 5$~NM is the separation minimum, $t_\mathrm{warn} = 360$~s is the warning horizon, which aligns with the concept of Medium Term Conflict Detection (MTCD) \cite{caac2024mtcd}. The term $t_\mathrm{los}$ is the predicted time to loss of separation. The pairwise urgency is symmetric by definition, $u_{ij} = u_{ji}$, and the formulas used to compute $d_\mathrm{cpa}$ and $t_\mathrm{los}$ are given in Appendix~\ref{app:cpa}. Figure~\ref{fig:urgency_calculation} shows an urgency matrix $U$, with $U_{ij} = u_{ij}$, for a scenario with six aircraft.
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[c]{0.50\textwidth}
+        \centering
+        \setlength{\fboxsep}{4pt}
+        \setlength{\fboxrule}{0.5pt}
+        \fcolorbox{gray!60}{white}{%
+            \includegraphics[width=\textwidth]{images/midterm/urgency_example.png}
+        }
+        \caption{Six-aircraft scenario, focus ship AC10.}
+        \label{fig:urgency_example}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[c]{0.44\textwidth}
+        \centering
+        \small
+        \renewcommand{\arraystretch}{1.2}
+        \setlength{\tabcolsep}{4pt}
+        \begin{tabular}{c|cccccc}
+            \multicolumn{1}{c}{} & AC10 & AC11 & AC12 & AC13 & AC14 & AC15 \\
+            \cline{2-7}
+            AC10 & --                        & 0 & \cellcolor{gray!25}0.86 & 0 & \cellcolor{gray!12}0.31 & 0 \\
+            AC11 & 0                         & -- & 0                        & 0 & 0                        & 0 \\
+            AC12 & \cellcolor{gray!25}0.86   & 0  & --                       & 0 & 0                        & 0 \\
+            AC13 & 0                         & 0  & 0                        & -- & 0                       & 0 \\
+            AC14 & \cellcolor{gray!12}0.31   & 0  & 0                        & 0 & --                       & 0 \\
+            AC15 & 0                         & 0  & 0                        & 0 & 0                        & -- \\
+        \end{tabular}
+        \caption{Matrix of pairwise urgencies $u_{ij}$.}
+        \label{fig:urgency_matrix}
+    \end{subfigure}
+    \caption{Example of a pairwise urgency matrix for six aircraft: (a) the scenario, and (b) the resulting matrix.}
+    \label{fig:urgency_calculation}
+\end{figure}
+
+The focus ship is determined from the urgency matrix $U$ as follows.
+Because the pairwise urgency is symmetric ($u_{ij} = u_{ji}$), both aircraft of a
+conflict pair carry the same pairwise score, so the most urgent conflict in the
+sector is the pair with the highest maximum urgency $\max_j u_{ij}$. To decide
+which of these two aircraft becomes the focus ship, the row sum
+$U_i = \sum_j u_{ij}$ is used: the aircraft with the larger row
+sum becomes the focus ship, as this indicates involvement in further conflicts beyond the
+shared one. In Figure~\ref{fig:urgency_calculation}, for example, aircraft~10 has
+the highest urgency ($U_{10} = 0.86 + 0.31 = 1.17$) and is therefore selected as
+the focus ship. 
+
+Changing the focus ship every time the urgency scores shift would make the
+problem unstable and hinder learning. Therefore, once a focus ship is selected
+it is retained until 25~s after its conflict has been resolved. Only when a highly
+urgent conflict appears elsewhere in the sector does the focus ship change immediately. When any pair satisfies
+$u_{ij} \geq 0.67$, corresponding to a predicted loss of
+separation within ${\approx}120$~s, the focus ship changes immediately to one of the conflicting aircraft in this pair. When no aircraft are in conflict ($u_{ij} = 0\ \forall\, i,j$), the focus ship becomes the aircraft with the largest heading drift, denoted as $\Delta\psi$. This drift is defined as the angle between the aircraft's current heading and the shortest path to its destination, and is illustrated in Figure~\ref{fig:conflict_geometry}.
+
+
+\subsection{Actions}
+\label{subsec:actions}
+
+At every time step the model selects one action for the focus ship, and that action is turned into an advisory: the instruction that is issued to the pilot. The advisory is always executed, but only once the pilot's action-response delay has elapsed (Subsection~\ref{subsec:action_response}), unless the model replaces it with a new advisory before that moment. The term action therefore refers to what the model selects, and advisory to what the pilot is told to fly. The action space is discrete and consists of ten different actions, each with an assigned cost, listed in Table~\ref{tab:actions}. Subsection~\ref{subsec:rewards} describes how these costs contribute to the final reward.
+These actions fall into three categories: heading changes, speed changes, and special actions. A workload cost is assigned to each action based on its magnitude. For instance, a -60-degree turn is more expensive than a -30-degree turn; however, executing a -30-degree turn twice is more expensive than executing a -60-degree turn once. Heading changes are always defined with respect to the initial random heading assigned when the aircraft was spawned. Speed changes are generally cheaper than turns and are bounded between Mach 0.74 and Mach 0.82. The 'do nothing' option is completely free, as it requires no intervention. Finally, the 'return to route' action, which sets the heading deviation to $\Delta\psi = 0$, is assigned a low cost to encourage the model to guide aircraft back to their initial headings.
+
+%% Combined float — placed here so it lands between the two subsections
+\begin{table}[tp]
+\renewcommand{\arraystretch}{1.15}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{2pt}
+\small
+%
+\begin{minipage}[t]{0.41\linewidth}
+  \centering
+  \caption{Discrete action space and costs.}
+  \label{tab:actions}
+  \begin{tabular}{@{}clc@{}}
+    \toprule
+    Index & Action & Cost \\
+    \midrule
+    0 & Turn $-60^{\circ}$       & 0.750 \\
+    1 & Turn $-45^{\circ}$       & 0.625 \\
+    2 & Turn $-30^{\circ}$       & 0.500 \\
+    3 & Do nothing               & 0.000 \\
+    4 & Turn $+30^{\circ}$       & 0.500 \\
+    5 & Turn $+45^{\circ}$       & 0.625 \\
+    6 & Turn $+60^{\circ}$       & 0.750 \\
+    7 & Return to route          & 0.125 \\
+    8 & Velocity $+0.04$\,M      & 0.250 \\
+    9 & Velocity $-0.04$\,M      & 0.250 \\
+    \bottomrule
+  \end{tabular}
+\end{minipage}%
+\hfill%
+\begin{minipage}[t]{0.55\linewidth}
+  \centering
+  \caption{Full observation space (27-element vector).}
+  \label{tab:observation}
+  \begin{tabular}{@{}llc@{}}
+    \toprule
+    Aircraft & State & Range \\
+    \midrule
+    \multirow{7}{*}{Focus ship}
+        & $\Delta\psi$      & $[-\pi, \pi]$     \\
+        & $v_\mathrm{own}$  & $[427, 473]$~kt   \\
+        & $h_\mathrm{cmd}$  & $[-\pi, \pi]$     \\
+        & $v_\mathrm{cmd}$  & $[427, 473]$~kt   \\
+        & retn\_conf        & $\{0, 1\}$        \\
+        & pending           & $\{0, 1\}$        \\
+        & $t_\mathrm{wait}$ & $[0, 70]$~s       \\
+    \addlinespace
+    \multirow{5}{*}{Intruder ($\times4$)}
+        & $d$            & $[0, \infty)$~NM  \\
+        & $\theta$          & $[-\pi, \pi]$     \\
+        & $\psi$            & $[-\pi, \pi]$     \\
+        & $v_\mathrm{int}$  & $[427, 473]$~kt   \\
+        & $t_\mathrm{los}$  & $[0, 360]$~s      \\
+    \bottomrule
+  \end{tabular}
+\end{minipage}
+\end{table}
+
+\subsection{Observations}
+\label{subsec:observations}
+
+The observation space is a 27-element vector (Table~\ref{tab:observation}) that encodes information about the focus ship and its neighbors. Designing this space was one of the most challenging aspects of the environment, as the literature currently lacks a standard convention for encoding observations in two-dimensional conflict resolution. Since this research aims to assess the effects of action-response delays in RL-based CR, which so far has only been done for ACAS Xa, the observation space was constructed to align with the frameworks of ACAS Xa and ACAS Xu, as detailed in \textcite{owen2019}.
+
+For this observation space, a nearest-neighbor algorithm was implemented. In a simulation with 30 aircraft, not all traffic is likely to be relevant to the focus ship in order to avoid a LoS. Therefore, only the four most relevant aircraft are encoded in the observation space. Assuming the focus ship is denoted as aircraft $i$, any conflicting aircraft $j$ (where $u_{ij} > 0$) are placed first in the observation space. The remaining slots are then filled by the closest aircraft, determined by the distance parameter $\rho$, illustrated in Figure~\ref{fig:conflict_geometry}.
+
+For the focus ship, the observation includes the amount of drift $\Delta\psi$, the current speed $v_\mathrm{own}$, the advised heading $h_\mathrm{cmd}$, and the advised airspeed $v_\mathrm{cmd}$. The advised heading and airspeed inform the model of the previously issued advisories. Together with $v_\mathrm{own}$ and $\Delta\psi$, they also indicate whether the aircraft has already executed this action. If $h_\mathrm{cmd} = \Delta\psi$ and $v_\mathrm{own} = v_\mathrm{cmd}$, the current track (speed and heading) is in line with the latest selected advisory. 
+
+Additionally, \texttt{retn\_conf} is a binary variable set to~1 if returning to the route (i.e., setting $\Delta\psi = 0$) results in a predicted conflict within 360 seconds. The variable \texttt{pending} is another binary indicator, set to~1 if an issued instruction has not yet been executed. Finally, $t_\mathrm{wait}$ represents the elapsed time since that instruction was issued, clipped at 70 seconds. In summary, the observations for the focus ship encode essential information regarding its current track, previously issued advisories, the safety of returning to its route, and the execution status of pending advisories.
+
+The information regarding the intruders includes the range to each aircraft ($\rho$), the bearing relative to the focus ship's heading ($\theta$), the relative heading ($\psi$), their airspeed, and the predicted time to LoS.
+
+Figure~\ref{fig:conflict_geometry} illustrates the geometric elements of the observation space around the focus ship (depicted in blue).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/midterm/observations.png}
+    \caption{Conflict geometry of the focus ship (blue) and four intruders: two in conflict (orange), and two nearest neighbors not in conflict (green). Aircraft outside these four slots (brown) are not observed.}
+    \label{fig:conflict_geometry}
+\end{figure}
+\subsection{Rewards}
+\label{subsec:rewards}
+
+The reward function is purely negative and penalizes the focus ship only for experiencing a Loss of Separation (LoS), for issuing action advisories, and for drifting from its initial heading:
+%
+\begin{equation}
+    R = R_\mathrm{los} + R_\mathrm{drift} + R_\mathrm{work}.
+    \label{eq:reward}
+\end{equation}
+%
+Each term in Equation~\ref{eq:reward} is scaled by a specific weight. These weights were chosen empirically to balance conflict resolution, the frequency of issued actions, and route drift. Their values are listed in Table~\ref{tab:reward_weights}. 
+
+The first term applies when there is a LoS anywhere in the simulation:
+%
+\begin{equation}
+    R_\mathrm{los} = -w_\mathrm{los}\,\mathbb{1}[LoS],
+    \label{eq:r_los}
+\end{equation}
+%
+where the indicator function is defined as:
+%
+\begin{equation}
+    \mathbb{1}[LoS] = 
+    \begin{cases} 
+        1, & \text{if } d < d_\mathrm{sep} \text{ for any aircraft pair } \\[1.0em]
+        0, & \text{otherwise}.
+    \end{cases}
+\end{equation}
+%
+The second term introduces a drift penalty based on the heading deviation $\Delta\psi$:
+%
+\begin{equation}
+    R_\mathrm{drift} = -w_\mathrm{drift}\,\bigl(1 - \cos(\Delta\psi)\bigr).
+    \label{eq:r_drift}
+\end{equation}
+%
+The third term represents the workload cost of the issued instruction, scaled by a workload weight:
+%
+\begin{equation}
+    R_\mathrm{work} = -w_\mathrm{work}\,\mathrm{cost}(a),
+    \label{eq:r_work}
+\end{equation}
+%
+where $\mathrm{cost}(a)$ is the base cost of action $a$, as defined in Table~\ref{tab:actions}. This penalty discourages the model from issuing unnecessary instructions.
+
+\begin{table}[htbp]
+    \centering
+    \caption{The weights of the three reward terms.}
+    \label{tab:reward_weights}
+    \begin{tabular}{llc}
+        \toprule
+        Weight & Term & Value \\
+        \midrule
+        $w_\mathrm{los}$      & Loss of separation & 10 \\
+        $w_\mathrm{drift}$    & Drift from route   & 0.5 \\
+        $w_\mathrm{work}$     & Action cost        & 1 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Action-Response Delays}
+\label{subsec:action_response}
+Several types of action-response delay distribution have been implemented, each parameterised with a mean delay of $15$~s, $30$~s, or $45$~s. The delays are explained below and visualised in Figure~\ref{fig:delay_distributions}.
+\begin{itemize}
+    \item \textbf{Deterministic Delay}: The delay is fixed, so every advisory is executed exactly at the specified time.
+    \item \textbf{Geometric Delay}: This delay is inspired by the probabilistic pilot models used in ACAS, as discussed in \textcite{chryssanthacopoulos2011}. The geometric shape of the distribution comes from a probabilistic Markov chain, which is visualised and explained in Appendix~\ref{app:markov_chain}.
+    \item \textbf{Lognormal Delay}: The delay is randomly drawn from a lognormal
+    distribution, inspired by the distribution found in \textcite{wustenbecker2026}. Appendix~\ref{app:lognormal} explains how this distribution was generated.
+    \item \textbf{No delay}: There is also an option to conduct experiments with no delays, meaning that every selected action is immediately executed.
+\end{itemize}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{images/midterm/delay_distributions.pdf}
+    \caption{Action-response delay distributions for the three response models}
+    \label{fig:delay_distributions}
+\end{figure}
+When a new focus ship is selected and an initial advisory is issued, a delay value is
+sampled from the active distribution. This value determines the time elapsed between the
+issuance of the first advisory and its execution. For example, if the first advisory for a
+new focus ship is issued at $t = 15$~s and a delay of $25$~s is sampled, the
+action is scheduled for execution at $t = 40$~s. If the model selects a new action while
+this delay is still counting down, the new instruction overwrites the previous one and
+this new action is the one that will be executed at $t = 40$~s.
+
+A key implementation detail concerns the time scales involved. BS updates the
+simulation every $1$ simulation second, but the model only receives observations and
+selects actions every $5$~s. The sampled delay is therefore evaluated against the
+$1$~s time step of BS, so an advisory is executed at the first $1$~s step at which the sampled
+delay has elapsed. The pseudocode below illustrates how the environment is propagated.
+\begin{lstlisting}[style=pyPseudo, language=Python]
+while episode not done:
+    action = model(obs)              # new action selected every 5 s
+    env.queue(action, delay)         # action is queued with its sampled delay
+    for t in range(5):
+        if response_delay_elapsed(t):
+            bluesky.execute(action)  # action executed once the delay has elapsed
+        bluesky.step(dt=1)           # BlueSky propagates every 1 s
+    obs = env.observe()              # new observation every 5 s
+\end{lstlisting}
+
+\section{Learning Algorithm}
+\label{sec:learning algorithm}
+All models were trained with the learning algorithm PPO \parencite{DBLP:journals/corr/SchulmanWDRK17}, using the
+implementation provided by Stable Baselines 3 (SB3) \parencite{sb3_algos}. PPO was chosen as the learning algorithm because it is currently one of the most widely used policy-gradient algorithms in both research and industry, it is accessible through open-source platforms such as SB3, and it supports discrete action spaces.
+
+The experiments were run on the FLORIS2 server of NLR. This machine is equipped with an Intel Xeon Gold 5317 processor with 12 cores and 24 threads, a base clock of 3.0~GHz, and a maximum turbo clock of 3.6~GHz.
+
+% ---------------------------------------------------------------
+\section{Experiments}
+\label{sec:Experiments}
+% ---------------------------------------------------------------
+
+This section describes the experiments conducted, following the scenarios described in Figure~\ref{fig:scenario_steps}. Subsection~\ref{subsec:kpis} defines the key performance indicators (KPIs) used to evaluate the subsequent experiments. Subsection~\ref{subsec:exp1} details the training of different models with delays. Subsection~\ref{subsec:exp2} examines how a baseline model, originally trained without delays, degrades when tested in a delayed environment. Subsection~\ref{subsec:exp3} compares the baseline model with a lognormal delayed model. Finally, Subsection~\ref{subsec:bootstrap} briefly describes how bootstrapping is used to quantify the uncertainty in the reported results.
+
+
+
+% ---------------------------------------------------------------
+\subsection{Key performance indicators}
+\label{subsec:kpis}
+% ---------------------------------------------------------------
+
+The KPIs listed in Table~\ref{tab:kpis} are used to evaluate the performance of the models.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Key performance indicators recorded during the experiments.}
+    \label{tab:kpis}
+    \begin{tabular}{@{}p{0.24\linewidth}p{0.10\linewidth}p{0.52\linewidth}@{}}
+        \toprule
+        KPI & Unit & Description \\
+        \midrule
+        Arrival rate & --- &
+        Fraction of aircraft that leave the simulation within $5^{\circ}$ of the
+        heading they were assigned when they were spawned. \\
+        Exit deviation & NM &
+        Lateral distance between the position at which an aircraft leaves the
+        simulation and the position it would have reached had no manoeuvres been
+        commanded. \\
+        LoS events & 1/fh &
+        Number of losses of separation divided by the total flight hours. \\
+        Time in LoS & --- &
+        Fraction of the episode during which at least one loss of separation is
+        active. \\
+        Speed changes & 1/fh &
+        Number of commanded speed changes divided by the total flight hours. \\
+        Heading changes & 1/fh &
+        Number of commanded heading changes divided by the total flight hours. \\
+        Episode reward & --- &
+        Cumulative reward obtained over an episode. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+% ---------------------------------------------------------------
+\subsection{Experiment 1: Training with delays}
+\label{subsec:exp1}
+% ---------------------------------------------------------------
+
+The first experiment trains many different (delayed) models and observes how the
+reward evolves over time, in order to understand the learning capabilities of the different models.
+
+All models were trained with the conflict warning horizon set to
+$t_\mathrm{warn} = 360$~s. Table~\ref{tab:delay_models_detailed} gives an overview of the resulting set of models. These models have been trained simultaneously on the NLR server for about eight hours.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Overview of the models trained.}
+    \label{tab:delay_models_detailed}
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Delay model & Mean delay (s) & Models \\
+        \midrule
+        No delay      & 0          & 1 \\
+        Deterministic & 15, 30, 45 & 3 \\
+        Lognormal     & 15, 30, 45 & 3 \\
+        Geometric     & 15, 30, 45 & 3 \\
+        \midrule
+        \multicolumn{2}{@{}l}{Total} & 10 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------
+\subsection{Experiment 2: Train without delays, test with delays}
+\label{subsec:exp2}
+% ---------------------------------------------------------------
+
+In this experiment the baseline model, trained without delays, is tested in lognormally delayed environments with different mean delays.
+The goal is to get more
+insight into how the performance degrades for models that have been trained under
+the assumption of immediate compliance, and that therefore have not accounted for delays during training.
+
+% ---------------------------------------------------------------
+\subsection{Experiment 3: Cross-evaluation of delayed and delay-free models}
+\label{subsec:exp3}
+% ---------------------------------------------------------------
+
+Table~\ref{tab:validation_matrix} shows how the different models were cross-evaluated and compared against each other.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Validated model--environment combinations.}
+    \label{tab:validation_matrix}
+    \begin{tabular}{@{}cll@{}}
+        \toprule
+        \# & Trained in & Evaluated in \\
+        \midrule
+        1 & No delay             & No delay             \\
+        2 & No delay             & 30~s lognormal delay \\
+        3 & 30~s lognormal delay & 30~s lognormal delay \\
+        4 & 30~s lognormal delay & No delay             \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The KPIs of these models are then compared and plotted against a zero-CR model.
+
+% ---------------------------------------------------------------
+\subsection{Statistical analysis of the results}
+\label{subsec:bootstrap}
+% ---------------------------------------------------------------
+
+Given the amount of time available for this set of experiments, it was not
+feasible to train multiple models under the same conditions. The variability
+introduced by the stochastic training process is therefore not captured here. In
+addition, eight hours of training is no guarantee of converged results. Both
+limitations should be addressed in the following set of experiments, in which
+repeated training runs per condition and a longer training schedule are proposed.
+
+What can be quantified with the models at hand is the uncertainty on the
+validation side. For each validation round, 200 episodes were run after training
+and the per-episode KPIs were stored. From this sample, 95\% confidence intervals
+were constructed using a statistical procedure called bootstrapping: the data
+were randomly resampled with replacement into new datasets of equal size, and
+this was repeated 10\,000 times to obtain an empirical distribution of each KPI.
+The procedure follows Section~6.7 of \cite{FayGerow2013}.
+
+Bootstrapping was chosen partly for its accessibility, but mainly because it
+makes no assumptions about the underlying distribution of the data. This matters
+here because several KPIs, such as the number of LoS events per flight hour, are
+heavily skewed and bounded below by zero.

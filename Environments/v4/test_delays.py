@@ -3,7 +3,8 @@
 
 import statistics
 import sys
-from random import Random
+
+import numpy as np
 
 from .delays import ResponseDelay, DELAY_MODES, MEAN_DELAY_S
 
@@ -25,7 +26,7 @@ def close(a, b, tol):
 
 
 def draws(mode, mean_s=MEAN_DELAY_S, n=N, seed=0):
-    model = ResponseDelay(mode, Random(seed), mean_s=mean_s)
+    model = ResponseDelay(mode, np.random.default_rng(seed), mean_s=mean_s)
     return [model.sample_delay_s() for _ in range(n)]
 
 
@@ -43,7 +44,7 @@ def main():
     for mode in ('lognormal', 'probabilistic'):
         for mean_s in MAGNITUDES:
             sample  = statistics.fmean(draws(mode, mean_s))
-            claimed = ResponseDelay(mode, Random(0), mean_s=mean_s).expected_delay_s()
+            claimed = ResponseDelay(mode, np.random.default_rng(0), mean_s=mean_s).expected_delay_s()
             check(f'{mode}/{mean_s:g}: sample mean matches expected_delay_s()',
                   close(sample, claimed, 0.02),
                   f'sample {sample:.2f} s, claimed {claimed:.2f} s')
@@ -57,14 +58,14 @@ def main():
     for mean_s in MAGNITUDES:
         sample = draws('probabilistic', mean_s)
         p = 1.0 / mean_s
-        # No arm has a ceiling, so the stochastic ones must run well past their mean.
+        # No delay type has a ceiling, so the stochastic ones must run well past their mean.
         check(f'probabilistic/{mean_s:g}: whole seconds from 1, unbounded above',
               all(float(d).is_integer() for d in sample)
               and min(sample) == 1.0 and max(sample) > 2 * mean_s)
 
         # Memorylessness: the chance of responding in the next second does not depend on
         # how long the pilot has already been silent. This is what separates it from
-        # the lognormal arm, where a long silence means a response is overdue.
+        # the lognormal delay type, where a long silence means a response is overdue.
         for waited in (5, 15, 25):
             still_waiting = [d for d in sample if d > waited]
             responds_next = sum(1 for d in still_waiting if d == waited + 1) / len(still_waiting)
@@ -80,7 +81,7 @@ def main():
               close(beyond, (1 - p) ** k, 0.10), f'{beyond:.4f} vs {(1 - p) ** k:.4f}')
 
     try:
-        ResponseDelay('sometimes', Random(0))
+        ResponseDelay('sometimes', np.random.default_rng(0))
         check('unknown mode is rejected', False)
     except ValueError:
         check('unknown mode is rejected', True)

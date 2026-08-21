@@ -20,3 +20,6 @@ LATEX/
 VerticalCAS-master/
 assignments/scratch.py
 assignments/sandbox/
+
+# Superseded results, kept local only
+old/

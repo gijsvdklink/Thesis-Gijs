@@ -78,9 +78,9 @@ def plan_entry_route(polygon, sector, n_sectors, rng):
     produce a near-zero chord. Such an aircraft would leave within a step or two without
     ever really flying, polluting the arrival statistics, so short chords are resampled.
 
-    'ref_ll' is where this aircraft would cross the boundary flying that initial heading
-    the whole way. env._score_arrival measures the exit deviation against it; the
-    simulation itself never uses it.
+    'ref_ll' is the planned exit point on the boundary. It only sets the initial heading
+    and rejects short chords -- the simulation never flies to it, and the exit-deviation
+    KPI does not measure against it (see env._ghost_position_nm).
     """
     min_chord = CONFIG['min_chord_nm']
 

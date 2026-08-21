@@ -1,0 +1,93 @@
+The model path globs to the single run inside each delay-type folder.
+
+terminal 1:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay none --out curve_base_0s.csv
+
+terminal 2:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 15 --out curve_base_15s.csv
+
+terminal 3:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 30 --out curve_base_30s.csv
+
+terminal 4:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 45 --out curve_base_45s.csv
+
+terminal 5:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 60 --out curve_base_60s.csv
+
+terminal 6:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 90 --out curve_base_90s.csv
+
+terminal 7:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 120 --out curve_base_120s.csv
+
+terminal 8:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay none --out curve_log30_0s.csv
+
+terminal 9:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 15 --out curve_log30_15s.csv
+
+terminal 10:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 30 --out curve_log30_30s.csv
+
+terminal 11:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 45 --out curve_log30_45s.csv
+
+terminal 12:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 60 --out curve_log30_60s.csv
+
+terminal 13:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 90 --out curve_log30_90s.csv
+
+terminal 14:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/lognormal_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 120 --out curve_log30_120s.csv
+
+terminal 15:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay none --out curve_det30_0s.csv
+
+terminal 16:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 15 --out curve_det30_15s.csv
+
+terminal 17:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 30 --out curve_det30_30s.csv
+
+terminal 18:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 45 --out curve_det30_45s.csv
+
+terminal 19:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 60 --out curve_det30_60s.csv
+
+terminal 20:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 90 --out curve_det30_90s.csv
+
+terminal 21:
+
+python -m Validation.mc_evaluate --model Runs_saved/experiments/deterministic_30s/*/last_model.zip --episodes 200 --seed 1 --delay lognormal --delay-mean 120 --out curve_det30_120s.csv
+
+terminal 22:
+
+python -m Validation.mc_evaluate --episodes 200 --seed 1 --delay none --out no_cr.csv
+
+terminal 23 (after the runs above have finished):
+
+python -m Validation.summarise base_on_none=curve_base_0s.csv base_on_log30=curve_base_30s.csv log30_on_none=curve_log30_0s.csv log30_on_log30=curve_log30_30s.csv det30_on_log30=curve_det30_30s.csv "no CR=no_cr.csv" && python -m Validation.plot_report

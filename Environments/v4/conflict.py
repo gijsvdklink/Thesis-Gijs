@@ -100,16 +100,6 @@ def urgency_matrix(pos, vel):
     return urgency
 
 
-def any_loss_of_separation(pos):
-    """True if any pair is within sep_nm of each other."""
-    if len(pos) < 2:
-        return False
-    d       = pos[None, :, :] - pos[:, None, :]
-    dist_sq = np.einsum('ijk,ijk->ij', d, d)
-    np.fill_diagonal(dist_sq, np.inf)
-    return bool((dist_sq < CONFIG['sep_nm'] ** 2).any())
-
-
 def route_return_blocked(pos, route_vel):
     """Per aircraft, 1.0 if turning back onto its route is NOT free.
 

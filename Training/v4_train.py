@@ -1,11 +1,11 @@
-# PPO trainer for the action-response delay experiment. One arm per process:
+# PPO trainer for the action-response delay experiment. One delay type per process:
 #
 #   python -m Training.v4_train --delay none
 #   python -m Training.v4_train --delay deterministic
 #   python -m Training.v4_train --delay lognormal
 #   python -m Training.v4_train --delay probabilistic
 #
-# All arms launched with the same --seed see identical scenarios (see env.reset).
+# All delay types launched with the same --seed see identical scenarios (see env.reset).
 
 import os
 
@@ -25,12 +25,14 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv, VecMonitor,
+                                              VecNormalize)
 
 torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Environments.v4 import AirspaceEnv, DELAY_MODES
+from Environments.v4.config import CONFIG, EVAL_SEEDS
 from Environments.v4.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
 
 # -- Settings ------------------------------------------------------------------
@@ -39,7 +41,7 @@ from Environments.v4.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
 # on simpler conflict-resolution environments, hence a large budget. Pilot at 10M first.
 TOTAL_TIMESTEPS = 50_000_000
 
-# Parallel envs per arm. Keep N_ENVS x (arms running at once) at or below the machine's
+# Parallel envs per delay type. Keep N_ENVS x (delay types running at once) at or below the machine's
 # physical core count.
 N_ENVS     = 2
 N_STEPS    = 4096                 # per env; rollout = 2 x 4096 = 8192 steps
@@ -55,9 +57,10 @@ ENT_COEF = 0.01
 # instead of every 250k. Lower --eval-every further and the eval starts to cost more than
 # the training it interrupts; drop --eval-episodes first if you need it tighter than this.
 # Each eval writes best_model if the score improved and last_model unconditionally -- a 50M
-# arm runs for days, and a crash with only an early best_model on disk would be painful.
+# delay type runs for days, and a crash with only an early best_model on disk would be painful.
 EVAL_EVERY     = 100_000
-EVAL_SEEDS     = (10_001, 10_002, 10_003, 10_004, 10_005)
+EVAL_EPISODES  = 5
+EVAL_MASTER    = 1                # fixes WHICH held-out episodes; the same ones every run
 PROGRESS_EVERY = 50_000
 
 RUNS_ROOT = os.path.abspath(
@@ -66,8 +69,8 @@ RUNS_ROOT = os.path.abspath(
 ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'return', 'spd+', 'spd-']
 
 # Episode-summary key -> TensorBoard tag, shared by the training and eval logs.
-# Deliberately short. _episode_summary carries more (flight hours, engagement branch,
-# focus hold); Validation/delay_diagnostics.py reports those rather than cluttering
+# Deliberately short. _episode_summary carries more (flight hours, focus hold, advisories
+# answering no predicted conflict); the evaluation CSVs keep those rather than cluttering
 # TensorBoard with numbers that barely move.
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
@@ -78,15 +81,15 @@ METRICS = [
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
     ('ep_los_events',        'safety/los_events'),
 
-    # Route keeping. Deviation and arrival rate are scored over MANOEUVRED aircraft
-    # only (see env._score_arrival); drift is over all airborne traffic, every step.
+    # Route keeping, scored over every aircraft that leaves the sector (see
+    # env._score_arrival); drift is over all airborne traffic, every step.
     ('ep_arrival_rate',      'route/arrival_rate'),
     ('ep_exit_deviation_nm', 'route/exit_deviation_nm'),
     ('ep_mean_drift_deg',    'route/mean_drift_deg'),
 
-    # Instruction load, split by kind.
-    ('ep_turns',             'actions/total_turns'),
-    ('ep_speed_changes',     'actions/total_speed_changes'),
+    # Instruction load, split by kind and normalised by traffic.
+    ('ep_turns_per_fh',         'actions/heading_changes_per_flight_hour'),
+    ('ep_speed_changes_per_fh', 'actions/speed_changes_per_flight_hour'),
 
     # What the pilots actually did, and what the controller wasted.
     ('ep_delay_mean_s',      'delay/mean_response_s'),
@@ -117,18 +120,18 @@ class EvaluateAndCheckpoint(BaseCallback):
     """Measure what the agent can ACTUALLY do, and keep the best policy seen.
 
     PPO's policy is stochastic, so the episode/ curves include exploratory actions. These
-    rollouts use predict(deterministic=True) on the fixed EVAL_SEEDS scenarios -- the same
-    episodes every time, in every arm -- and log under eval/.
+    rollouts use predict(deterministic=True) on episodes from the held-out EVAL_SEEDS pool
+    -- the same episodes every time, in every delay type -- and log under eval/.
 
     Note for the write-up: best_model maximises a small-sample score, so its eval number is
-    optimistically biased. Report final_model on a larger held-out set instead.
+    optimistically biased. Report final_model on the TEST_SEEDS validation set instead.
     """
 
-    def __init__(self, eval_env, save_dir, seeds, every):
+    def __init__(self, eval_env, save_dir, episodes, every):
         super().__init__()
         self.eval_env = eval_env
         self.save_dir = save_dir
-        self.seeds    = seeds
+        self.episodes = episodes
         self.every    = every
         self.last_eval = 0
         self.best = -float('inf')
@@ -139,10 +142,10 @@ class EvaluateAndCheckpoint(BaseCallback):
         self.model.save(stem)
         self.model.get_env().save(stem + '_vecnorm.pkl')
 
-    def _one_episode(self, seed):
+    def _one_episode(self, seed=None):
         """A full deterministic episode, observations normalised with the training stats."""
         vecnorm = self.model.get_env()
-        obs, _ = self.eval_env.reset(seed=seed)
+        obs, _ = self.eval_env.reset(seed=seed)      # seed=None continues the sequence
         while True:
             action, _ = self.model.predict(vecnorm.normalize_obs(obs.reshape(1, -1)),
                                            deterministic=True)
@@ -155,7 +158,17 @@ class EvaluateAndCheckpoint(BaseCallback):
             return True
         self.last_eval = self.num_timesteps
 
-        runs = [self._one_episode(seed) for seed in self.seeds]
+        # --eval-episodes 0 keeps the checkpoints but skips the scoring rollouts, which is
+        # what you want when final_model is the one being reported anyway.
+        if not self.episodes:
+            self._save('last_model')
+            print(f'  saved @ {self.num_timesteps:>10,}', flush=True)
+            return True
+
+        # Seeding the first episode restarts the sequence, so every evaluation scores the
+        # same self.episodes scenarios out of the held-out pool.
+        runs = [self._one_episode(EVAL_MASTER if i == 0 else None)
+                for i in range(self.episodes)]
         for key, tag in METRICS:
             self.logger.record(f'eval/{tag}', sum(r[key] for r in runs) / len(runs))
 
@@ -196,26 +209,28 @@ class Progress(BaseCallback):
 
 # -- Training ------------------------------------------------------------------
 
-def arm_name(delay_mode, delay_mean_s):
-    """Directory name for one arm: shape and magnitude, e.g. 'lognormal_30s'.
+def delay_type_name(delay_mode, delay_mean_s):
+    """Directory name for one delay type: shape and magnitude, e.g. 'lognormal_30s'.
 
     The baseline has no magnitude, so it stays plain 'none' -- there is only one of it.
     """
-    if delay_mode == 'none':
-        return 'none'
-    return f'{delay_mode}_{delay_mean_s:g}s'
+    return 'none' if delay_mode == 'none' else f'{delay_mode}_{delay_mean_s:g}s'
 
 
-def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, delay_mean_s):
-    arm      = arm_name(delay_mode, delay_mean_s)
-    run_name = f'v4_{arm}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
-    run_dir  = os.path.join(RUNS_ROOT, arm, run_name)
+def train(delay_mode, seed, total_timesteps, n_envs, eval_episodes, eval_every, delay_mean_s,
+          runs_root=RUNS_ROOT):
+    delay_type = delay_type_name(delay_mode, delay_mean_s)
+    run_name = f'v4_{delay_type}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
+    run_dir  = os.path.join(runs_root, delay_type, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
     # delay_mode travels via env_kwargs so it reaches the worker processes; editing CONFIG
     # here would not survive the spawn.
     env_kwargs = {'delay_mode': delay_mode, 'delay_mean_s': delay_mean_s}
-    venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=SubprocVecEnv, seed=seed,
+    # One environment does not need a worker process: SubprocVecEnv would pickle the
+    # observation and the action through a pipe on every single step, for no parallelism.
+    vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
+    venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=vec_env_cls, seed=seed,
                         env_kwargs=env_kwargs)
     env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                        clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
@@ -224,13 +239,14 @@ def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, del
     model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
                 n_steps=N_STEPS, batch_size=BATCH_SIZE, gamma=GAMMA, ent_coef=ENT_COEF)
 
-    eval_env  = AirspaceEnv(**env_kwargs)            # lives here, alone with BlueSky
+    # Lives here, alone with BlueSky, and flies held-out episodes rather than training ones.
+    eval_env  = AirspaceEnv(**env_kwargs, seed_pool=EVAL_SEEDS) if eval_episodes else None
     callbacks = CallbackList([
         Progress(), LogEpisodes(),
-        EvaluateAndCheckpoint(eval_env, run_dir, eval_seeds, eval_every)])
+        EvaluateAndCheckpoint(eval_env, run_dir, eval_episodes, eval_every)])
 
-    print(f'{arm}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
-          f'eval every {eval_every:,} x{len(eval_seeds)} eps  -> {run_dir}', flush=True)
+    print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
+          f'eval every {eval_every:,} x{eval_episodes} eps  -> {run_dir}', flush=True)
     try:
         model.learn(total_timesteps, callback=callbacks)
     except KeyboardInterrupt:
@@ -243,20 +259,25 @@ def train(delay_mode, seed, total_timesteps, n_envs, eval_seeds, eval_every, del
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train one arm of the delay experiment.')
+    parser = argparse.ArgumentParser(description='Train one delay type.')
     parser.add_argument('--delay', required=True, choices=list(DELAY_MODES),
                         help='action-response delay condition (the experiment variable)')
     parser.add_argument('--seed', type=int, default=0,
-                        help='random seed; all arms at the same seed share their scenarios')
+                        help='random seed; all delay types at the same seed share their scenarios')
     parser.add_argument('--timesteps', type=int, default=TOTAL_TIMESTEPS,
                         help=f'training steps (default {TOTAL_TIMESTEPS:,})')
     parser.add_argument('--n-envs', type=int, default=N_ENVS,
                         help=f'parallel environments, i.e. cores used (default {N_ENVS})')
-    parser.add_argument('--eval-episodes', type=int, default=len(EVAL_SEEDS),
-                        help=f'held-out episodes per evaluation (max {len(EVAL_SEEDS)})')
+    parser.add_argument('--eval-episodes', type=int, default=EVAL_EPISODES,
+                        help=f'held-out episodes per evaluation (default {EVAL_EPISODES}); '
+                             f'0 keeps the checkpoints but skips the scoring rollouts, so '
+                             f'no best_model is chosen')
     parser.add_argument('--eval-every', type=int, default=EVAL_EVERY,
                         help=f'steps between evaluations (default {EVAL_EVERY:,}); '
                              f'0 disables evaluation and checkpointing entirely')
+    parser.add_argument('--runs-root', default=RUNS_ROOT,
+                        help='where the run directory is created, so a new set of models '
+                             'can sit beside an old one (default Runs_saved/experiments)')
     # --delay-first is the old spelling, kept so existing run scripts still work.
     parser.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
                         type=float, default=DEFAULT_MEAN_S,
@@ -266,7 +287,7 @@ def main():
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          EVAL_SEEDS[:max(1, args.eval_episodes)], args.eval_every, args.delay_mean)
+          max(0, args.eval_episodes), args.eval_every, args.delay_mean, args.runs_root)
 
 
 if __name__ == '__main__':

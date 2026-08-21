@@ -6,7 +6,7 @@
 #   2. Instructions are subject to an ACTION-RESPONSE DELAY, selected per instance:
 #          AirspaceEnv(delay_mode='none' | 'deterministic' | 'lognormal' | 'probabilistic')
 #      The 'pending' and 'wait_s' observation features exist in all four modes (constant 0
-#      under 'none'), so the arms share one observation space and can be cross-evaluated.
+#      under 'none'), so the delay types share one observation space and can be cross-evaluated.
 #
 # Layout:  config.py  settings and constants      delays.py    response-delay models
 #          geometry.py coordinate transforms      conflict.py  separation geometry

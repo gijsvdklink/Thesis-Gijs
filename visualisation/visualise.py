@@ -161,6 +161,8 @@ def track_advisories(env, st):
     straight off the environment, so what the panel shows is what the simulator is
     doing. An advisory that has left the queue was flown by the pilot."""
     pending = dict(env._pending_advisory)
+
+
     for cs, advisory in st['pending_seen'].items():
         if cs in pending:
             continue
@@ -194,6 +196,8 @@ def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_on
         o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
         action, _ = model.predict(o, deterministic=deterministic)
         a = int(action)
+    # Read before the step: the environment issues the advisory against this same
+    # traffic picture, and refreshes it only afterwards.
     obs, r, _, trunc, _ = env.step(a)
     st['last_r'] = float(r); st['cum_r'] += st['last_r']; st['step_n'] += 1
     st['last_action'] = a; st['acting_cs'] = acting_cs
@@ -399,7 +403,7 @@ def main():
     ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')
     ap.add_argument('--density', type=float, default=1 / 10000, help='density (ac/km^2)')
     ap.add_argument('--delay', default='none', choices=list(DELAY_MODES),
-                    help='action-response delay condition to fly under. Match the arm the '
+                    help='action-response delay condition to fly under. Match the delay type the '
                          'model was trained on, or set it deliberately to see how the '
                          'policy copes with pilots it never met.')
     # --delay-first is the old spelling, kept so existing commands still work.

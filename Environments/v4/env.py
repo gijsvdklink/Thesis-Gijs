@@ -1,6 +1,6 @@
 # v4 ATCO conflict-resolution environment. One aircraft (the focus) is controlled per
 # step. delays.py decides when the pilot acts on an instruction. reset() derives three
-# independent random streams so the experiment arms share their scenarios.
+# independent random streams so the delay types share their scenarios.
 #
 # Each aircraft is assigned an INITIAL HEADING at spawn that never changes. It is the
 # reference for everything directional: turn actions are absolute offsets from it, drift
@@ -14,17 +14,20 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+from shapely.geometry import Point
+from shapely.prepared import prep
+
 import bluesky as bs
 from bluesky.simulation import ScreenIO
 from bluesky.stack.stackbase import Stack as _BsStack
 
-from .config import (CONFIG, SEED_STRIDE, STEP_DURATION_S, OBS_DIM, N_ACTIONS, N_NEIGHBOURS,
+from .config import (CONFIG, TRAIN_SEEDS, SEED_STRIDE, STEP_DURATION_S, OBS_DIM, N_ACTIONS, N_NEIGHBOURS,
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, EMPTY_RANGE_NM, NO_CONFLICT_S,
                      TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION,
-                     MAX_TURN_OFFSET_DEG, ACT_COST)
+                     ACT_COST)
 from .delays import DELAY_MODES, ResponseDelay
 from .geometry import latlon_to_nm, nm_to_latlon, wrap_to_180, heading_to_velocity
-from .conflict import (traffic_states, urgency_matrix, any_loss_of_separation,
+from .conflict import (traffic_states, urgency_matrix,
                        route_return_blocked, time_to_loss_of_separation)
 from .sector import make_sector_polygon, plan_entry_route
 
@@ -47,7 +50,7 @@ class AirspaceEnv(gym.Env):
     # Empty intruder slot: unreachably far, stationary, no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None):
+    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None, seed_pool=TRAIN_SEEDS):
         super().__init__()
         global _bs_initialized
 
@@ -65,6 +68,9 @@ class AirspaceEnv(gym.Env):
         # per run -- every advisory to every pilot is drawn from the same distribution.
         self.delay_mean_s = delay_mean_s
 
+        # Which pool this environment's episodes come from, and where in it to start.
+        # See _new_episode_generators for how successive episodes walk through the pool.
+        self.seed_pool      = seed_pool
         self._seed_base     = int(seed if seed is not None else CONFIG['seed'])
         self._episode_index = 0
 
@@ -82,6 +88,7 @@ class AirspaceEnv(gym.Env):
         self.n_aircraft           = 0
         self.polygon              = None
         self._polygon_shape       = None
+        self._polygon_ready       = None
         self._slots               = []
         self._active_callsigns    = set()
         self._focus_cs            = None
@@ -91,7 +98,8 @@ class AirspaceEnv(gym.Env):
         self._max_steps           = 0
         self._pending_spawns      = {}   # slot -> steps until the slot is refilled
         self._spawn_delay_range   = (1, 1)
-        self._los_this_step       = False
+        self._los_this_step        = False
+        self._los_seconds_this_step = 0   # simulated seconds of this step spent in LoS
         self._last_intruder_cs    = [None] * N_NEIGHBOURS   # callsign per obs slot (viz only)
         self._sim_time_s          = 0.0  # simulated seconds since reset; the delay clock
 
@@ -106,7 +114,7 @@ class AirspaceEnv(gym.Env):
 
         # -- per-aircraft state, all keyed by callsign --
         self._initial_hdg         = {}   # heading (deg) assigned at spawn; NEVER changes
-        self._exit_ref_nm         = {}   # where a straight flight would leave the sector
+        self._exit_ref_nm         = {}   # where it would leave the sector if never turned
         self._commanded_heading   = {}   # last EXECUTED heading instruction
         self._commanded_mach      = {}   # last EXECUTED speed instruction
         self._steps_since_urgency = {}   # steps since this aircraft last had a conflict
@@ -124,8 +132,9 @@ class AirspaceEnv(gym.Env):
         self._prev_los_pairs = set()
         self._ep_stats = {
             'reward': 0.0, 'steps': 0, 'actions': [],
-            'los_steps': 0,        # steps with at least one pair in LoS
-            'los_events': 0,       # distinct intrusions (entries, not steps)
+            'los_steps': 0,        # agent steps with at least one pair in LoS
+            'los_seconds': 0,      # simulated seconds with at least one pair in LoS
+            'los_events': 0,       # distinct intrusions (entries, scanned every second)
             'flight_s': 0.0,       # airborne time flown by all aircraft
             'exits': 0,            # aircraft that left having actually flown
             # Route keeping is scored over MANOEUVRED aircraft only. Roughly 80% of traffic
@@ -145,17 +154,23 @@ class AirspaceEnv(gym.Env):
     # -- Gym interface ---------------------------------------------------------
 
     def _new_episode_generators(self):
-        """Three independent streams for this episode, derived from one seed.
+        """Draw this episode's scenario seed, then three independent streams from it.
 
-        Workers start at seed + rank, so worker w episode k lands on the same scenario
-        in every experiment arm.
+        The seed is drawn uniformly from this environment's pool, so training, in-training
+        evaluation and validation never fly the same episode. The draw comes from seed_rng,
+        which reset(seed=...) fixes, so one master seed replays one sequence of episodes --
+        the same sequence in every delay type, and for every policy being compared.
         """
-        self.episode_seed = self._seed_base + self._episode_index * SEED_STRIDE
+        low, high = self.seed_pool
+        self.episode_seed = low + (self._seed_base
+                                   + self._episode_index * SEED_STRIDE) % (high - low)
         self._episode_index += 1
 
         self.scenario_rng   = Random(self.episode_seed)
         self.traffic_rng    = Random(self.episode_seed ^ _TRAFFIC_SEED_XOR)
-        self.delay_rng      = Random(self.episode_seed ^ _DELAY_SEED_XOR)
+        # numpy Generator: delays.py samples with it. Still its own stream, so a
+        # delay draw can never shift a scenario decision.
+        self.delay_rng      = np.random.default_rng(self.episode_seed ^ _DELAY_SEED_XOR)
         self.response_delay = ResponseDelay(
             self.delay_mode, self.delay_rng,
             **({'mean_s': self.delay_mean_s} if self.delay_mean_s is not None else {}))
@@ -163,7 +178,7 @@ class AirspaceEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
-            self._seed_base, self._episode_index = int(seed), 0
+            self._seed_base, self._episode_index = int(seed), 0   # restart the sequence
         self._new_episode_generators()
 
         _BsStack.cmdstack.clear()
@@ -188,10 +203,9 @@ class AirspaceEnv(gym.Env):
         if acting_cs:
             self._issue_advisory(acting_cs, action)
 
+        # Separation is scanned every simulated second inside this call, so brief
+        # intrusions between two agent steps are seen rather than stepped over.
         self._advance_simulation()
-
-        # LoS is measured over everyone still airborne, before exits are retired.
-        self._los_this_step = any_loss_of_separation(self._airborne_positions())
         self._step_count += 1
 
         self._remove_exited_aircraft()
@@ -202,7 +216,8 @@ class AirspaceEnv(gym.Env):
 
         n_los_pairs = len(self._pairs_in_loss_of_separation())
         truncated   = self._step_count >= self._max_steps
-        info = {'los_pairs': n_los_pairs, 'focus_cs': self._focus_cs, 'n_aircraft': self.n_aircraft}
+        info = {'los_pairs': n_los_pairs, 'los_seconds': self._los_seconds_this_step,
+                'focus_cs': self._focus_cs, 'n_aircraft': self.n_aircraft}
         if truncated:
             info.update(self._episode_summary())
         return self._build_observation(), reward, False, truncated, info
@@ -211,12 +226,40 @@ class AirspaceEnv(gym.Env):
         """One RL step of simulated time, releasing instructions as they fall due.
 
         The agent observes every 5 s but the pilot may act on any second, so the queue is
-        flushed at 1 s resolution.
+        flushed at 1 s resolution -- and separation is scanned at the same resolution. A
+        5 s scan misses an intrusion that opens and closes between two agent steps, and
+        merges two separate entries by the same pair into one event.
         """
+        self._los_this_step = False
+        self._los_seconds_this_step = 0
+
         for _ in range(CONFIG['action_freq']):
             self._execute_due_advisories()
             bs.sim.step()
             self._sim_time_s += CONFIG['sim_dt']
+
+            pairs = self._scan_separation()
+            if pairs:
+                self._los_this_step = True
+                self._los_seconds_this_step += 1
+            # Entries only: a pair already in LoS a second ago is the same event.
+            self._ep_stats['los_events'] += len(pairs - self._prev_los_pairs)
+            self._prev_los_pairs = pairs
+
+    def _scan_separation(self):
+        """Callsign pairs closer than the separation minimum at this instant.
+
+        Read from BlueSky directly rather than from the urgency matrix, which is only
+        refreshed once per agent step.
+        """
+        flying, indices = self._airborne_indices()
+        if len(flying) < 2:
+            return set()
+        pos     = traffic_states(indices)[0]
+        delta   = pos[:, None, :] - pos[None, :, :]
+        dist_sq = (delta ** 2).sum(axis=-1)
+        rows, cols = np.where(dist_sq < CONFIG['sep_nm'] ** 2)
+        return {(flying[i], flying[j]) for i, j in zip(rows, cols) if i < j}
 
     # -- Traffic picture -------------------------------------------------------
 
@@ -225,19 +268,20 @@ class AirspaceEnv(gym.Env):
 
         Sorted, not set order: Python randomises string hashing per process, and this
         order decides urgency tie-breaks and intruder slot assignment.
+
+        The callsign -> index map is built once per call rather than asking BlueSky for
+        each aircraft: bs.traf.id2idx walks its callsign list, so doing it per aircraft is
+        quadratic, and this runs six times per agent step -- once here and once per
+        simulated second inside the separation scan.
         """
+        index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
         flying, indices = [], []
         for cs in sorted(self._active_callsigns):
-            idx = bs.traf.id2idx(cs)
+            idx = index_of.get(cs, -1)
             if idx >= 0:
                 flying.append(cs)
                 indices.append(idx)
         return flying, indices
-
-    def _airborne_positions(self):
-        """Positions only -- used for the LoS check before exits are retired."""
-        _, indices = self._airborne_indices()
-        return traffic_states(indices)[0] if indices else np.zeros((0, 2))
 
     def _refresh_traffic_view(self):
         """Gather the whole traffic picture once per step.
@@ -284,6 +328,7 @@ class AirspaceEnv(gym.Env):
         s['actions'].append(action)
         if self._los_this_step:
             s['los_steps'] += 1
+        s['los_seconds'] += self._los_seconds_this_step
 
         # Airborne time flown this step, over all aircraft: the denominator that makes
         # LoS counts comparable between episodes of different size and density.
@@ -296,17 +341,12 @@ class AirspaceEnv(gym.Env):
                     self._hdg[self._row_of[cs]] - self._initial_hdg[cs]))
                 s['drift_samples'] += 1
 
-        # Count LoS ENTRIES, not steps-in-LoS: one long intrusion is one event.
-        los_pairs = self._pairs_in_loss_of_separation()
-        s['los_events'] += len(los_pairs - self._prev_los_pairs)
-        self._prev_los_pairs = los_pairs
-
     def _episode_summary(self):
         """End-of-episode metrics, logged by the training callbacks."""
         s = self._ep_stats
         flight_hours = max(s['flight_s'] / 3600.0, 1e-9)
         served       = max(s['delay_served'], 1)
-        handled      = s['manoeuvred_exits']
+        exits        = s['exits']
 
         # Instructions issued, split by kind. Read off the action histogram, which is
         # already collected, so this costs nothing extra.
@@ -319,6 +359,8 @@ class AirspaceEnv(gym.Env):
             'ep_reward_total':     s['reward'],
             'ep_length':           s['steps'],
             'ep_los_steps':        s['los_steps'],
+            'ep_los_seconds':      s['los_seconds'],
+            'ep_los_fraction':     s['los_seconds'] / max(s['steps'] * STEP_DURATION_S, 1),
             'ep_los_events':       s['los_events'],
             'action_distribution': np.bincount(s['actions'], minlength=N_ACTIONS).tolist(),
 
@@ -327,22 +369,26 @@ class AirspaceEnv(gym.Env):
             'ep_flight_hours':      s['flight_s'] / 3600.0,
             'ep_los_events_per_fh': s['los_events'] / flight_hours,
 
-            # Route keeping, over MANOEUVRED aircraft only -- what the intervention cost
-            # the flights that actually received one. With no manoeuvres there is nothing
-            # to score, so deviation is 0 and every aircraft left on route.
-            'ep_exit_deviation_nm': s['deviation_nm'] / handled if handled else 0.0,
-            'ep_arrival_rate':      s['on_route'] / handled if handled else 1.0,
-            'ep_manoeuvred_exits':  handled,
-            'ep_exits':             s['exits'],
+            # Route keeping, over EVERY aircraft that left the sector: an arrival is an
+            # exit whose heading is still within arrival_hdg_tol_deg of the one it was
+            # assigned at spawn, and the deviation is how far from its no-turn exit point
+            # it actually crossed the boundary.
+            'ep_exit_deviation_nm': s['deviation_nm'] / exits if exits else 0.0,
+            'ep_arrival_rate':      s['on_route'] / exits if exits else 1.0,
+            'ep_manoeuvred_exits':  s['manoeuvred_exits'],
+            'ep_exits':             exits,
 
             # How far traffic sits from its assigned headings, and how many instructions
-            # of each kind it took to get there.
-            'ep_mean_drift_deg':  s['drift_deg_sum'] / max(s['drift_samples'], 1),
-            'ep_turns':           turns,
-            'ep_speed_changes':   speeds,
+            # of each kind it took to get there. The per-flight-hour rates are the
+            # comparable ones, for the same reason the LoS rate is.
+            'ep_mean_drift_deg':      s['drift_deg_sum'] / max(s['drift_samples'], 1),
+            'ep_turns':               turns,
+            'ep_speed_changes':       speeds,
+            'ep_turns_per_fh':        turns / flight_hours,
+            'ep_speed_changes_per_fh': speeds / flight_hours,
 
-            # Diagnostics -- not logged to TensorBoard; Validation/delay_diagnostics.py
-            # reports them.
+            # Diagnostics -- kept in the evaluation CSVs rather than TensorBoard;
+            # see Validation/mc_evaluate.py.
             'ep_delay_mean_s':     s['delay_sum_s'] / served,
             'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
             'ep_discarded':        s['discarded'],
@@ -360,6 +406,9 @@ class AirspaceEnv(gym.Env):
         poly     = make_sector_polygon(area_km2, self.scenario_rng)
 
         self._polygon_shape = poly
+        # Prepared once per episode: _no_turn_exit_nm walks the no-turn path in 2 NM steps
+        # for every aircraft spawned, which is tens of thousands of containment tests.
+        self._polygon_ready = prep(poly)
         self.polygon        = np.array(poly.exterior.coords[:-1])
 
         minx, miny, maxx, maxy = poly.bounds
@@ -371,6 +420,7 @@ class AirspaceEnv(gym.Env):
             CONFIG['crossings_per_episode'] * crossing_time_s / STEP_DURATION_S))
 
         self.n_aircraft = n_ac
+        self.rho        = n_ac / area_km2      # recorded per episode by the evaluation
         self._slots     = [None] * n_ac
         self._spawn_delay_range = (max(1, round(CONFIG['spawn_delay_s'][0] / STEP_DURATION_S)),
                                    max(1, round(CONFIG['spawn_delay_s'][1] / STEP_DURATION_S)))
@@ -506,14 +556,13 @@ class AirspaceEnv(gym.Env):
     def _build_advisory(self, cs, action_idx):
         """Action index -> what the pilot will be asked to fly.
 
-        Turns ACCUMULATE into an offset from the initial heading, clamped to
-        +-MAX_TURN_OFFSET_DEG: -30 twice really is -60, but -30 three times stays at -60
-        instead of running away. Return-to-route resets the offset to zero.
+        Turns ACCUMULATE with no limit: -30 twice really is -60, and enough of them in
+        the same direction really do take the aircraft the whole way round.
+        Return-to-route resets the offset to zero.
 
-        The offset builds on the last EXECUTED advisory, so amending while one is still
-        outstanding replaces it -- the pilot only ever flies one. Anchoring to the
-        fixed initial heading and clamping is what keeps this bounded; as unbounded deltas
-        on the last commanded heading they wrapped past 360 and the aircraft just wobbled.
+        The offset builds on the last EXECUTED advisory, so amending one that is still
+        outstanding replaces it -- the pilot only ever flies one, and a turn is never
+        stacked on a turn nobody has flown yet.
         """
         advisory = {'action': action_idx}
 
@@ -525,7 +574,6 @@ class AirspaceEnv(gym.Env):
 
         elif action_idx in TURN_DELTAS:
             offset = self._current_offset(cs) + TURN_DELTAS[action_idx]
-            offset = max(-MAX_TURN_OFFSET_DEG, min(MAX_TURN_OFFSET_DEG, offset))
             advisory['target_hdg'] = (self._initial_hdg[cs] + offset) % 360
 
         elif action_idx == RETURN_TO_ROUTE_ACTION:
@@ -769,9 +817,8 @@ class AirspaceEnv(gym.Env):
         bs.stack.stack(f'SPD {cs} {mach}')
         bs.stack.stack(f'ALT {cs} FL{CONFIG["altitude"]}')
 
-        self._exit_ref_nm[cs]         = latlon_to_nm(CONFIG['center_ll'],
-                                                     float(route['ref_ll'][0]),
-                                                     float(route['ref_ll'][1]))
+        self._exit_ref_nm[cs]         = self._no_turn_exit_nm(
+            (float(route['sp_ll'][0]), float(route['sp_ll'][1])), float(route['heading']))
         self._initial_hdg[cs]         = float(route['heading'])
         self._commanded_heading[cs]   = float(route['heading'])
         self._commanded_mach[cs]      = CONFIG['ac_mach']
@@ -799,37 +846,66 @@ class AirspaceEnv(gym.Env):
                 self._pending_spawns[slot] = self.traffic_rng.randint(*self._spawn_delay_range)
 
     def _exited_callsigns(self):
-        """Callsigns that have left the sector. Sorted: each exit draws from traffic_rng."""
-        exited = []
-        for cs in sorted(self._active_callsigns):
-            idx = bs.traf.id2idx(cs)
-            if idx < 0:
-                exited.append(cs)
-                continue
-            inside = bs.tools.areafilter.checkInside(
-                'SECTOR', np.array([bs.traf.lat[idx]]), np.array([bs.traf.lon[idx]]),
-                np.array([CONFIG['altitude'] * 30.48]))
-            if not inside[0]:
-                exited.append(cs)
-        return exited
+        """Callsigns that have left the sector. Sorted: each exit draws from traffic_rng.
+
+        checkInside takes arrays, so the whole sector is tested in one call instead of one
+        call per aircraft. The returned order is still the sorted one, which matters: each
+        exit draws a respawn from traffic_rng, so a different order would be a different
+        scenario.
+        """
+        callsigns = sorted(self._active_callsigns)
+        index_of  = {cs: i for i, cs in enumerate(bs.traf.id)}
+        airborne  = [(cs, index_of[cs]) for cs in callsigns if cs in index_of]
+
+        inside_sector = {}
+        if airborne:
+            indices = np.array([idx for _, idx in airborne], dtype=int)
+            inside  = bs.tools.areafilter.checkInside(
+                'SECTOR', bs.traf.lat[indices], bs.traf.lon[indices],
+                np.full(len(indices), CONFIG['altitude'] * 30.48))
+            inside_sector = {cs: bool(ok) for (cs, _), ok in zip(airborne, inside)}
+
+        # Gone from BlueSky altogether counts as exited, hence the False default.
+        return [cs for cs in callsigns if not inside_sector.get(cs, False)]
+
+    def _no_turn_exit_nm(self, spawn_ll, heading_deg):
+        """Where this aircraft would leave the sector if it were never turned.
+
+        Walks outward from the entry point along the initial heading in 2 NM steps and
+        stops at the step that lands outside the sector. The walk dead reckons the way
+        BlueSky flies -- a constant true heading -- rather than following a straight line
+        on the flat map, which is what the route planner draws and what used to give even
+        untouched aircraft several miles of exit deviation.
+        """
+        heading  = math.radians(heading_deg)
+        previous = latlon_to_nm(CONFIG['center_ll'], *spawn_ll)
+
+        for step in range(1, 1000):                    # 2000 NM, far beyond any sector
+            distance_nm = 2.0 * step
+            lat = spawn_ll[0] + distance_nm * math.cos(heading) / 60.0
+            mean_lat = math.radians((spawn_ll[0] + lat) / 2.0)
+            lon = spawn_ll[1] + distance_nm * math.sin(heading) / (60.0 * math.cos(mean_lat))
+            point = latlon_to_nm(CONFIG['center_ll'], lat, lon)
+
+            if not self._polygon_ready.contains(Point(point[0], point[1])):
+                return (previous + point) / 2.0        # midway across the last step
+            previous = point
+        return previous
 
     def _score_arrival(self, cs, idx):
         """Score one exiting aircraft: on-route heading, and how far off it left.
 
-        Metrics only. Aircraft that were never manoeuvred are skipped -- they crossed
-        untouched and would score a free perfect arrival, which says nothing about the
-        policy. That filter also subsumes the old minimum-lifetime rule: aircraft spawn on
-        the boundary and can register as outside within a step or two, but reaching the
-        focus and having an advisory execute takes far longer, so none of them are scored.
+        Metrics only, and scored over EVERY aircraft that leaves, manoeuvred or not: the
+        question these answer is what the traffic as a whole paid, and untouched aircraft
+        are part of that traffic. `manoeuvred_exits` is still counted separately, so the
+        share of traffic the policy touched stays visible.
         """
         self._ep_stats['exits'] += 1
-        if cs not in self._manoeuvred:
-            return
+        if cs in self._manoeuvred:
+            self._ep_stats['manoeuvred_exits'] += 1
 
-        self._ep_stats['manoeuvred_exits'] += 1
-
-        # Exit deviation: distance between where it actually crossed the boundary and
-        # where it would have crossed had it never turned.
+        # Exit deviation: the distance along the boundary between where this aircraft
+        # actually left and where it would have left had it never been turned.
         exit_ref = self._exit_ref_nm.get(cs)
         if exit_ref is not None:
             pos = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])

@@ -6,7 +6,7 @@
 #   lognormal       right-skewed, mean mean_s
 #   probabilistic   geometric in whole seconds, mean mean_s
 #
-# All three delayed arms have the same mean and no upper bound, so at a given magnitude
+# All three delayed types have the same mean and no upper bound, so at a given magnitude
 # they differ only in SHAPE. The magnitude is the second experiment factor: pass it per
 # run, so shape and magnitude can be crossed.
 #
@@ -15,7 +15,7 @@
 # response time is hidden state: the agent never sees it, and once drawn it is fixed --
 # amending the advisory changes WHAT the pilot will fly, never WHEN.
 
-import math
+import numpy as np
 
 DELAY_MODES = ('none', 'deterministic', 'lognormal', 'probabilistic')
 
@@ -24,11 +24,11 @@ SIGMA        = 0.4    # lognormal shape; at mean 30 s, 80% of draws fall in 17-4
 
 
 class ResponseDelay:
-    """How long this arm's pilots take to act on an advisory.
+    """How long this delay type's pilots take to act on an advisory.
 
-    rng is an injected random.Random, never the global stream: that one generates
-    sectors and traffic, and a delay draw taken from it would shift every later
-    scenario decision.
+    rng is an injected numpy Generator (np.random.default_rng), never the global
+    stream: that one generates sectors and traffic, and a delay draw taken from it
+    would shift every later scenario decision.
     """
 
     def __init__(self, mode, rng, mean_s=MEAN_DELAY_S):
@@ -39,7 +39,13 @@ class ResponseDelay:
         self.mean_s = float(mean_s)
 
     def sample_delay_s(self):
-        """One response time, in seconds. Called once per advisory."""
+        """One response time in WHOLE seconds. Called once per advisory.
+
+        Whole seconds because the environment tests the queue once per simulated second:
+        a fractional draw would always be flown at the next whole second, which is a
+        ceiling, and a ceiling adds half a second to the realised mean. Rounding here
+        keeps the mean unbiased and makes the realised delay equal to the drawn one.
+        """
         if self.mode == 'none':
             return 0.0
 
@@ -47,21 +53,21 @@ class ResponseDelay:
             return self.mean_s
 
         if self.mode == 'lognormal':
-            # Parameterised on the MEAN, not the median: E[X] = exp(mu + sigma^2/2), so
-            # without the correction the mean would land ~8% above the arm magnitude and
-            # the arms would no longer be comparable.
-            mu = math.log(self.mean_s) - SIGMA ** 2 / 2.0
-            return self.rng.lognormvariate(mu, SIGMA)
+            # numpy's lognormal takes the parameters of the UNDERLYING NORMAL, so the
+            # mean has to be converted: E[D] = exp(mu + sigma^2/2). Without the
+            # correction the mean would land ~8% above the target and the delay types
+            # would no longer be comparable at the same magnitude.
+            mu = np.log(self.mean_s) - SIGMA ** 2 / 2.0
+            return float(np.round(self.rng.lognormal(mu, SIGMA)))
 
-        # Probabilistic: a constant 1/mean_s chance of responding in each second gives a
-        # geometric delay on {1, 2, ...} seconds. Sampled in one step by inverse transform
-        # rather than rolled second by second -- same distribution, and it gives the
-        # execution time up front like the other arms.
-        p = 1.0 / self.mean_s
-        return math.ceil(math.log(1.0 - self.rng.random()) / math.log(1.0 - p))
+        # Probabilistic: a constant 1/mean_s chance of responding in each second, which
+        # is exactly numpy's geometric -- whole seconds on {1, 2, ...} with mean mean_s.
+        # Drawn in one step rather than rolled second by second, so the execution time is
+        # known at issue like the other delay types.
+        return float(self.rng.geometric(1.0 / self.mean_s))
 
     def expected_delay_s(self):
-        """The mean this arm is aiming at. Diagnostics and checks only."""
+        """The mean this delay type is aiming at. Diagnostics and checks only."""
         # Geometric with p = 1/mean_s has mean mean_s, and the lognormal is parameterised
-        # on its mean, so all three delayed arms land on the same number.
+        # on its mean, so all three delayed types land on the same number.
         return 0.0 if self.mode == 'none' else self.mean_s
