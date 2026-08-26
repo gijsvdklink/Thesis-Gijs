@@ -6,6 +6,7 @@ python Validation/create_plots.py
 """
 
 import glob
+import math
 import os
 import sys
 
@@ -21,8 +22,10 @@ import validation as v
 
 # -- KPIs ----------------------------------------------------------------------
 
-# Every KPI is normalised -- a rate per flight hour, a fraction, a ratio or a per-step average --
-# so that scenarios of different size and episode length stay comparable.
+# Every KPI but the last is normalised -- a rate per flight hour, a fraction, a ratio or a
+# per-step average -- so that scenarios of different size and episode length stay comparable.
+# The episode total is plotted beside the per-step reward, and is comparable between policies
+# only because they all fly the same scenarios.
 KPIS = [
     ('ep_los_events_per_fh',    'LoS events / flight hour'),
     ('ep_conflicts_per_fh',     'Conflicts / flight hour'),
@@ -34,7 +37,10 @@ KPIS = [
     ('ep_speed_changes_per_fh', 'Speed changes / flight hour'),
     ('ep_advisories_per_fh',    'Advisories / flight hour'),
     ('mean_episode_reward',     'Reward / step'),
+    ('ep_reward_total',         'Reward, episode total'),
 ]
+
+COLUMNS = 4       # panels per row; the grid grows downwards with the KPI list
 
 # -- The score matrices --------------------------------------------------------
 
@@ -145,7 +151,10 @@ def curve(frame, kpi, condition):
 
 def figure_degradation(frame):
     """One panel per KPI: the interquartile mean against the mean test delay."""
-    figure, axes = plt.subplots(2, 5, figsize=(26, 9))
+    rows = math.ceil(len(KPIS) / COLUMNS)
+    figure, axes = plt.subplots(rows, COLUMNS, figsize=(5.5 * COLUMNS, 4.5 * rows))
+    for spare in axes.ravel()[len(KPIS):]:
+        spare.axis('off')
 
     for axis, (kpi, label) in zip(axes.ravel(), KPIS):
         for condition in v.CONDITIONS:
