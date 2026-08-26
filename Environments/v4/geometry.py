@@ -1,9 +1,4 @@
-# Coordinate transforms, in a flat east/north NM frame centred on the sector. Valid
-# because the sector sits at the equator (cos(lat) = 1). Velocities are NM/s, headings
-# degrees clockwise from north.
-#
-# Bulk aircraft state lives in conflict.traffic_states, which reads BlueSky's arrays in
-# one go rather than per aircraft.
+# Coordinate transforms in a flat east/north NM frame centred on the sector, valid at the equator.
 
 import math
 import numpy as np
@@ -29,6 +24,15 @@ def nm_to_latlon(center_ll, east_nm, north_nm):
 def wrap_to_180(angle_deg):
     """Wrap an angle in degrees to (-180, 180]."""
     return (angle_deg + 180) % 360 - 180
+
+
+def point_ahead(from_ll, heading_deg, distance_nm):
+    """(lat, lon) reached by flying `distance_nm` from `from_ll` on a constant TRUE heading."""
+    heading  = math.radians(heading_deg)
+    lat      = from_ll[0] + distance_nm * math.cos(heading) / 60.0
+    mean_lat = math.radians((from_ll[0] + lat) / 2.0)
+    lon      = from_ll[1] + distance_nm * math.sin(heading) / (60.0 * math.cos(mean_lat))
+    return lat, lon
 
 
 def heading_to_velocity(speed, heading_deg):

@@ -1,5 +1,4 @@
-# Checks on the response-delay models. No BlueSky, no environment -- pure maths.
-#   python -m Environments.v4.test_delays
+# Checks on the response-delay models, pure maths:  python -m Environments.v4.test_delays
 
 import statistics
 import sys
@@ -9,8 +8,7 @@ import numpy as np
 from .delays import ResponseDelay, DELAY_MODES, MEAN_DELAY_S
 
 N = 100_000
-# Every claim is checked at more than one magnitude: with a single number, a model that
-# ignores mean_s entirely would still pass.
+# Every claim is checked at more than one magnitude, or a model ignoring mean_s would pass.
 MAGNITUDES = (15.0, 30.0, 45.0)
 failures = []
 
@@ -63,9 +61,7 @@ def main():
               all(float(d).is_integer() for d in sample)
               and min(sample) == 1.0 and max(sample) > 2 * mean_s)
 
-        # Memorylessness: the chance of responding in the next second does not depend on
-        # how long the pilot has already been silent. This is what separates it from
-        # the lognormal delay type, where a long silence means a response is overdue.
+        # Memorylessness: the chance of responding next second ignores how long the wait has been.
         for waited in (5, 15, 25):
             still_waiting = [d for d in sample if d > waited]
             responds_next = sum(1 for d in still_waiting if d == waited + 1) / len(still_waiting)

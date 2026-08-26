@@ -2,6 +2,14 @@
 ACTION-RESPONSE DELAY EXPERIMENT -- COMMANDS
 ================================================================================
 
+The experiment is now a SEED STUDY: three conditions, five independent training
+runs each. One run per condition could not tell whether a difference came from
+the delay training or from the luck of that run -- two earlier sweeps disagreed
+with each other by more than their own confidence intervals.
+
+The full plan, with every command spelled out, is in temporary.txt. This file is
+the short version plus the tooling around it.
+
 --------------------------------------------------------------------------------
 CHECKS BEFORE TRAINING
 --------------------------------------------------------------------------------
@@ -9,71 +17,173 @@ CHECKS BEFORE TRAINING
     python -m Environments.v4.test_delays
 
 --------------------------------------------------------------------------------
-TRAINING -- 10 terminals
+ENVIRONMENT SETTINGS FOR THIS EXPERIMENT
 --------------------------------------------------------------------------------
 
+    rho                   1/20000 - 1/10000   sectors 372-678 NM across
+    crossings_per_episode 2.0                 episodes 1190-2171 steps
+    seed_traffic_inside   True                reset scatters traffic through the
+                                              sector on random headings instead
+                                              of lining it up on the boundary
+    advisory delays       redrawn only when the ADVICE CHANGES; repeating the
+                                              advice already standing costs workload but
+                                              does not restart the assessment
+
+    Results from before these settings are not comparable with results after.
+
+--------------------------------------------------------------------------------
+TRAINING -- 20 runs, 4 conditions x 5 seeds
+--------------------------------------------------------------------------------
+
+    # ---- none ----
+
     # terminal 1
-    python -m Training.v4_train --delay none --seed 0 --n-envs 2
+    python -m Training.v4_train --delay none --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
-    # terminals 2-4
-    python -m Training.v4_train --delay deterministic --delay-mean 15 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay lognormal     --delay-mean 15 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay probabilistic --delay-mean 15 --seed 0 --n-envs 2
+    # terminal 2
+    python -m Training.v4_train --delay none --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
-    # terminals 5-7
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay lognormal     --delay-mean 30 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 0 --n-envs 2
+    # terminal 3
+    python -m Training.v4_train --delay none --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
-    # terminals 8-10
-    python -m Training.v4_train --delay deterministic --delay-mean 45 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay lognormal     --delay-mean 45 --seed 0 --n-envs 2
-    python -m Training.v4_train --delay probabilistic --delay-mean 45 --seed 0 --n-envs 2
+    # terminal 4
+    python -m Training.v4_train --delay none --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 5
+    python -m Training.v4_train --delay none --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # ---- lognormal ----
+
+    # terminal 6
+    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 7
+    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 8
+    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 9
+    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 10
+    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # ---- deterministic ----
+
+    # terminal 11
+    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 12
+    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 13
+    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 14
+    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 15
+    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # ---- probabilistic ----
+
+    # terminal 16
+    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 17
+    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 18
+    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 19
+    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+
+    # terminal 20
+    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    # With --n-envs 1 each run has one stream, but that is not enough on its own. The stride
+    # (7919) is coprime with the pool (5,000,000), so every run walks the whole pool before
+    # repeating and two runs are shifted copies of the same cycle -- they must meet eventually.
+    # How far in depends on the gap between the seeds:
+    #
+    #     gap 1     -> first shared episode after   17,679 episodes
+    #     gap 1000  ->                            2,321,000
+    #     gap 2000  ->                              358,000   (the worst pair here)
+    #     gap 3000  ->                            1,963,000
+    #     gap 4000  ->                              716,000
+    #
+    # A 100M-step run is about 59,000 episodes, so with these seeds nothing is ever shared --
+    # a factor of 6 of headroom. Consecutive seeds would start sharing scenarios inside a long
+    # run, which is why they are spaced.
+    #
+    # With more than one env there is a second reason: --seed reaches worker i as (seed + i), so
+    # seeds 0 and 1 would hand the same stream to two different runs from the first episode.
+
+    # The same seed in different conditions still sees the same scenarios, which
+    # is deliberate: paired across conditions, independent across seeds.
+
+    # 100M is a CEILING. Stop the runs by hand; Ctrl-C saves final_model through
+    # the finally block, kill -9 does not. Stop all 15 at the SAME STEP COUNT,
+    # not at the same time of day, or the comparison measures the budget instead
+    # of the seed. Write down where each run stopped.
+
+    # --n-envs 1 makes PPO's rollout 4096 rather than 8192 (n_steps is per env).
+    # Fine, but it must be the same for all 20 runs.
 
 --------------------------------------------------------------------------------
 TENSORBOARD
 --------------------------------------------------------------------------------
 
-    tensorboard --logdir Runs_saved/experiments --port 6006
+    tensorboard --logdir Runs_saved/seed_study --port 6006
 
     # output directories
-    #   none/   deterministic_15s/   lognormal_15s/   probabilistic_15s/
-    #           deterministic_30s/   lognormal_30s/   probabilistic_30s/
-    #           deterministic_45s/   lognormal_45s/   probabilistic_45s/
+    #   none/  lognormal_30s/  deterministic_30s/  probabilistic_30s/
+    #     v4_<condition>_seed<K>_<timestamp>/
+    #       final_model.zip + final_model_vecnorm.pkl   <- written when you stop
+    #       last_model.zip  + last_model_vecnorm.pkl    <- every 500k steps
+    #     no best_model: --eval-episodes 0 switches off the scoring rollouts,
+    #     and no eval/ curve either, so episode/reward_total is the only curve.
 
 --------------------------------------------------------------------------------
-VALIDATION -- 23 terminals
+VALIDATION -- 141 runs, in two phases
 --------------------------------------------------------------------------------
 
-    # the full set of commands lives in Validation/experiments.txt
+    # Phase 1: 4 conditions x 5 seeds x 7 delay levels, plus one no-CR
+    # reference, each over the same 100 scenarios. Every command is written out
+    # in "Validation/Terminal commands.txt", dealt over 21 terminals.
 
-    # CSVs go to Validation/report_results/results, figures to .../figures.
-    # Both folders are created automatically, and a bare file name lands in the
-    # right one, so no paths are needed on the command line.
+    python Validation/validation.py --commands      # rewrite that file
 
-    # one policy in one delay world
-    python -m Validation.mc_evaluate --model Runs_saved/experiments/none/*/last_model.zip \
-        --episodes 200 --seed 1 --delay lognormal --delay-mean 30 --out run.csv
+    # one policy in one delay world; the scenarios are fixed in validation.py,
+    # so there is no evaluation seed to keep straight any more
+    python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 30
 
-    # no CR at all, for comparison: leave out --model
-    python -m Validation.mc_evaluate --episodes 200 --seed 1 --out no_cr.csv
+    # no CR at all, for comparison. Delay-independent, so it is flown once.
+    python Validation/validation.py --condition no_cr
 
-    # every condition flies the same episodes: --seed picks where in the held-out
-    # TEST_SEEDS pool the run starts, so the same --seed gives the same scenarios
+    # Results land in "NEW DELAYS EXPERIMENT/results", one CSV per run.
 
-    # means with 95% bootstrap intervals, printed as a table
-    python -m Validation.summarise policy=run.csv "no CR=no_cr.csv"
+    # Phase 2: the analysis, after every Phase 1 run has finished. Takes a few
+    # minutes: 50,000 bootstrap resamples per curve point.
+    python Validation/create_plots.py
 
-    # the two report figures
-    python -m Validation.plot_report
+--------------------------------------------------------------------------------
+FIGURES FOR THE REPORT
+--------------------------------------------------------------------------------
+
+    # degradation curves: ten normalised KPIs, interquartile mean across the five
+    # training runs with a 95% stratified bootstrap band
+    python Validation/create_plots.py
 
 --------------------------------------------------------------------------------
 VISUALISATION
 --------------------------------------------------------------------------------
 
     # trained policy
-    python visualisation/visualise.py --model Runs_saved/experiments/none/*/last_model.zip \
-        --vecnorm Runs_saved/experiments/none/*/last_model_vecnorm.pkl \
+    python visualisation/visualise.py \
+        --model Runs_saved/seed_study/none/v4_none_seed0_*/final_model.zip \
+        --vecnorm Runs_saved/seed_study/none/v4_none_seed0_*/final_model_vecnorm.pkl \
         --n_ac 15 --density 0.0001 --delay lognormal --delay-mean 45
 
     # do-nothing baseline

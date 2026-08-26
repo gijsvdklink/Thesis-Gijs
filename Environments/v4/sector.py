@@ -1,14 +1,4 @@
-"""
-Sector generation and aircraft routing.
-
-make_sector_polygon builds a random, reasonably round convex sector of a target area.
-plan_entry_route picks an entry point and an exit (reference) point on the boundary and
-derives the straight route between them. All geometry is in the flat NM frame, so a held
-route heading reads as exactly zero drift.
-
-Both take an explicit random.Random instance. The environment owns those generators and
-keeps the scenario stream separate from the response-delay stream -- see config.py.
-"""
+"""Sector generation and aircraft routing in the flat NM frame; both entry points take an explicit rng."""
 
 import math
 import random
@@ -27,13 +17,7 @@ def _circularity(polygon):
 
 
 def _random_convex_polygon(n_vertices, rng):
-    """polygenerator's random_convex_polygon, driven by `rng` instead of global state.
-
-    The library reads Python's global `random` stream and offers no way to inject a
-    generator, so the global stream is seeded from `rng` for the duration of the call
-    and put back exactly as it was afterwards. The result is reproducible from `rng`
-    alone, and no other user of the global stream notices.
-    """
+    """polygenerator's random_convex_polygon, driven by `rng` instead of the global random stream."""
     saved_state = random.getstate()
     random.seed(rng.randrange(2 ** 32))
     try:
@@ -43,12 +27,7 @@ def _random_convex_polygon(n_vertices, rng):
 
 
 def make_sector_polygon(area_km2, rng):
-    """A random convex polygon of the requested area, centred at the origin (NM frame).
-
-    Retries until the shape is reasonably round (circularity >= min_circularity). Slivers
-    are rejected because every route across one would be a short clip of a corner rather
-    than a genuine crossing.
-    """
+    """A random convex polygon of the requested area at the origin, retried until reasonably round."""
     target_nm2 = area_km2 * KM_TO_NM ** 2
     scaled = None
     for _ in range(1000):
@@ -63,25 +42,7 @@ def make_sector_polygon(area_km2, rng):
 
 
 def plan_entry_route(polygon, sector, n_sectors, rng):
-    """Plan one aircraft's crossing: where it enters, on what heading, and where it would
-    leave if it never turned.
-
-    Entry and exit points sit at evenly spaced, jittered positions along the boundary, so
-    the traffic is spread around the sector rather than clustered. The exit starts half a
-    perimeter from the entry and is jittered by +-0.5, which makes crossing directions
-    fully random.
-
-    'heading' is the aircraft's INITIAL HEADING: fixed for its whole life, the reference
-    that turn actions are offsets from and that drift is measured against.
-
-    Because the exit jitter spans a full half-perimeter, it can land close to the entry and
-    produce a near-zero chord. Such an aircraft would leave within a step or two without
-    ever really flying, polluting the arrival statistics, so short chords are resampled.
-
-    'ref_ll' is the planned exit point on the boundary. It only sets the initial heading
-    and rejects short chords -- the simulation never flies to it, and the exit-deviation
-    KPI does not measure against it (see env._ghost_position_nm).
-    """
+    """Plan one crossing: where it enters, its INITIAL HEADING, and the exit point it would reach unturned."""
     min_chord = CONFIG['min_chord_nm']
 
     for _ in range(CONFIG['max_placement_tries']):
@@ -98,6 +59,5 @@ def plan_entry_route(polygon, sector, n_sectors, rng):
     center = CONFIG['center_ll']
     return {
         'sp_ll':   nm_to_latlon(center, spawn_pt.x, spawn_pt.y),
-        'ref_ll':  nm_to_latlon(center, ref_pt.x,   ref_pt.y),
         'heading': initial_hdg,
     }

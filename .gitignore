@@ -23,3 +23,6 @@ assignments/sandbox/
 
 # Superseded results, kept local only
 old/
+
+# Trained policies and evaluation output for the delay experiment, same reason as Runs_saved
+NEW DELAYS EXPERIMENT/

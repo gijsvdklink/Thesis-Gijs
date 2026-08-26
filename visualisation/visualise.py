@@ -1,28 +1,4 @@
-"""
-visualise.py -- pygame radar view of a trained conflict-resolution policy.
-
-Dark scope, green aircraft blips with the current-heading leader, callsign + heading +
-groundspeed, a 2.5 NM protected-zone ring (two rings overlapping == an intrusion / loss
-of separation) and a thin green dashed line to each aircraft's destination waypoint. The
-ownship (focus aircraft the agent controls this step) gets a blue ring. Conflict turns
-the aircraft orange, loss of separation red. Cumulative reward and the per-step selected
-action are shown in the HUD, with an episode action tally bottom-left.
-
-OBSERVATION NORMALISATION: the v4 policy is trained with VecNormalize(norm_obs=True),
-so the policy expects STANDARDISED observations. By default this script loads the exact
-training stats from best_model_vecnorm.pkl (--vecnorm) and applies them -- the faithful
-input for the model. Pass --vecnorm "" to feed raw obs instead (only correct for a
-norm_obs=False checkpoint), or --normalize to estimate stats from a warm-up rollout when
-no vecnorm .pkl is available. The argmax (best) policy is used by default.
-
-Run (defaults match the v4 training setup: best_model.zip + best_model_vecnorm.pkl):
-    python visualise.py                              # 14 ac, density 1/10000, vecnorm obs
-    python visualise.py --n_ac 10 --density 0.00005  # sparser example
-    python visualise.py --mp4 episode.mp4            # render one episode to mp4
-    python visualise.py --stochastic                 # sample instead of argmax
-
-Controls (interactive):  SPACE pause   R new episode   ESC/Q quit
-"""
+"""pygame radar view of a trained policy: dark scope, blips with protected-zone rings, a HUD and a pilot-response panel. SPACE pause, R new episode, ESC/Q quit."""
 
 import argparse, importlib, io, math, os, pickle, random, sys
 from collections import deque
@@ -96,11 +72,7 @@ def load_model(path):
 
 
 def estimate_obs_stats(env, model, warmup=2500):
-    """Estimate observation mean/std to stand in for the missing VecNormalize stats.
-
-    Pass 1 samples random actions for broad state coverage; pass 2 refines on the
-    states the trained policy actually visits (closer to the obs_rms VecNormalize
-    would have converged to). Returns (mean, std)."""
+    """Estimate observation mean/std to stand in for missing VecNormalize stats. Returns (mean, std)."""
     def collect(stats):
         mean, std = stats
         buf, (obs, _) = [], env.reset()
@@ -120,8 +92,7 @@ def estimate_obs_stats(env, model, warmup=2500):
 
 
 def load_vecnorm_stats(path):
-    """Load the real observation mean/std from a saved VecNormalize .pkl (the exact
-    stats the policy was trained with -- preferred over estimate_obs_stats)."""
+    """Load the real observation mean/std from a saved VecNormalize .pkl."""
     class _U(pickle.Unpickler):
         def find_class(self, module, name):
             if module.startswith('numpy._core'):
@@ -140,8 +111,7 @@ def fresh_stats():
     return {'cum_r': 0.0, 'last_r': 0.0, 'step_n': 0, 'los': 0,
             'last_action': 3, 'acting_cs': None,
             'counts': [0] * 10, 'recent': deque(maxlen=14),
-            # Instruction timeline for the delay panel: what is outstanding now, and what
-            # the pilot last acted on. Both are read from the env, never predicted here.
+            # Instruction timeline for the delay panel, read from the env rather than predicted here.
             'pending_seen': {}, 'executed': []}
 
 
@@ -155,19 +125,14 @@ def reset_episode(env, seed):
 
 
 def track_advisories(env, st):
-    """Mirror the env's outstanding-advisory queue into st, and record executions.
-
-    Nothing here reimplements the delay: _pending_advisory and _sim_time_s are read
-    straight off the environment, so what the panel shows is what the simulator is
-    doing. An advisory that has left the queue was flown by the pilot."""
+    """Mirror the env's outstanding-advisory queue into st and record executions; the delay is not reimplemented here."""
     pending = dict(env._pending_advisory)
 
 
     for cs, advisory in st['pending_seen'].items():
         if cs in pending:
             continue
-        # The execution time was fixed when the advisory was issued, so it is exact --
-        # unlike the frame clock, which only samples every 5 s.
+        # The execution time was fixed at issue, so it is exact -- unlike the frame clock's 5 s samples.
         executed_at_s = advisory['execute_at_s']
         st['executed'].append({'cs': cs, 'action': advisory['action'],
                                'issued_at_s': advisory['issued_at_s'],
@@ -177,15 +142,7 @@ def track_advisories(env, st):
 
 
 def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_once=False):
-    """Advance one RL step (obs normalised if norm given) and update stats in place.
-
-    fixed_seq overrides everything below it: a list of action indices cycled through,
-    one per step, regardless of model or hold. A single-element list is a constant
-    action. With seq_once the list is played once and every later step selects HOLD --
-    one instruction, then silence, which is what isolates a single pilot response.
-    model=None (with fixed_seq=None) is the HOLD-only (do-nothing) policy: every
-    step selects action 3 (HOLD), so no instruction reaches the simulator and aircraft
-    fly their spawned routes."""
+    """Advance one RL step and update stats in place; fixed_seq overrides the model, and model=None is HOLD-only."""
     acting_cs = env._focus_cs
     if fixed_seq:
         n = st['step_n']
@@ -196,13 +153,12 @@ def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_on
         o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
         action, _ = model.predict(o, deterministic=deterministic)
         a = int(action)
-    # Read before the step: the environment issues the advisory against this same
-    # traffic picture, and refreshes it only afterwards.
+    # Read before the step: the env issues the advisory against this same traffic picture.
     obs, r, _, trunc, _ = env.step(a)
     st['last_r'] = float(r); st['cum_r'] += st['last_r']; st['step_n'] += 1
     st['last_action'] = a; st['acting_cs'] = acting_cs
     st['counts'][a] += 1; st['recent'].appendleft((acting_cs, a))
-    if env._los_this_step:
+    if env._los_seconds_this_step:
         st['los'] += 1
     track_advisories(env, st)
     return obs, trunc
@@ -267,12 +223,7 @@ def draw_obs_panel(screen, font, font_hud, obs, focus_cs, intruder_cs):
 
 
 def draw_delay_panel(screen, fonts, env, st, x, y):
-    """The pilot-response clock: what has been transmitted, and when it will be flown.
-
-    The countdown is read off the advisory's own execute_at_s -- the time the env fixed
-    when the advisory was issued, and the same value it executes on -- so the number on
-    screen is the simulator's deadline rather than an estimate. Amending the advisory
-    changes the action shown, never the countdown."""
+    """The pilot-response clock, counted down off the advisory's own execute_at_s rather than estimated."""
     font, font_hud = fonts
     now = env._sim_time_s
     screen.blit(font_hud.render(f'PILOT RESPONSE   t = {now:6.0f} s', True, GREEN), (x, y))
@@ -330,16 +281,14 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         hdg_deg = float(bs.traf.hdg[idx])
         gs_kt = float(bs.traf.tas[idx]) * KT
 
-        # Dashed ray along the aircraft's INITIAL heading: the reference turn actions are
-        # offsets from, and the line it would have flown had it never turned.
+        # Dashed ray along the INITIAL heading: the line it would have flown had it never turned.
         init_hdg = init_hdg_map.get(cs)
         if init_hdg is not None:
             h0 = math.radians(init_hdg)
             dashed_line(screen, WP, (px, py),
                         (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
-        # 2.5 NM protected-zone ring (two overlapping == intrusion / LoS). The ownship
-        # (focus) ring is blue, drawn at the same 2.5 NM radius.
+        # 2.5 NM protected-zone ring (two overlapping == LoS); the ownship ring is blue.
         aa_ring(screen, px, py, prot_px, BLUE if cs == env._focus_cs else col)
 
         h = math.radians(hdg_deg)                          # current-heading leader

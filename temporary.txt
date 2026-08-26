@@ -1,0 +1,216 @@
+================================================================================
+STATISTICALLY SOUND TRAINING AND VALIDATION -- THE PLAN
+Following Agarwal et al., "Deep RL at the Edge of the Statistical Precipice"
+(NeurIPS 2021), and the rliable library that comes with it.
+================================================================================
+
+The paper's message in one sentence: with a handful of training runs a point
+estimate says almost nothing, so report INTERVAL estimates over RUNS, aggregate
+with metrics that are robust and statistically efficient (IQM), and show the
+whole distribution rather than one number.
+
+Our current figures bootstrap over the 200 EPISODES of a SINGLE run. That
+interval measures scenario noise only. It says nothing about whether another
+training seed would have produced the same curve -- which is precisely the
+question that made two earlier sweeps disagree by more than their own error
+bars. Everything below fixes that.
+
+
+--------------------------------------------------------------------------------
+1. HOW OUR EXPERIMENT MAPS ONTO THE PAPER
+--------------------------------------------------------------------------------
+
+    paper term      our experiment
+    ------------    ------------------------------------------------------------
+    algorithm       training condition: none / deterministic 30 s /
+                    lognormal 30 s / probabilistic 30 s          (4 of them)
+    run    (n)      one training seed: 0, 1000, 2000, 3000, 4000  (N = 5)
+    task   (m)      one evaluation delay world: 0 s, 30 s, 60 s   (M = 3)
+    score  x[m,n]   the MEAN over the 100 test episodes that run flew in that
+                    delay world, for one KPI
+
+The key structural rule: episodes are averaged INSIDE a run to give that run one
+score, and every uncertainty reported afterwards is taken ACROSS RUNS. Episodes
+of different training seeds are never pooled into one sample -- that treats seed
+variance as if it were episode variance and shrinks the interval to a fiction.
+
+Grid: 4 conditions x 5 seeds x 3 delay worlds = 60 evaluation runs, plus the
+single no-CR reference. That is the 61 runs already listed in tutorial.txt.
+
+
+--------------------------------------------------------------------------------
+2. TRAINING RULES
+--------------------------------------------------------------------------------
+
+R1  Five seeds per condition, minimum. If compute has to go somewhere, spend it
+    on MORE SEEDS, not on more evaluation episodes. Episode noise is already
+    averaged over 100 episodes; seed noise is averaged over 5. Ten seeds per
+    condition would roughly halve the width of every interval below.
+
+R2  Identical protocol in every condition: same timesteps, same
+    hyperparameters, same --n-envs, same environment settings. Stop all runs at
+    the SAME STEP COUNT, not at the same time of day, and record where each one
+    stopped. Anything else measures the training budget instead of the delay
+    model.
+
+R3  Report the FINAL policy, not the best one. Picking the checkpoint with the
+    highest evaluation score maximises over a small sample and is
+    optimistically biased -- the paper shows this alone can account for most of
+    a claimed improvement. The trainer already does the right thing: no
+    best_model, only final_model, scored afterwards on the held-out pool.
+
+R4  Freeze the protocol before the sweep starts. Once a KPI definition, a
+    reward term or an environment setting changes, earlier runs are no longer
+    comparable and have to be discarded rather than mixed in.
+
+R5  Keep the scenario pairing across conditions (same seed -> same episodes).
+    It costs nothing and makes the per-seed differences in section 5 much
+    tighter. Independence still holds ACROSS seeds, which is what the bootstrap
+    needs.
+
+
+--------------------------------------------------------------------------------
+3. VALIDATION PROTOCOL
+--------------------------------------------------------------------------------
+
+V1  Held-out scenarios only: TEST_SEEDS, never touched during training.
+
+V2  The same evaluation seed (--seed 1) and the same episode count for every
+    policy and every delay world, so all 60 evaluation runs fly the SAME
+    scenario sequence. Policy actions deterministic.
+
+V3  100 episodes per (seed, condition, delay world). One CSV per evaluation
+    run, named so the seed is machine-readable:
+
+        seed_study/results/curve_<cond>_<delay>s_seed<K>.csv
+
+V4  One no-CR reference per delay world, flown on the same scenarios. It is the
+    anchor for normalisation in section 4, so it is needed at every delay
+    level, not only at 0 s.
+
+V5  Always pass an explicit --out path. A bare name resolves into the shared
+    default folder and silently overwrites the previous sweep.
+
+
+--------------------------------------------------------------------------------
+4. AGGREGATION -- WHAT TO COMPUTE
+--------------------------------------------------------------------------------
+
+One KPI at a time. Never average a LoS rate with an exit deviation.
+
+Normalisation is needed only when aggregating ACROSS delay worlds, because a
+KPI means something different at 0 s and at 60 s:
+
+    lower is better        normalised = (no_CR - score) / (no_CR - ideal)
+    (LoS rate, exit deviation, advisories)
+
+    higher is better       normalised = (score - no_CR) / (ideal - no_CR)
+    (arrival rate)
+
+with no_CR the reference of that same delay world (normalised score 0) and
+ideal the physical best case (0 LoS, 0 NM deviation, arrival rate 1). Higher is
+then always better and 1 is the target the optimality gap measures against.
+
+Report, per KPI:
+
+    (a) PER DELAY WORLD, in raw units, for the degradation curves:
+        the mean over the 5 seeds with a 95% PERCENTILE BOOTSTRAP interval
+        resampled over the 5 SEEDS, not over episodes.
+
+    (b) AGGREGATED OVER THE THREE DELAY WORLDS, on normalised scores:
+        IQM (interquartile mean: the mean of the middle 50% of the 15
+        run-scores) with a 95% stratified bootstrap CI -- resample seeds with
+        replacement independently within each delay world. Add the OPTIMALITY
+        GAP, i.e. how far the condition stays below a normalised score of 1.
+        Mean and median are dropped: the mean chases a single bad seed, the
+        median wastes the few runs we have.
+
+    (c) PERFORMANCE PROFILE: the fraction of the 15 run-scores above tau, swept
+        over tau, with pointwise 95% bootstrap bands, one curve per condition.
+        This is the figure that shows whether a condition is uniformly better
+        or only better on average.
+
+    (d) PROBABILITY OF IMPROVEMENT P(X > Y) with its interval, for each
+        head-to-head claim actually made in the text (delay-trained vs.
+        baseline, lognormal vs. deterministic).
+
+Caveat to state in the report: with N = 5 runs bootstrap intervals are somewhat
+optimistic -- the paper measures under-coverage below roughly 10 runs. Keep the
+claims correspondingly tempered.
+
+
+--------------------------------------------------------------------------------
+5. COMPARING TWO CONDITIONS
+--------------------------------------------------------------------------------
+
+Do not draw conclusions from two intervals overlapping or not overlapping.
+Build the interval for the DIFFERENCE:
+
+    per KPI, per delay world, per seed k:
+
+        d_k = score(condition A, seed k) - score(condition B, seed k)
+
+Because the seeds are paired (R5), d_k removes the scenario luck the two
+conditions share. Bootstrap the 5 differences and report the mean difference
+with its 95% interval. If that interval contains 0, the honest sentence is "no
+difference we can resolve with 5 seeds", not "no difference".
+
+No p-values and no significance tests. Intervals and effect sizes only.
+
+
+--------------------------------------------------------------------------------
+6. TOOLING -- WHAT TO BUILD
+--------------------------------------------------------------------------------
+
+    pip install rliable
+
+A new script, Validation/aggregate.py, replacing the episode-level bootstrap
+that now sits in Validation/summarise.py:
+
+    step 1  glob seed_study/results/curve_<cond>_<delay>s_seed<K>.csv
+    step 2  per file, take the mean of the KPI column          -> one score
+    step 3  per condition, build an array of shape (5 seeds, 3 delay worlds)
+    step 4  normalise against the no-CR reference (section 4)
+    step 5  hand the arrays to rliable
+
+Sketch:
+
+    from rliable import library as rly, metrics
+
+    scores = {'none': A, 'deterministic 30 s': B,
+              'lognormal 30 s': C, 'probabilistic 30 s': D}    # each (5, 3)
+
+    iqm = lambda x: np.array([metrics.aggregate_iqm(x[..., m])
+                              for m in range(x.shape[-1])])
+    point, interval = rly.get_interval_estimates(scores, iqm, reps=50_000)
+
+    profiles = rly.create_performance_profile(scores, np.linspace(0, 1.5, 100))
+    prob     = rly.get_probability_of_improvement(
+                   {'lognormal 30 s, none': (C, A)}, reps=10_000)
+
+Changes to the existing code:
+
+    - Validation/summarise.py: keep mean_and_ci as a single-run diagnostic, but
+      the report figures must call the run-level version.
+    - Validation/plot_report.py: read the per-seed CSVs, average the episodes
+      within each run, and draw the band from the seed-level bootstrap. The
+      curve stays the mean over seeds; only the band changes meaning.
+    - Keep every per-episode CSV. They are the raw material for any later
+      analysis, and the paper asks explicitly that all individual runs be kept.
+
+
+--------------------------------------------------------------------------------
+7. CHECKLIST BEFORE THE RESULTS CHAPTER IS WRITTEN
+--------------------------------------------------------------------------------
+
+    [ ] 5 seeds per condition, all stopped at the same step count, recorded
+    [ ] final_model everywhere, no best-checkpoint selection
+    [ ] 100 held-out episodes per (seed, condition, delay world), same --seed 1
+    [ ] no-CR reference flown in every delay world
+    [ ] every band in every figure is a bootstrap over SEEDS
+    [ ] aggregate figure uses IQM + optimality gap on normalised scores
+    [ ] one performance profile per KPI that carries a claim
+    [ ] probability of improvement for every head-to-head claim in the text
+    [ ] every comparison stated as a paired difference with an interval
+    [ ] the methods section states N = 5 runs, M = 3 delay worlds, 100 episodes
+        per cell, percentile stratified bootstrap, 95% intervals

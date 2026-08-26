@@ -1,18 +1,4 @@
-"""
-Find a seed where two aircraft actually come into conflict, for the visualiser.
-
-    python visualisation/find_conflict_seed.py --seeds 40
-
-With only two aircraft most scenarios never interact: they enter on opposite sides of the
-boundary and cross without ever coming close. On top of that the spawn admission test
-refuses any entry predicted to lose separation within t_warn, so a conflict can only come
-from geometry that develops later. This script flies each seed with no instructions at all
-and reports how close the pair came, so you can pick a seed worth recording.
-
-Seeds are listed closest-approach first. Anything under 5 NM is a loss of separation;
-between 5 and 15 NM is usually the more interesting picture, since the agent has a real
-conflict to solve and the aircraft stay visibly apart.
-"""
+"""Find a seed where two aircraft actually come into conflict, listed closest-approach first, for the visualiser."""
 
 import argparse
 import os

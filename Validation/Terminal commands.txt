@@ -1,0 +1,195 @@
+PHASE 1 -- VALIDATION
+141 evaluation runs of 100 episodes, over 21 terminals.
+Run every terminal from the project root; they are independent and may be
+started in any order.
+
+terminal 1 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 0
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 0
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 0
+
+terminal 2 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 15
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 15
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 15
+
+terminal 3 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 30
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 30
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 30
+
+terminal 4 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 45
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 45
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 45
+
+terminal 5 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 60
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 60
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 60
+
+terminal 6 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 90
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 90
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 90
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 90
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 90
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 90
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 90
+
+terminal 7 (7 runs):
+python Validation/validation.py --condition none --run-seed 0 --delay-mean 120
+python Validation/validation.py --condition none --run-seed 3000 --delay-mean 120
+python Validation/validation.py --condition deterministic --run-seed 1000 --delay-mean 120
+python Validation/validation.py --condition deterministic --run-seed 4000 --delay-mean 120
+python Validation/validation.py --condition geometric --run-seed 2000 --delay-mean 120
+python Validation/validation.py --condition lognormal --run-seed 0 --delay-mean 120
+python Validation/validation.py --condition lognormal --run-seed 3000 --delay-mean 120
+
+terminal 8 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 0
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 0
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 0
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 0
+
+terminal 9 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 15
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 15
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 15
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 15
+
+terminal 10 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 30
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 30
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 30
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 30
+
+terminal 11 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 45
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 45
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 45
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 45
+
+terminal 12 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 60
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 60
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 60
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 60
+
+terminal 13 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 90
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 90
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 90
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 90
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 90
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 90
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 90
+
+terminal 14 (7 runs):
+python Validation/validation.py --condition none --run-seed 1000 --delay-mean 120
+python Validation/validation.py --condition none --run-seed 4000 --delay-mean 120
+python Validation/validation.py --condition deterministic --run-seed 2000 --delay-mean 120
+python Validation/validation.py --condition geometric --run-seed 0 --delay-mean 120
+python Validation/validation.py --condition geometric --run-seed 3000 --delay-mean 120
+python Validation/validation.py --condition lognormal --run-seed 1000 --delay-mean 120
+python Validation/validation.py --condition lognormal --run-seed 4000 --delay-mean 120
+
+terminal 15 (7 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 0
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 0
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 0
+python Validation/validation.py --condition no_cr --run-seed 0 --delay-mean 0
+
+terminal 16 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 15
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 15
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 15
+
+terminal 17 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 30
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 30
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 30
+
+terminal 18 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 45
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 45
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 45
+
+terminal 19 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 60
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 60
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 60
+
+terminal 20 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 90
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 90
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 90
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 90
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 90
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 90
+
+terminal 21 (6 runs):
+python Validation/validation.py --condition none --run-seed 2000 --delay-mean 120
+python Validation/validation.py --condition deterministic --run-seed 0 --delay-mean 120
+python Validation/validation.py --condition deterministic --run-seed 3000 --delay-mean 120
+python Validation/validation.py --condition geometric --run-seed 1000 --delay-mean 120
+python Validation/validation.py --condition geometric --run-seed 4000 --delay-mean 120
+python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 120
+
+
+PHASE 2 -- PLOTTING
+One terminal, after every run of Phase 1 has finished. It reports what is on
+disk, then writes fig_degradation.png; it stops with a list of missing runs
+if Phase 1 is incomplete.
+
+python Validation/create_plots.py
