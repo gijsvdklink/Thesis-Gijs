@@ -1,31 +1,30 @@
 # ATCO conflict-resolution environment: one focus aircraft per step, advisories acted on after a delay drawn per piece of advice, and an INITIAL HEADING per aircraft that every directional quantity is measured against.
 
 import math
-import random
 from random import Random
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from shapely.geometry import Point, Polygon as ShapelyPolygon
-from shapely.affinity import scale as shapely_scale
+from shapely.geometry import Point
 from shapely.prepared import prep
-from polygenerator import random_convex_polygon
 
 import bluesky as bs
-from bluesky.simulation import ScreenIO
 from bluesky.stack.stackbase import Stack as _BsStack
-from bluesky.tools.aero import nm as _M_PER_NM     # 1852.0
-from bluesky.tools.geo import qdrpos
 from bluesky.tools.misc import degto180
 
-from .config import (CONFIG, KM_TO_NM, TRAINING_SCENARIOS, STEP_DURATION_S, OBS_DIM,
+from .config import (CONFIG, TRAINING_SCENARIOS, STEP_DURATION_S, OBS_DIM,
                      N_ACTIONS, N_NEIGHBOURS,
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, EMPTY_RANGE_NM, NO_CONFLICT_S,
                      TURN_DELTAS, SPEED_ACTIONS, HOLD_ACTION, RETURN_TO_ROUTE_ACTION,
                      ACT_COST)
 from .delays import DELAY_MODES, ResponseDelay
+from .geometry import (latlon_to_nm, nm_to_latlon, point_ahead, heading_to_velocity,
+                       pairwise)
+from .sector import make_sector_polygon, plan_entry_route
+from .stats import new_ep_stats, episode_summary
+from .traffic import start_bluesky, traffic_states
 
 
 # -- The per-aircraft record: what the CONTROLLER knows, not what BlueSky simulates ---
@@ -710,231 +709,3 @@ class AirspaceEnv(gym.Env):
 
         if abs(degto180(float(bs.traf.hdg[idx]) - ac.initial_hdg)) <= CONFIG['arrival_hdg_tol_deg']:
             self._ep_stats['on_route'] += 1
-
-
-# -- BlueSky: starting it once per process, and reading traffic into our frame ---
-
-
-_started = False
-
-
-class _ScreenDummy(ScreenIO):
-    def echo(self, text='', flags=0):
-        pass
-
-
-def start_bluesky():
-    """Headless BlueSky, silenced, with the timestep set and the clock running free."""
-    global _started
-    if not _started:
-        bs.init(mode='sim', detached=True)
-        _started = True
-    bs.scr = _ScreenDummy()
-    bs.stack.stack(f"DT {CONFIG['sim_dt']};FF")
-
-
-def traffic_states(indices):
-    """Positions (NM, east/north) and velocities (NM/s) for BlueSky indices, as (n, 2) arrays."""
-    idx = np.asarray(indices, dtype=int)
-    ref_lat, ref_lon = CONFIG['center_ll']
-
-    east  = (bs.traf.lon[idx] - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
-    north = (bs.traf.lat[idx] - ref_lat) * 60.0
-    speed = bs.traf.tas[idx] * NMS_PER_MS
-    hdg   = np.radians(bs.traf.hdg[idx])
-
-    pos = np.stack([east, north], axis=1)
-    vel = np.stack([speed * np.sin(hdg), speed * np.cos(hdg)], axis=1)
-    return pos, vel
-
-
-# -- Geometry: the flat east/north NM frame, and pair separation maths -----------
-
-
-NMS_PER_MS = 1.0 / _M_PER_NM   # m/s -> NM/s
-
-
-def latlon_to_nm(center_ll, lat, lon):
-    """(lat, lon) -> (east_nm, north_nm) relative to center_ll."""
-    ref_lat, ref_lon = center_ll
-    east_nm  = (lon - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
-    north_nm = (lat - ref_lat) * 60.0
-    return np.array([east_nm, north_nm])
-
-
-def nm_to_latlon(center_ll, east_nm, north_nm):
-    """(east_nm, north_nm) offsets -> (lat, lon)."""
-    ref_lat, ref_lon = center_ll
-    return (ref_lat + north_nm / 60.0,
-            ref_lon + east_nm / (60.0 * math.cos(math.radians(ref_lat))))
-
-
-def point_ahead(from_ll, heading_deg, distance_nm):
-    """(lat, lon) reached by flying `distance_nm` from `from_ll` on a constant TRUE heading."""
-    lat, lon = qdrpos(from_ll[0], from_ll[1], heading_deg, distance_nm)
-    return float(lat), float(lon)
-
-
-def heading_to_velocity(speed, heading_deg):
-    """Speed + heading (deg) -> (east, north) velocity components."""
-    h = math.radians(heading_deg)
-    return speed * math.sin(h), speed * math.cos(h)
-
-
-_TINY = 1e-12
-
-
-def pairwise(pos, vel):
-    """(dist_sq, range_rate, rel_spd_sq, t_los) for every pair; t_los is +inf when they never intrude."""
-    d  = pos[None, :, :] - pos[:, None, :]        # d[i, j] = pos[j] - pos[i]
-    dv = vel[None, :, :] - vel[:, None, :]
-
-    dist_sq    = np.einsum('ijk,ijk->ij', d, d)
-    rel_spd_sq = np.einsum('ijk,ijk->ij', dv, dv)
-    range_rate = np.einsum('ijk,ijk->ij', d, dv)
-
-    safe_rel = np.where(rel_spd_sq < _TINY, 1.0, rel_spd_sq)
-    tcpa     = -range_rate / safe_rel
-    dcpa_sq  = np.maximum(0.0, dist_sq - range_rate ** 2 / safe_rel)
-
-    sep_sq   = CONFIG['sep_nm'] ** 2
-    intrudes = (rel_spd_sq >= _TINY) & (tcpa >= 0) & (dcpa_sq < sep_sq)
-    t_los    = np.where(intrudes,
-                        tcpa - np.sqrt(np.maximum(0.0, sep_sq - dcpa_sq) / safe_rel),
-                        np.inf)
-    return dist_sq, range_rate, rel_spd_sq, t_los
-
-
-# -- Sector generation and entry routing, in the flat NM frame -------------------
-
-
-def _circularity(polygon):
-    """4*pi*area / perimeter^2 -- 1.0 for a circle, lower for elongated shapes."""
-    return 4 * math.pi * polygon.area / polygon.length ** 2
-
-
-def _random_convex_polygon(n_vertices, rng):
-    """polygenerator's random_convex_polygon, driven by `rng` instead of the global random stream."""
-    saved_state = random.getstate()
-    random.seed(rng.randrange(2 ** 32))
-    try:
-        return random_convex_polygon(n_vertices)
-    finally:
-        random.setstate(saved_state)
-
-
-def make_sector_polygon(area_km2, rng):
-    """A random convex polygon of the requested area at the origin, retried until reasonably round."""
-    target_nm2 = area_km2 * KM_TO_NM ** 2
-    scaled = None
-    for _ in range(1000):
-        raw   = ShapelyPolygon(_random_convex_polygon(CONFIG['n_vertices'](rng), rng))
-        scale = math.sqrt(target_nm2 / raw.area)
-        scaled = shapely_scale(raw, xfact=scale, yfact=scale, origin='centroid')
-        if _circularity(scaled) >= CONFIG['min_circularity']:
-            break
-
-    cx, cy = scaled.centroid.x, scaled.centroid.y
-    return ShapelyPolygon([(x - cx, y - cy) for x, y in scaled.exterior.coords])
-
-
-def plan_entry_route(polygon, sector, n_sectors, rng):
-    """Plan one crossing: where it enters, its INITIAL HEADING, and the exit point it would reach unturned."""
-    min_chord = CONFIG['min_chord_nm']
-
-    for _ in range(CONFIG['max_placement_tries']):
-        t_spawn  = (sector + CONFIG['spawn_jitter'](rng)) / n_sectors
-        t_ref    = (t_spawn + 0.5 + CONFIG['ref_jitter'](rng)) % 1.0
-        spawn_pt = polygon.exterior.interpolate(t_spawn, normalized=True)
-        ref_pt   = polygon.exterior.interpolate(t_ref,   normalized=True)
-        if math.hypot(ref_pt.x - spawn_pt.x, ref_pt.y - spawn_pt.y) >= min_chord:
-            break
-
-    initial_hdg = math.degrees(math.atan2(ref_pt.x - spawn_pt.x,
-                                          ref_pt.y - spawn_pt.y)) % 360.0
-
-    center = CONFIG['center_ll']
-    return {
-        'sp_ll':   nm_to_latlon(center, spawn_pt.x, spawn_pt.y),
-        'heading': initial_hdg,
-    }
-
-
-# -- Episode metrics: the counters, and the figures derived from them ------------
-
-
-def new_ep_stats():
-    """The per-episode counters, all starting at zero. Comments show an end-of-episode example."""
-    return {
-        'reward': 0.0,         # -412.7   summed step reward
-        'steps': 0,            # 1480     RL steps taken
-        'actions': [],         # [3, 3, 5, 7, ...]  one action index per step
-        'los_seconds': 0,      # 14       simulated seconds with at least one pair in LoS
-        'los_events': 0,       # 3        distinct intrusions (entries, scanned every second)
-        'conflicts': 0,        # 47       distinct predicted intrusions within t_warn (entries, per step)
-        'flight_s': 0.0,       # 61200.0  airborne time flown by all aircraft
-        'exits': 0,            # 21       aircraft that left having actually flown
-        'on_route': 0,         # 18       ...of which left within the heading tolerance
-        'deviation_nm': 0.0,   # 96.3     ...summed distance from the no-turn exit point
-        'flown_nm': 0.0,       # 1742.5   ...summed track length actually flown
-        'route_nm': 0.0,       # 1698.0   ...summed straight-line length of the route they were given
-        # Drift summed over aircraft and steps; divided by aircraft-steps for a mean angle.
-        'drift_deg_sum': 0.0,  # 20450.0  summed |drift| over aircraft-steps
-        'drift_samples': 0,    # 17600    aircraft-steps that contributed
-        'delay_sum_s': 0.0,    # 2790.0   summed response delay actually served
-        'delay_served': 0,     # 93       advisories that reached execution
-        'focus_spells': 0,     # 112      times an aircraft became the focus
-        'focus_spell_steps': 0,# 1480     steps summed over those spells
-        'discarded': 0,        # 19       advisories replaced before they could be flown
-        'repeats': 0,          # 240      the same advice re-selected while it was still standing
-        'turns': 0,            # 74       turn advisories actually transmitted
-        'speeds': 0,           # 38       speed advisories actually transmitted
-    }
-
-
-def episode_summary(stats):
-    """End-of-episode metrics, logged by the training callbacks."""
-    s = stats
-    flight_hours = max(s['flight_s'] / 3600.0, 1e-9)
-    served       = max(s['delay_served'], 1)
-    exits        = s['exits']
-
-    # Advisories TRANSMITTED, counted in _issue_advisory rather than off the action histogram.
-    turns, speeds = s['turns'], s['speeds']
-
-    return {
-        'mean_episode_reward': s['reward'] / max(s['steps'], 1),
-        'ep_reward_total':     s['reward'],
-        'ep_length':           s['steps'],
-        'ep_los_seconds':      s['los_seconds'],
-        'ep_los_fraction':     s['los_seconds'] / max(s['steps'] * STEP_DURATION_S, 1),
-        'ep_los_events':       s['los_events'],
-        'action_distribution': np.bincount(s['actions'], minlength=N_ACTIONS).tolist(),
-
-        # Traffic-normalised safety: raw LoS counts are not comparable between episodes.
-        'ep_flight_hours':      s['flight_s'] / 3600.0,
-        'ep_los_events_per_fh': s['los_events'] / flight_hours,
-        'ep_conflicts':         s['conflicts'],
-        'ep_conflicts_per_fh':  s['conflicts'] / flight_hours,
-
-        # Route keeping over every exit: arrival within arrival_hdg_tol_deg, deviation from the no-turn exit.
-        'ep_exit_deviation_nm': s['deviation_nm'] / exits if exits else 0.0,
-        # Track flown over the straight route: 1.0 is a perfectly direct crossing.
-        'ep_path_ratio':        s['flown_nm'] / s['route_nm'] if s['route_nm'] else 1.0,
-        'ep_arrival_rate':      s['on_route'] / exits if exits else 1.0,
-        'ep_exits':             exits,
-
-        # Drift from assigned headings and the calls it took; the per-flight-hour rates are the comparable ones.
-        'ep_mean_drift_deg':      s['drift_deg_sum'] / max(s['drift_samples'], 1),
-        'ep_turns':               turns,
-        'ep_speed_changes':       speeds,
-        'ep_turns_per_fh':        turns / flight_hours,
-        'ep_speed_changes_per_fh': speeds / flight_hours,
-
-        # Diagnostics -- kept in the evaluation CSVs rather than TensorBoard.
-        'ep_delay_mean_s':     s['delay_sum_s'] / served,
-        'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
-        'ep_discarded':        s['discarded'],
-        # The advice already standing, selected again: charged as workload, but nothing new is assessed.
-        'ep_repeats':          s['repeats'],
-    }

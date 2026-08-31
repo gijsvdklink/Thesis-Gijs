@@ -18,7 +18,8 @@ import random
 
 from .config import N_ACTIONS, VALIDATION_SEEDS
 from .delays import DELAY_MODES
-from .env import AirspaceEnv, episode_summary
+from .env import AirspaceEnv
+from .stats import episode_summary
 
 # The matrix: every delay mode over the same scenarios, so the delay paths are all exercised.
 SCENARIOS   = tuple(VALIDATION_SEEDS[:3])
