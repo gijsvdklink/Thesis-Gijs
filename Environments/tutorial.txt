@@ -86,22 +86,22 @@ TRAINING -- 20 runs, 4 conditions x 5 seeds
     # terminal 15
     python -m Training.train --delay deterministic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
-    # ---- probabilistic ----
+    # ---- geometric ----
 
     # terminal 16
-    python -m Training.train --delay probabilistic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay geometric --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 17
-    python -m Training.train --delay probabilistic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay geometric --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 18
-    python -m Training.train --delay probabilistic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay geometric --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 19
-    python -m Training.train --delay probabilistic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay geometric --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 20
-    python -m Training.train --delay probabilistic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay geometric --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
     # With --n-envs 1 each run has one stream, but that is not enough on its own. The stride
     # (7919) is coprime with the pool (5,000,000), so every run walks the whole pool before
     # repeating and two runs are shifted copies of the same cycle -- they must meet eventually.
@@ -138,7 +138,7 @@ TENSORBOARD
     tensorboard --logdir Runs_saved/seed_study --port 6006
 
     # output directories
-    #   none/  lognormal_30s/  deterministic_30s/  probabilistic_30s/
+    #   none/  lognormal_30s/  deterministic_30s/  geometric_30s/
     #     <condition>_seed<K>_<timestamp>/
     #       final_model.zip + final_model_vecnorm.pkl   <- written when you stop
     #       last_model.zip  + last_model_vecnorm.pkl    <- every 500k steps

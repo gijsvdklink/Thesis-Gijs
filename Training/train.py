@@ -1,4 +1,4 @@
-# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal|probabilistic. The same --seed sees identical scenarios in every type.
+# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal|geometric. The same --seed sees identical scenarios in every type.
 
 import os
 
@@ -11,7 +11,6 @@ import sys
 import time
 from datetime import datetime
 
-import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
@@ -22,8 +21,7 @@ torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from Environments.main import AirspaceEnv, DELAY_MODES
-from Environments.main.config import CONFIG
-from Environments.main.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
+from Environments.main.atco import MEAN_DELAY_S as DEFAULT_MEAN_S
 
 # -- Settings ------------------------------------------------------------------
 

@@ -17,7 +17,6 @@ class _ScreenDummy(ScreenIO):
 
 
 def start_bluesky():
-    """Headless BlueSky, silenced, with the timestep set and the clock running free."""
     global _started
     if not _started:
         bs.init(mode='sim', detached=True)
@@ -27,7 +26,6 @@ def start_bluesky():
 
 
 def traffic_states(indices):
-    """Positions (NM, east/north) and velocities (NM/s) for BlueSky indices, as (n, 2) arrays."""
     idx = np.asarray(indices, dtype=int)
 
     pos   = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])

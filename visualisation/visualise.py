@@ -39,7 +39,7 @@ from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
 
-from Environments.main.delays import DELAY_MODES   # for the --delay choices
+from Environments.main.atco import DELAY_MODES   # for the --delay choices
 
 WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
 CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
@@ -126,8 +126,7 @@ def reset_episode(env, scenario_seed):
 
 def track_advisories(env, st):
     """Mirror the env's outstanding-advisory queue into st and record executions; the delay is not reimplemented here."""
-    pending = {cs: ac.pending_advisory for cs, ac in env._aircraft.items()
-               if ac.pending_advisory is not None}
+    pending = {env.atco.cs: env.atco.advisory} if env.atco.advisory else {}
 
 
     for cs, advisory in st['pending_seen'].items():
@@ -144,7 +143,7 @@ def track_advisories(env, st):
 
 def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_once=False):
     """Advance one RL step and update stats in place; fixed_seq overrides the model, and model=None is HOLD-only."""
-    acting_cs = env._focus_cs
+    acting_cs = env.cr_tool.focus_cs
     if fixed_seq:
         n = st['step_n']
         a = 3 if (seq_once and n >= len(fixed_seq)) else fixed_seq[n % len(fixed_seq)]
@@ -170,7 +169,7 @@ def to_screen(x_nm, y_nm, scale):
 
 
 def urgency(env):
-    U, cs_list = env._urgency_matrix, env._urgency_cs_list
+    U, cs_list = env.cr_tool.urgency, env._urgency_cs_list
     row_max = U.max(axis=1) if U.size else np.zeros(0)
     return {cs: float(row_max[i]) for i, cs in enumerate(cs_list)} if U.size else {}
 
@@ -229,8 +228,8 @@ def draw_delay_panel(screen, fonts, env, st, x, y):
     now = env._sim_time_s
     screen.blit(font_hud.render(f'PILOT RESPONSE   t = {now:6.0f} s', True, GREEN), (x, y))
     y += 26
-    mode   = env.response_delay.mode
-    mean_s = env.response_delay.mean_s
+    mode   = env.atco.mode
+    mean_s = env.atco.mean_s
     screen.blit(font.render(f'delay model: {mode}  mean {mean_s:g}s', True, DIM),
                 (x, y)); y += 22
 
@@ -290,7 +289,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
                         (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
         # 2.5 NM protected-zone ring (two overlapping == LoS); the ownship ring is blue.
-        aa_ring(screen, px, py, prot_px, BLUE if cs == env._focus_cs else col)
+        aa_ring(screen, px, py, prot_px, BLUE if cs == env.cr_tool.focus_cs else col)
 
         h = math.radians(hdg_deg)                          # current-heading leader
         lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale
@@ -322,7 +321,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
 
     draw_delay_panel(screen, fonts, env, st, 14, 120)
 
-    draw_obs_panel(screen, font, font_hud, obs, env._focus_cs,
+    draw_obs_panel(screen, font, font_hud, obs, env.cr_tool.focus_cs,
                    getattr(env, '_last_intruder_cs', []))
 
 
@@ -378,9 +377,6 @@ def main():
                          'single pilot response, which is what the delay panel times.')
     ap.add_argument('--steps', type=int, default=None, metavar='N',
                     help='stop after this many RL steps (mp4 only); default: full episode')
-    ap.add_argument('--ref_jitter', type=float, default=None, metavar='J',
-                    help='exit-point jitter range: ref_jitter ~ uniform(-J, +J); '
-                         'J=0.5 gives fully random crossing directions')
     ap.add_argument('--mp4', default=None, metavar='PATH',
                     help='render a single episode to this mp4 file and exit')
     ap.add_argument('--fps', type=int, default=10, help='interactive / mp4 frame rate')
@@ -406,9 +402,6 @@ def main():
     # The samplers take the env's scenario generator; these overrides pin the values.
     CONFIG['n_aircraft'] = lambda rng: args.n_ac
     CONFIG['rho']        = lambda rng: args.density
-    if args.ref_jitter is not None:
-        j = args.ref_jitter
-        CONFIG['ref_jitter'] = lambda rng: rng.uniform(-j, j)
 
     det = not args.stochastic
     fixed_seq = None

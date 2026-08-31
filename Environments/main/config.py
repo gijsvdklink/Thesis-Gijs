@@ -24,10 +24,9 @@ CONFIG = {
     'n_vertices':            lambda rng: rng.randint(6, 12),
     'min_circularity':       0.7,
     'max_placement_tries':   50,
-    'min_chord_nm':          15.0,           # reject spawn->ref routes too short to really be flown
-    # Aircraft placement jitter
-    'spawn_jitter':          lambda rng: rng.uniform(0.1, 0.9),
-    'ref_jitter':            lambda rng: rng.uniform(-0.5, 0.5),      # fully random crossing/exit directions
+    # Aircraft enter on a random heading, so half of the draws point back out of the sector.
+    # This is what rejects those, and grazing entries through a corner with them.
+    'min_chord_nm':          15.0,           # shortest crossing an entry may be given
     # Simulation
     'sim_dt':                1.0,            # BlueSky integration timestep (DT) = 1 s
     'action_freq':           5,             # RL step = 5 s simulated (action_freq x sim_dt)

@@ -13,11 +13,6 @@ NMS_PER_MS = 1.0 / _M_PER_NM   # m/s -> NM/s
 
 
 def latlon_to_nm(center_ll, lat, lon):
-    """(lat, lon) -> (east_nm, north_nm) relative to center_ll.
-
-    Scalars give a (2,) point, arrays of n aircraft give an (n, 2) block, which is the one
-    projection the whole environment reasons in.
-    """
     ref_lat, ref_lon = center_ll
     east  = (np.asarray(lon) - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
     north = (np.asarray(lat) - ref_lat) * 60.0
@@ -25,20 +20,17 @@ def latlon_to_nm(center_ll, lat, lon):
 
 
 def nm_to_latlon(center_ll, east_nm, north_nm):
-    """(east_nm, north_nm) offsets -> (lat, lon)."""
     ref_lat, ref_lon = center_ll
     return (ref_lat + north_nm / 60.0,
             ref_lon + east_nm / (60.0 * math.cos(math.radians(ref_lat))))
 
 
 def point_ahead(from_ll, heading_deg, distance_nm):
-    """(lat, lon) reached by flying `distance_nm` from `from_ll` on a constant TRUE heading."""
     lat, lon = qdrpos(from_ll[0], from_ll[1], heading_deg, distance_nm)
     return float(lat), float(lon)
 
 
 def heading_to_velocity(speed, heading_deg):
-    """Speed + heading (deg) -> (east, north) velocity components."""
     h = math.radians(heading_deg)
     return speed * math.sin(h), speed * math.cos(h)
 
@@ -47,15 +39,6 @@ _TINY = 1e-12
 
 
 def cpa(rel_pos, rel_vel):
-    """Closest point of approach, for relative position and velocity arrays of any matching shape.
-
-    The one place this algebra is written down: the pair matrix, the one-against-many spawn test
-    and the counterfactual "if everyone flew their route" check all come through here.
-
-    Returns (dist_sq, tcpa, dcpa_sq, safe_rel_spd_sq, moving). `moving` is False where a pair has
-    too little relative motion for tcpa and dcpa to mean anything; `safe_rel_spd_sq` is the
-    relative speed squared with those entries replaced by 1.0, so dividing by it is always safe.
-    """
     dist_sq    = np.einsum('...k,...k->...', rel_pos, rel_pos)
     rel_spd_sq = np.einsum('...k,...k->...', rel_vel, rel_vel)
     range_rate = np.einsum('...k,...k->...', rel_pos, rel_vel)
@@ -66,7 +49,6 @@ def cpa(rel_pos, rel_vel):
 
 
 def pairwise(pos, vel):
-    """(dist_sq, t_los) for every pair; t_los is +inf when they never intrude."""
     rel_pos = pos[None, :, :] - pos[:, None, :]     # rel_pos[i, j] = pos[j] - pos[i]
     rel_vel = vel[None, :, :] - vel[:, None, :]
 

@@ -31,7 +31,7 @@ FIGURES_DIR = os.path.join(EXPERIMENT, 'figures')
 CONDITIONS = {
     'none':          'none',
     'deterministic': 'deterministic_30s',
-    'geometric':     'probabilistic_30s',   # 'geometric' in the report, 'probabilistic' in delays.py
+    'geometric':     'geometric_30s',
     'lognormal':     'lognormal_30s',
 }
 

@@ -1,216 +1,288 @@
-================================================================================
-STATISTICALLY SOUND TRAINING AND VALIDATION -- THE PLAN
-Following Agarwal et al., "Deep RL at the Edge of the Statistical Precipice"
-(NeurIPS 2021), and the rliable library that comes with it.
-================================================================================
+\documentclass[11pt]{article}
+\usepackage[paperwidth=23.4cm,paperheight=23.3cm,margin=0.5cm]{geometry}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+% ---- TU Delft house-style typeface: Arial ----
+% Arial is not shipped with TeX Live; Helvetica (helvet) is its metric-compatible
+% substitute and is used here. For true Arial, compile with lualatex/xelatex and
+% replace the two lines below by:
+%   \usepackage{fontspec}\setmainfont{Arial}
+\usepackage[scaled=1.0]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{sansmath}
+\sansmath
+\usetikzlibrary{arrows.meta,positioning,calc}
+\pagestyle{empty}
 
-The paper's message in one sentence: with a handful of training runs a point
-estimate says almost nothing, so report INTERVAL estimates over RUNS, aggregate
-with metrics that are robust and statistically efficient (IQM), and show the
-whole distribution rather than one number.
+% ---- TU Delft / Royal NLR house-style palette ----
+\definecolor{tudcyan}{HTML}{00A6D6}   % TU Delft primary cyan
+\definecolor{tuddark}{HTML}{0C2340}   % TU Delft dark blue
+\definecolor{nlrdeep}{HTML}{004D7D}   % Royal NLR deep blue
+\definecolor{nlrblue}{HTML}{19AEE9}   % Royal NLR light blue
+\definecolor{nlrpale}{HTML}{8CD7F4}   % Royal NLR pale blue
 
-Our current figures bootstrap over the 200 EPISODES of a SINGLE run. That
-interval measures scenario noise only. It says nothing about whether another
-training seed would have produced the same curve -- which is precisely the
-question that made two earlier sweeps disagree by more than their own error
-bars. Everything below fixes that.
+\colorlet{ink}{tuddark}
+\colorlet{mid}{nlrdeep}
+\colorlet{soft}{nlrblue!72}
+\colorlet{faint}{nlrpale!65}
+\colorlet{panelA}{nlrpale!28}
+\colorlet{panelTUD}{tudcyan!11}
+\colorlet{panelDLY}{tudcyan!11}
+\colorlet{fillstate}{tudcyan!25}
 
+\tikzset{
+  proc/.style   = {rectangle, rounded corners=2pt, draw=ink, line width=0.5pt,
+                   fill=white, minimum width=4.4cm, minimum height=1.05cm,
+                   align=center, font=\small, inner sep=3pt},
+  model/.style  = {proc, line width=1.1pt},
+  state/.style  = {rectangle, rounded corners=9pt, draw=ink, line width=0.5pt,
+                   fill=white, minimum width=3.2cm, minimum height=1.15cm,
+                   align=center, font=\small, inner sep=3pt},
+  idle/.style   = {state, fill=fillstate},
+  flow/.style   = {draw=ink, line width=0.7pt, -{Stealth[length=4.4pt,width=3.6pt]}},
+  data/.style   = {draw=mid, line width=0.6pt, dash pattern=on 3pt off 2pt,
+                   -{Stealth[length=4.4pt,width=3.6pt]}},
+  ptitle/.style = {font=\footnotesize, text=mid, anchor=north west},
+  leg/.style    = {font=\footnotesize, text=ink, anchor=west},
+  badge/.style  = {rectangle, rounded corners=2.5pt, draw=ink, line width=0.6pt,
+                   fill=white, font=\scriptsize\bfseries, text=ink,
+                   inner xsep=4pt, inner ysep=2pt},
+}
+\newcommand{\el}[4]{\node[font=\footnotesize\bfseries, text=ink, fill=#4,
+                    inner sep=1.3pt] at (#1,#2) {#3};}
+\newcommand{\ac}[5]{%
+  \begin{scope}[shift={(#1,#2)},rotate=#3,scale=#5]
+    \draw[#4] (0.24,0) -- (-0.15,0.17) -- (-0.15,-0.17) -- cycle;
+  \end{scope}}
 
---------------------------------------------------------------------------------
-1. HOW OUR EXPERIMENT MAPS ONTO THE PAPER
---------------------------------------------------------------------------------
+\begin{document}
+\noindent
+\begin{tikzpicture}[x=1cm,y=1cm]
 
-    paper term      our experiment
-    ------------    ------------------------------------------------------------
-    algorithm       training condition: none / deterministic 30 s /
-                    lognormal 30 s / probabilistic 30 s          (4 of them)
-    run    (n)      one training seed: 0, 1000, 2000, 3000, 4000  (N = 5)
-    task   (m)      one evaluation delay world: 0 s, 30 s, 60 s   (M = 3)
-    score  x[m,n]   the MEAN over the 100 test episodes that run flew in that
-                    delay world, for one KPI
+% ---------------- panels ----------------
+\fill[panelA, rounded corners=6pt] (-0.45,1.00) rectangle (12.35,19.15);
+\fill[panelTUD, rounded corners=6pt] (13.15,9.90) rectangle (21.45,19.15);
+\fill[panelDLY, rounded corners=6pt] (13.15,3.10) rectangle (21.45,9.75);
 
-The key structural rule: episodes are averaged INSIDE a run to give that run one
-score, and every uncertainty reported afterwards is taken ACROSS RUNS. Episodes
-of different training seeds are never pooled into one sample -- that treats seed
-variance as if it were episode variance and shrinks the interval to a fiction.
+\node[ptitle] at (-0.28,19.00)
+  {\textbf{BLUESKY}\ \ ---\ \ simulated airspace};
+\node[ptitle, text=tudcyan!85!black] at (13.32,19.00) {\textbf{CONFLICT-RESOLUTION TOOL}};
+\node[ptitle, text=tuddark] at (14.35,9.62) {\textbf{ATCO}};
 
-Grid: 4 conditions x 5 seeds x 3 delay worlds = 60 evaluation runs, plus the
-single no-CR reference. That is the 61 runs already listed in tutorial.txt.
+\node[badge, anchor=north east] at (12.15,19.00) {every $1\,$s};
+\node[badge, anchor=north east] at (21.25,19.00) {every $5\,$s};
+\node[badge, anchor=north east] at (21.25,9.62) {every $1\,$s};
 
+% ---------------- airspace ----------------
+\draw[draw=mid, line width=0.6pt]
+  (2.18,12.47) -- (3.58,15.90) -- (7.25,16.45) -- (9.86,14.18)
+  -- (10.10,9.66) -- (7.09,7.24) -- (3.23,8.02) -- cycle;
 
---------------------------------------------------------------------------------
-2. TRAINING RULES
---------------------------------------------------------------------------------
+% Other traffic: present, but outside the four slots the observation carries.
+\ac{3.60}{12.20}{ 25}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{3.90}{14.00}{200}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{5.20}{15.30}{115}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{6.80}{15.60}{255}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{9.40}{11.40}{195}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{8.90}{9.80}{ 60}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{7.60}{8.60}{300}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{6.20}{8.20}{ 80}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{4.70}{8.90}{215}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{3.60}{10.20}{140}{draw=nlrdeep, line width=0.6pt}{1.05}
 
-R1  Five seeds per condition, minimum. If compute has to go somewhere, spend it
-    on MORE SEEDS, not on more evaluation episodes. Episode noise is already
-    averaged over 100 episodes; seed noise is averaged over 5. Ten seeds per
-    condition would roughly halve the width of every interval below.
+% The focus ship and the four slots of o. Aircraft in conflict take the slots however far
+% away they are, and only what is left over goes to the nearest -- so there is no radius:
+% the thin lines show which four were selected. The one at upper right is distant but in
+% conflict; the unfilled aircraft nearer the focus ship is not.
+\draw[draw=soft, line width=0.5pt] (7.00,12.40) -- (6.10,13.60);
+\draw[draw=soft, line width=0.5pt] (7.00,12.40) -- (5.60,11.00);
+\draw[draw=soft, line width=0.5pt] (7.00,12.40) -- (9.20,13.20);
+\draw[draw=soft, line width=0.5pt] (7.00,12.40) -- (8.20,14.60);
+\ac{6.10}{13.60}{ 95}{draw=mid, fill=soft, line width=0.6pt}{1.15}
+\ac{5.60}{11.00}{ 50}{draw=mid, fill=soft, line width=0.6pt}{1.15}
+\ac{9.20}{13.20}{ 15}{draw=mid, fill=soft, line width=0.6pt}{1.15}
+\ac{8.20}{14.60}{160}{draw=mid, fill=soft, line width=0.6pt}{1.15}
+\ac{7.85}{12.95}{265}{draw=nlrdeep, line width=0.6pt}{1.05}
+\ac{7.00}{12.40}{325}{draw=ink, fill=ink, line width=0.6pt}{1.35}
+\node[font=\scriptsize, text=mid, anchor=north west, align=left] at (7.20,11.95)
+      {observation $o$: focus ship $i$\\ and its four intruder slots};
 
-R2  Identical protocol in every condition: same timesteps, same
-    hyperparameters, same --n-envs, same environment settings. Stop all runs at
-    the SAME STEP COUNT, not at the same time of day, and record where each one
-    stopped. Anything else measures the training budget instead of the delay
-    model.
+% ---------------- spawn / delete ----------------
+\filldraw[ink] (2.20,5.60) circle (0.10);
+\node[font=\scriptsize\itshape, text=mid, anchor=east] at (2.00,5.60) {new aircraft};
+\filldraw[ink] (4.90,5.60) circle (0.10);
+\draw[ink, line width=0.5pt] (4.90,5.60) circle (0.23);
+\node[font=\scriptsize\itshape, text=mid, anchor=west] at (5.23,5.60) {deleted};
+\draw[flow, draw=nlrdeep] (2.26,5.83) to[out=75,in=245] (3.30,7.93);
+\draw[flow, draw=nlrdeep] (4.60,7.72) to[out=300,in=145] (4.80,5.82);
+\draw[flow, draw=nlrdeep] (4.78,5.37) to[out=250,in=290] (2.32,5.37);
+\el{2.30}{7.05}{O}{panelA}
+\el{5.15}{6.85}{P}{panelA}
+\el{3.55}{4.85}{Q}{panelA}
 
-R3  Report the FINAL policy, not the best one. Picking the checkpoint with the
-    highest evaluation score maximises over a small sample and is
-    optimistically biased -- the paper shows this alone can account for most of
-    a claimed improvement. The trainer already does the right thing: no
-    best_model, only final_model, scored afterwards on the held-out pool.
+% ---------------- CR tool ----------------
+\draw[draw=tudcyan!70, line width=0.5pt, rounded corners=4pt,
+      dash pattern=on 2.4pt off 2pt] (14.55,14.00) rectangle (20.05,18.45);
+\node[font=\scriptsize\bfseries, text=tudcyan!85!black, anchor=west,
+      fill=panelTUD, inner xsep=3pt, inner ysep=1pt]
+      at (14.95,18.45) {Urgency ranking mechanism};
+\draw[draw=tudcyan!70, line width=0.5pt, rounded corners=4pt,
+      dash pattern=on 2.4pt off 2pt] (14.55,10.05) rectangle (20.05,13.75);
+\node[font=\scriptsize\bfseries, text=tudcyan!85!black, anchor=west,
+      fill=panelTUD, inner xsep=3pt, inner ysep=1pt]
+      at (14.95,13.75) {RL model};
 
-R4  Freeze the protocol before the sweep starts. Once a KPI definition, a
-    reward term or an environment setting changes, earlier runs are no longer
-    comparable and have to be discarded rather than mixed in.
+\node[proc, draw=tudcyan] (cu) at (17.30,17.70)
+      {Urgency matrix $U$\\[1pt]
+       {\scriptsize $u_{ij}$ from $t_\mathrm{los}$, or $1$--$10$ once separated by ${<}d_\mathrm{sep}$}};
+\node[proc, draw=tudcyan, minimum height=1.60cm] (df) at (17.30,15.60)
+      {Determine focus ship $i$\\[1pt]
+       {\scriptsize highest $\max_j u_{ij}$, held until $5$ steps clear,}\\[-2pt]
+       {\scriptsize pre-empted at $u_{ij}\ge0.67$; else largest drift}};
+\node[proc, draw=tudcyan] (bo) at (17.30,12.70)
+      {Build observation $o$\\[1pt]
+       {\scriptsize focus ship, $4$ intruder slots, advice outstanding}};
+\node[model, draw=tudcyan] (tm) at (17.30,10.95) {Trained model (PPO)};
 
-R5  Keep the scenario pairing across conditions (same seed -> same episodes).
-    It costs nothing and makes the per-seed differences in section 5 much
-    tighter. Independence still holds ACROSS seeds, which is what the bootstrap
-    needs.
+\draw[flow, draw=tudcyan] (cu.south) -- (df.north);
+\draw[flow, draw=tudcyan] (df.south) -- (bo.north);
+\draw[flow, draw=tudcyan] (bo.south) -- (tm.north);
+\el{17.30}{17.02}{B}{panelTUD}
+\el{17.30}{13.88}{C}{white}
+\el{17.30}{11.83}{E}{panelTUD}
 
+\draw[tudcyan, line width=0.5pt] (20.70,10.95) circle (0.26);
+\draw[tudcyan, line width=0.5pt] (20.52,10.77) -- (20.88,11.13);
+\draw[tudcyan, line width=0.5pt] (20.52,11.13) -- (20.88,10.77);
+\draw[flow, draw=tudcyan] (19.50,10.95) -- (20.44,10.95);
+\el{19.97}{11.28}{F}{panelTUD}
+\node[font=\scriptsize, text=mid, anchor=north, align=center] at (20.55,10.52)
+      {$a=\varnothing$, or $a$\\already flown};
 
---------------------------------------------------------------------------------
-3. VALIDATION PROTOCOL
---------------------------------------------------------------------------------
+% ---------------- ATCO ----------------
+\node[idle, draw=tuddark, minimum width=3.6cm, minimum height=0.95cm]
+      (nadv) at (17.05,8.60) {Free};
+\node[proc, draw=tuddark, minimum width=3.6cm, minimum height=0.95cm]
+      (newa) at (17.05,7.25) {Take up aircraft $i$};
+\node[proc, draw=tuddark, minimum width=3.6cm, minimum height=1.20cm]
+      (drw)  at (17.05,5.80) {Begin response\\[1pt]
+      {\scriptsize scheduled: draw $\tau\sim D(\mu)$}\\[-2pt]
+      {\scriptsize memoryless: roll $p=1/\mu$ each second}};
+\node[idle, draw=tuddark, minimum width=3.6cm, minimum height=0.95cm]
+      (dly) at (17.05,4.25) {Working on $i$};
 
-V1  Held-out scenarios only: TEST_SEEDS, never touched during training.
+\draw[flow, draw=tuddark] (nadv.south) -- (newa.north);
+\draw[flow, draw=tuddark] (newa.south) -- (drw.north);
+\draw[flow, draw=tuddark] (drw.south)  -- (dly.north);
+% K is a self-loop, not a return to New advice: revised advice for the aircraft already in
+% hand replaces the instruction only. No new response time is begun, so the clock the ATCO is
+% already running is untouched.
+\draw[flow, draw=tuddark]
+      (dly.north west) to[out=170,in=190,looseness=4.5] (dly.south west);
+\node[font=\scriptsize, text=mid, anchor=east, align=right] at (14.62,4.25)
+      {same aircraft:\\ instruction replaced,\\ clock untouched};
+% R: advisory for a DIFFERENT aircraft. One instruction at a time, so the one in hand is
+% dropped unflown and the aircraft is taken up afresh, with a new response time.
+\draw[flow, draw=tuddark] (18.85,4.50) -- (19.55,4.50) -- (19.55,7.00) -- (18.85,7.00);
+\draw[flow, draw=tuddark] (18.85,4.25) -- (20.85,4.25) -- (20.85,8.60) -- (18.85,8.60);
+\el{17.05}{7.93}{H}{panelDLY}
+\el{17.05}{6.59}{I}{panelDLY}
+\el{17.05}{4.96}{J}{panelDLY}
+\el{14.86}{4.25}{K}{panelDLY}
+\el{20.85}{6.40}{L}{panelDLY}
+\el{19.55}{5.75}{R}{panelDLY}
 
-V2  The same evaluation seed (--seed 1) and the same episode count for every
-    policy and every delay world, so all 60 evaluation runs fly the SAME
-    scenario sequence. Policy actions deterministic.
+% working state -> observation
+\draw[data] (16.20,3.775) -- (16.20,3.50) -- (12.95,3.50) -- (12.95,12.70) -- (15.10,12.70);
+\el{12.95}{8.60}{D}{white}
 
-V3  100 episodes per (seed, condition, delay world). One CSV per evaluation
-    run, named so the seed is machine-readable:
+% advisory -> ATCO
+\draw[data] (15.10,10.95) -- (13.72,10.95) -- (13.72,7.25) -- (15.25,7.25);
+\el{13.72}{9.90}{G}{white}
+\node[font=\scriptsize, text=mid, anchor=south east] at (15.05,11.12) {$a\neq\varnothing$};
 
-        seed_study/results/curve_<cond>_<delay>s_seed<K>.csv
+% ---------------- BlueSky ----------------
+\node[proc, draw=nlrdeep, minimum width=5.0cm] (bsky) at (8.60,1.90) {BS executes instruction};
+\draw[data] (17.05,3.775) -- (17.05,1.90) -- (11.10,1.90);
+\el{14.30}{1.90}{M}{white}
 
-V4  One no-CR reference per delay world, flown on the same scenarios. It is the
-    anchor for normalisation in section 4, so it is needed at every delay
-    level, not only at 0 s.
+% BlueSky -> airspace
+\draw[flow, draw=nlrdeep] (7.00,2.48) -- (7.00,7.20);
+\el{7.00}{4.60}{N}{panelA}
 
-V5  Always pass an explicit --out path. A bare name resolves into the shared
-    default folder and silently overwrites the previous sweep.
+% ---------------- airspace -> CR tool ----------------
+\draw[data] (8.60,15.55) to[out=28,in=180] (15.10,17.70);
+\el{12.75}{17.40}{A}{white}
 
+% ---------------- legend ----------------
+\draw[faint, line width=0.5pt] (-0.45,-0.30) -- (21.45,-0.30);
+\ac{-0.10}{-1.00}{180}{draw=ink, fill=ink, line width=0.5pt}{1.35}
+\node[leg] at (0.30,-1.00) {focus ship $i$};
+\ac{4.10}{-1.00}{180}{draw=mid, fill=soft, line width=0.5pt}{1.15}
+\node[leg] at (4.45,-1.00) {neighbour included in $o$};
+\ac{10.10}{-1.00}{180}{draw=nlrdeep, line width=0.6pt}{1.05}
+\node[leg] at (10.45,-1.00) {other traffic};
+\draw[flow] (14.10,-1.00) -- (14.95,-1.00);
+\node[leg] at (15.10,-1.00) {transition within an agent};
 
---------------------------------------------------------------------------------
-4. AGGREGATION -- WHAT TO COMPUTE
---------------------------------------------------------------------------------
+\filldraw[ink] (-0.10,-1.80) circle (0.10);
+\node[leg] at (0.30,-1.80) {aircraft spawned};
+\filldraw[ink] (4.10,-1.80) circle (0.10);
+\draw[ink, line width=0.5pt] (4.10,-1.80) circle (0.23);
+\node[leg] at (4.45,-1.80) {aircraft removed};
+\draw[ink, line width=0.5pt] (10.10,-1.80) circle (0.24);
+\draw[ink, line width=0.5pt] (9.93,-1.97) -- (10.27,-1.63);
+\draw[ink, line width=0.5pt] (9.93,-1.63) -- (10.27,-1.97);
+\node[leg] at (10.45,-1.80) {no action taken};
+\draw[data] (14.10,-1.80) -- (14.95,-1.80);
+\node[leg] at (15.10,-1.80) {data exchanged between agents};
 
-One KPI at a time. Never average a LoS rate with an exit deviation.
+\node[idle, minimum width=0.95cm, minimum height=0.44cm, rounded corners=5pt]
+      at (0.28,-2.60) {};
+\node[leg] at (0.85,-2.60) {state of an agent};
+\node[leg, text=mid] at (4.45,-2.60)
+      {edge labels A--R are defined in the accompanying table};
+\end{tikzpicture}
 
-Normalisation is needed only when aggregating ACROSS delay worlds, because a
-KPI means something different at 0 s and at 60 s:
-
-    lower is better        normalised = (no_CR - score) / (no_CR - ideal)
-    (LoS rate, exit deviation, advisories)
-
-    higher is better       normalised = (score - no_CR) / (ideal - no_CR)
-    (arrival rate)
-
-with no_CR the reference of that same delay world (normalised score 0) and
-ideal the physical best case (0 LoS, 0 NM deviation, arrival rate 1). Higher is
-then always better and 1 is the target the optimality gap measures against.
-
-Report, per KPI:
-
-    (a) PER DELAY WORLD, in raw units, for the degradation curves:
-        the mean over the 5 seeds with a 95% PERCENTILE BOOTSTRAP interval
-        resampled over the 5 SEEDS, not over episodes.
-
-    (b) AGGREGATED OVER THE THREE DELAY WORLDS, on normalised scores:
-        IQM (interquartile mean: the mean of the middle 50% of the 15
-        run-scores) with a 95% stratified bootstrap CI -- resample seeds with
-        replacement independently within each delay world. Add the OPTIMALITY
-        GAP, i.e. how far the condition stays below a normalised score of 1.
-        Mean and median are dropped: the mean chases a single bad seed, the
-        median wastes the few runs we have.
-
-    (c) PERFORMANCE PROFILE: the fraction of the 15 run-scores above tau, swept
-        over tau, with pointwise 95% bootstrap bands, one curve per condition.
-        This is the figure that shows whether a condition is uniformly better
-        or only better on average.
-
-    (d) PROBABILITY OF IMPROVEMENT P(X > Y) with its interval, for each
-        head-to-head claim actually made in the text (delay-trained vs.
-        baseline, lognormal vs. deterministic).
-
-Caveat to state in the report: with N = 5 runs bootstrap intervals are somewhat
-optimistic -- the paper measures under-coverage below roughly 10 runs. Keep the
-claims correspondingly tempered.
-
-
---------------------------------------------------------------------------------
-5. COMPARING TWO CONDITIONS
---------------------------------------------------------------------------------
-
-Do not draw conclusions from two intervals overlapping or not overlapping.
-Build the interval for the DIFFERENCE:
-
-    per KPI, per delay world, per seed k:
-
-        d_k = score(condition A, seed k) - score(condition B, seed k)
-
-Because the seeds are paired (R5), d_k removes the scenario luck the two
-conditions share. Bootstrap the 5 differences and report the mean difference
-with its 95% interval. If that interval contains 0, the honest sentence is "no
-difference we can resolve with 5 seeds", not "no difference".
-
-No p-values and no significance tests. Intervals and effect sizes only.
-
-
---------------------------------------------------------------------------------
-6. TOOLING -- WHAT TO BUILD
---------------------------------------------------------------------------------
-
-    pip install rliable
-
-A new script, Validation/aggregate.py, replacing the episode-level bootstrap
-that now sits in Validation/summarise.py:
-
-    step 1  glob seed_study/results/curve_<cond>_<delay>s_seed<K>.csv
-    step 2  per file, take the mean of the KPI column          -> one score
-    step 3  per condition, build an array of shape (5 seeds, 3 delay worlds)
-    step 4  normalise against the no-CR reference (section 4)
-    step 5  hand the arrays to rliable
-
-Sketch:
-
-    from rliable import library as rly, metrics
-
-    scores = {'none': A, 'deterministic 30 s': B,
-              'lognormal 30 s': C, 'probabilistic 30 s': D}    # each (5, 3)
-
-    iqm = lambda x: np.array([metrics.aggregate_iqm(x[..., m])
-                              for m in range(x.shape[-1])])
-    point, interval = rly.get_interval_estimates(scores, iqm, reps=50_000)
-
-    profiles = rly.create_performance_profile(scores, np.linspace(0, 1.5, 100))
-    prob     = rly.get_probability_of_improvement(
-                   {'lognormal 30 s, none': (C, A)}, reps=10_000)
-
-Changes to the existing code:
-
-    - Validation/summarise.py: keep mean_and_ci as a single-run diagnostic, but
-      the report figures must call the run-level version.
-    - Validation/plot_report.py: read the per-seed CSVs, average the episodes
-      within each run, and draw the band from the seed-level bootstrap. The
-      curve stays the mean over seeds; only the band changes meaning.
-    - Keep every per-episode CSV. They are the raw material for any later
-      analysis, and the paper asks explicitly that all individual runs be kept.
-
-
---------------------------------------------------------------------------------
-7. CHECKLIST BEFORE THE RESULTS CHAPTER IS WRITTEN
---------------------------------------------------------------------------------
-
-    [ ] 5 seeds per condition, all stopped at the same step count, recorded
-    [ ] final_model everywhere, no best-checkpoint selection
-    [ ] 100 held-out episodes per (seed, condition, delay world), same --seed 1
-    [ ] no-CR reference flown in every delay world
-    [ ] every band in every figure is a bootstrap over SEEDS
-    [ ] aggregate figure uses IQM + optimality gap on normalised scores
-    [ ] one performance profile per KPI that carries a claim
-    [ ] probability of improvement for every head-to-head claim in the text
-    [ ] every comparison stated as a paired difference with an interval
-    [ ] the methods section states N = 5 runs, M = 3 delay worlds, 100 episodes
-        per cell, percentile stratified bootstrap, 95% intervals
+\clearpage
+\thispagestyle{empty}
+\vspace*{0.2cm}
+\noindent{\large\bfseries Edge definitions}\\[3pt]
+{\footnotesize Solid edges are transitions internal to a single agent; dashed
+edges carry data between agents.}\\[10pt]
+{\footnotesize
+\begin{tabular}{@{}c l l l@{}}
+\toprule
+& \textbf{From $\rightarrow$ to} & \textbf{Trigger} & \textbf{Effect} \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{BlueSky $\rightarrow$ CR tool (data)}}\\
+A & Airspace $\rightarrow$ Construct $U$ & CR-tool cycle begins & States of all live aircraft are read \\
+\addlinespace
+\multicolumn{4}{@{}l}{\textit{Conflict-resolution tool (internal)}}\\
+B & Construct $U$ $\rightarrow$ Determine focus ship & $U$ assembled & Most urgent conflict pair chosen, and held \\
+C & Determine focus ship $\rightarrow$ Build observation & Focus ship $i$ fixed & Observation vector $o$ assembled \\
+D & Delay $\rightarrow$ Build observation (data) & Focus ship selected & Whether advice is outstanding, and for how long \\
+E & Build observation $\rightarrow$ Trained model & $o$ complete & $o$ passed to the trained model \\
+F & Trained model $\rightarrow$ no action taken & $a=\varnothing$, or $a$ already flown & Cycle ends without advice \\
+G & Trained model $\rightarrow$ New advice (data) & $a\neq\varnothing$ & Advisory handed to the ATCO \\
+\addlinespace
+\multicolumn{4}{@{}l}{\textit{ATCO (internal)}}\\
+H & No advice $\rightarrow$ New advice & Advisory received & Aircraft taken up \\
+I & New advice $\rightarrow$ Begin response & Aircraft taken up & $\tau\sim D(\mu)$ drawn, or $p=1/\mu$ begun \\
+J & Begin response $\rightarrow$ Delay & Response begun & Clock running \\
+K & Delay $\rightarrow$ Delay & Advisory arrives while waiting & Instruction replaced; the clock is \emph{not} restarted \\
+L & Delay $\rightarrow$ No advice & Instruction passed on & ATCO free again \\
+R & Delay $\rightarrow$ New advice & Advisory for a \emph{different} aircraft & Instruction in hand dropped unflown; new $\tau$ \\
+\addlinespace
+\multicolumn{4}{@{}l}{\textit{ATCO $\rightarrow$ BlueSky}}\\
+M & Delay $\rightarrow$ BS executes instruction (data) & $\tau$ elapsed, or $p$ fires & Heading or speed command handed to BlueSky \\
+N & BS executes instruction $\rightarrow$ Airspace & Every simulation step & Heading and position integrated forward \\
+\addlinespace
+\multicolumn{4}{@{}l}{\textit{Traffic generation}}\\
+O & Spawn $\rightarrow$ Airspace & Arrival process fires & Aircraft enters the sector \\
+P & Airspace $\rightarrow$ Delete & Sector boundary crossed & Aircraft leaves and is removed \\
+Q & Delete $\rightarrow$ Spawn & Removal complete & Traffic density held constant \\
+\bottomrule
+\end{tabular}}
+\end{document}

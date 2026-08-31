@@ -6,7 +6,6 @@ from .config import N_ACTIONS, STEP_DURATION_S
 
 
 def new_ep_stats():
-    """The per-episode counters, all starting at zero. Comments show an end-of-episode example."""
     return {
         'reward': 0.0,         # -412.7   summed step reward
         'steps': 0,            # 1480     RL steps taken
@@ -24,7 +23,7 @@ def new_ep_stats():
         'drift_deg_sum': 0.0,  # 20450.0  summed |drift| over aircraft-steps
         'drift_samples': 0,    # 17600    aircraft-steps that contributed
         'delay_sum_s': 0.0,    # 2790.0   summed response delay actually served
-        'delay_served': 0,     # 93       advisories that reached execution
+        'delay_acted': 0,      # 93       instructions the ATCO actually acted on
         'focus_spells': 0,     # 112      times an aircraft became the focus
         'focus_spell_steps': 0,# 1480     steps summed over those spells
         'discarded': 0,        # 19       advisories replaced before they could be flown
@@ -35,10 +34,9 @@ def new_ep_stats():
 
 
 def episode_summary(stats):
-    """End-of-episode metrics, logged by the training callbacks."""
     s = stats
     flight_hours = max(s['flight_s'] / 3600.0, 1e-9)
-    served       = max(s['delay_served'], 1)
+    acted        = max(s['delay_acted'], 1)
     exits        = s['exits']
 
     # Advisories TRANSMITTED, counted in _issue_advisory rather than off the action histogram.
@@ -74,7 +72,7 @@ def episode_summary(stats):
         'ep_speed_changes_per_fh': speeds / flight_hours,
 
         # Diagnostics -- kept in the evaluation CSVs rather than TensorBoard.
-        'ep_delay_mean_s':     s['delay_sum_s'] / served,
+        'ep_delay_mean_s':     s['delay_sum_s'] / acted,
         'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
         'ep_discarded':        s['discarded'],
         # The advice already standing, selected again: charged as workload, but nothing new is assessed.
