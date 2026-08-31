@@ -39,7 +39,7 @@ from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
 
-from Environments.v4.delays import DELAY_MODES   # for the --delay choices
+from Environments.main.delays import DELAY_MODES   # for the --delay choices
 
 WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
 CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
@@ -347,7 +347,7 @@ def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', default='best_model.zip')
-    ap.add_argument('--env', default='Environments.v4',
+    ap.add_argument('--env', default='Environments.main',
                     help='env module exposing AirspaceEnv / CONFIG / latlon_to_nm')
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')

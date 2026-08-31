@@ -1,4 +1,4 @@
-# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.v4_train --delay none|deterministic|lognormal|probabilistic. The same --seed sees identical scenarios in every type.
+# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal|probabilistic. The same --seed sees identical scenarios in every type.
 
 import os
 
@@ -21,9 +21,9 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv, VecMon
 torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from Environments.v4 import AirspaceEnv, DELAY_MODES
-from Environments.v4.config import CONFIG
-from Environments.v4.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
+from Environments.main import AirspaceEnv, DELAY_MODES
+from Environments.main.config import CONFIG
+from Environments.main.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
 
 # -- Settings ------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ def delay_type_name(delay_mode, delay_mean_s):
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
           runs_root=RUNS_ROOT):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
-    run_name = f'v4_{delay_type}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
+    run_name = f'{delay_type}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
     run_dir  = os.path.join(runs_root, delay_type, run_name)
     os.makedirs(run_dir, exist_ok=True)
 

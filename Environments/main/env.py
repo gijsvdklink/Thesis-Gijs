@@ -1,4 +1,4 @@
-# v4 ATCO conflict-resolution environment: one focus aircraft per step, advisories acted on after a delay drawn per piece of advice, and an INITIAL HEADING per aircraft that every directional quantity is measured against.
+# ATCO conflict-resolution environment: one focus aircraft per step, advisories acted on after a delay drawn per piece of advice, and an INITIAL HEADING per aircraft that every directional quantity is measured against.
 
 import math
 import random

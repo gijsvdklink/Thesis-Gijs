@@ -14,7 +14,7 @@ the short version plus the tooling around it.
 CHECKS BEFORE TRAINING
 --------------------------------------------------------------------------------
 
-    python -m Environments.v4.test_delays
+    python -m Environments.main.test_delays
 
 --------------------------------------------------------------------------------
 ENVIRONMENT SETTINGS FOR THIS EXPERIMENT
@@ -38,70 +38,70 @@ TRAINING -- 20 runs, 4 conditions x 5 seeds
     # ---- none ----
 
     # terminal 1
-    python -m Training.v4_train --delay none --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay none --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 2
-    python -m Training.v4_train --delay none --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay none --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 3
-    python -m Training.v4_train --delay none --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay none --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 4
-    python -m Training.v4_train --delay none --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay none --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 5
-    python -m Training.v4_train --delay none --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay none --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # ---- lognormal ----
 
     # terminal 6
-    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay lognormal --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 7
-    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay lognormal --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 8
-    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay lognormal --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 9
-    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay lognormal --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 10
-    python -m Training.v4_train --delay lognormal --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay lognormal --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # ---- deterministic ----
 
     # terminal 11
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay deterministic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 12
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay deterministic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 13
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay deterministic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 14
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay deterministic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 15
-    python -m Training.v4_train --delay deterministic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay deterministic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # ---- probabilistic ----
 
     # terminal 16
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay probabilistic --delay-mean 30 --seed 0 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 17
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay probabilistic --delay-mean 30 --seed 1000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 18
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay probabilistic --delay-mean 30 --seed 2000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 19
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay probabilistic --delay-mean 30 --seed 3000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
 
     # terminal 20
-    python -m Training.v4_train --delay probabilistic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
+    python -m Training.train --delay probabilistic --delay-mean 30 --seed 4000 --timesteps 100000000 --n-envs 1 --save-every 500000 --runs-root Runs_saved/seed_study
     # With --n-envs 1 each run has one stream, but that is not enough on its own. The stride
     # (7919) is coprime with the pool (5,000,000), so every run walks the whole pool before
     # repeating and two runs are shifted copies of the same cycle -- they must meet eventually.
@@ -139,7 +139,7 @@ TENSORBOARD
 
     # output directories
     #   none/  lognormal_30s/  deterministic_30s/  probabilistic_30s/
-    #     v4_<condition>_seed<K>_<timestamp>/
+    #     <condition>_seed<K>_<timestamp>/
     #       final_model.zip + final_model_vecnorm.pkl   <- written when you stop
     #       last_model.zip  + last_model_vecnorm.pkl    <- every 500k steps
     #     no best_model: --eval-episodes 0 switches off the scoring rollouts,
@@ -182,8 +182,8 @@ VISUALISATION
 
     # trained policy
     python visualisation/visualise.py \
-        --model Runs_saved/seed_study/none/v4_none_seed0_*/final_model.zip \
-        --vecnorm Runs_saved/seed_study/none/v4_none_seed0_*/final_model_vecnorm.pkl \
+        --model Runs_saved/seed_study/none/none_seed0_*/final_model.zip \
+        --vecnorm Runs_saved/seed_study/none/none_seed0_*/final_model_vecnorm.pkl \
         --n_ac 15 --density 0.0001 --delay lognormal --delay-mean 45
 
     # do-nothing baseline

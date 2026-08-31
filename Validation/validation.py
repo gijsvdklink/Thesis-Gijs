@@ -17,7 +17,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Environments.v4.config import VALIDATION_SEEDS
+from Environments.main.config import VALIDATION_SEEDS
 
 # -- The experiment ------------------------------------------------------------
 
@@ -27,7 +27,7 @@ RUNS_ROOT   = os.path.join(EXPERIMENT, 'seed_study')
 RESULTS_DIR = os.path.join(EXPERIMENT, 'results')
 FIGURES_DIR = os.path.join(EXPERIMENT, 'figures')
 
-# Training condition -> the run directory Training/v4_train.py wrote it to.
+# Training condition -> the run directory Training/train.py wrote it to.
 CONDITIONS = {
     'none':          'none',
     'deterministic': 'deterministic_30s',
@@ -116,7 +116,7 @@ def pick_action(policy, observation):
 
 def make_env(delay_mean_s):
     """The test world: a mean of 0 is the undelayed one, every other level is lognormal."""
-    from Environments.v4 import AirspaceEnv
+    from Environments.main import AirspaceEnv
 
     if delay_mean_s == 0:
         return AirspaceEnv(delay_mode='none')

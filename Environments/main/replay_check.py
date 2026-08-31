@@ -4,8 +4,8 @@ The refactor is allowed to change behaviour, but only where it means to. This re
 environment does now, so that every later change is either provably invisible or a delta that can be
 named and justified.
 
-    python -m Environments.v4.replay_check --write     # capture the baseline, before touching anything
-    python -m Environments.v4.replay_check --compare   # diff the current code against it
+    python -m Environments.main.replay_check --write     # capture the baseline, before touching anything
+    python -m Environments.main.replay_check --compare   # diff the current code against it
 
 Actions come from a seeded PRNG rather than a trained policy, so no model files are needed and the
 sequence is identical on both sides of a change.

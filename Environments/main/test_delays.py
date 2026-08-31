@@ -1,4 +1,4 @@
-# Checks on the response-delay models, pure maths:  python -m Environments.v4.test_delays
+# Checks on the response-delay models, pure maths:  python -m Environments.main.test_delays
 
 import statistics
 import sys
