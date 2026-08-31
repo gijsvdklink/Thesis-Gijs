@@ -13,11 +13,15 @@ NMS_PER_MS = 1.0 / _M_PER_NM   # m/s -> NM/s
 
 
 def latlon_to_nm(center_ll, lat, lon):
-    """(lat, lon) -> (east_nm, north_nm) relative to center_ll."""
+    """(lat, lon) -> (east_nm, north_nm) relative to center_ll.
+
+    Scalars give a (2,) point, arrays of n aircraft give an (n, 2) block, which is the one
+    projection the whole environment reasons in.
+    """
     ref_lat, ref_lon = center_ll
-    east_nm  = (lon - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
-    north_nm = (lat - ref_lat) * 60.0
-    return np.array([east_nm, north_nm])
+    east  = (np.asarray(lon) - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
+    north = (np.asarray(lat) - ref_lat) * 60.0
+    return np.stack([east, north], axis=-1)
 
 
 def nm_to_latlon(center_ll, east_nm, north_nm):
@@ -42,22 +46,36 @@ def heading_to_velocity(speed, heading_deg):
 _TINY = 1e-12
 
 
+def cpa(rel_pos, rel_vel):
+    """Closest point of approach, for relative position and velocity arrays of any matching shape.
+
+    The one place this algebra is written down: the pair matrix, the one-against-many spawn test
+    and the counterfactual "if everyone flew their route" check all come through here.
+
+    Returns (dist_sq, tcpa, dcpa_sq, safe_rel_spd_sq, moving). `moving` is False where a pair has
+    too little relative motion for tcpa and dcpa to mean anything; `safe_rel_spd_sq` is the
+    relative speed squared with those entries replaced by 1.0, so dividing by it is always safe.
+    """
+    dist_sq    = np.einsum('...k,...k->...', rel_pos, rel_pos)
+    rel_spd_sq = np.einsum('...k,...k->...', rel_vel, rel_vel)
+    range_rate = np.einsum('...k,...k->...', rel_pos, rel_vel)
+
+    moving   = rel_spd_sq >= _TINY
+    safe_rel = np.where(moving, rel_spd_sq, 1.0)
+    return dist_sq, -range_rate / safe_rel, dist_sq - range_rate ** 2 / safe_rel, safe_rel, moving
+
+
 def pairwise(pos, vel):
-    """(dist_sq, range_rate, rel_spd_sq, t_los) for every pair; t_los is +inf when they never intrude."""
-    d  = pos[None, :, :] - pos[:, None, :]        # d[i, j] = pos[j] - pos[i]
-    dv = vel[None, :, :] - vel[:, None, :]
+    """(dist_sq, t_los) for every pair; t_los is +inf when they never intrude."""
+    rel_pos = pos[None, :, :] - pos[:, None, :]     # rel_pos[i, j] = pos[j] - pos[i]
+    rel_vel = vel[None, :, :] - vel[:, None, :]
 
-    dist_sq    = np.einsum('ijk,ijk->ij', d, d)
-    rel_spd_sq = np.einsum('ijk,ijk->ij', dv, dv)
-    range_rate = np.einsum('ijk,ijk->ij', d, dv)
-
-    safe_rel = np.where(rel_spd_sq < _TINY, 1.0, rel_spd_sq)
-    tcpa     = -range_rate / safe_rel
-    dcpa_sq  = np.maximum(0.0, dist_sq - range_rate ** 2 / safe_rel)
+    dist_sq, tcpa, dcpa_sq, safe_rel, moving = cpa(rel_pos, rel_vel)
+    dcpa_sq = np.maximum(0.0, dcpa_sq)              # against round-off; dcpa is never really negative
 
     sep_sq   = CONFIG['sep_nm'] ** 2
-    intrudes = (rel_spd_sq >= _TINY) & (tcpa >= 0) & (dcpa_sq < sep_sq)
+    intrudes = moving & (tcpa >= 0) & (dcpa_sq < sep_sq)
     t_los    = np.where(intrudes,
                         tcpa - np.sqrt(np.maximum(0.0, sep_sq - dcpa_sq) / safe_rel),
                         np.inf)
-    return dist_sq, range_rate, rel_spd_sq, t_los
+    return dist_sq, t_los

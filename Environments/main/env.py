@@ -21,7 +21,7 @@ from .config import (CONFIG, TRAINING_SCENARIOS, STEP_DURATION_S, OBS_DIM,
                      ACT_COST)
 from .delays import DELAY_MODES, ResponseDelay
 from .geometry import (latlon_to_nm, nm_to_latlon, point_ahead, heading_to_velocity,
-                       pairwise)
+                       cpa, pairwise)
 from .sector import make_sector_polygon, plan_entry_route
 from .stats import new_ep_stats, episode_summary
 from .traffic import start_bluesky, traffic_states
@@ -129,7 +129,7 @@ class AirspaceEnv(gym.Env):
             return np.zeros((n, n))
 
         sep, t_warn = CONFIG['sep_nm'], CONFIG['t_warn']
-        dist_sq, _, _, t_los = pairwise(pos, vel)
+        dist_sq, t_los = pairwise(pos, vel)
 
         # Kept for the observation: capped at the horizon, since an unbounded t_los would
         # dominate the VecNormalize variance. Recomputing it per pair would repeat this work.
@@ -308,7 +308,7 @@ class AirspaceEnv(gym.Env):
         """Feature blocks for the intruder slots, ego-centric to the ownship."""
         own_row = self._row_of[cs]
         sep     = CONFIG['sep_nm']
-        own_pos, own_vel = self._pos[own_row], self._vel[own_row]
+        own_pos = self._pos[own_row]
         own_hdg = self._hdg[own_row]
         sin_own = math.sin(math.radians(own_hdg))
         cos_own = math.cos(math.radians(own_hdg))
@@ -390,15 +390,16 @@ class AirspaceEnv(gym.Env):
         if len(self._pos) < 2:
             self._return_blocked = np.zeros(len(self._pos))
         else:
-            route_dist_sq, _, _, route_t_los = pairwise(self._pos, route_vel)
+            route_dist_sq, route_t_los = pairwise(self._pos, route_vel)
             blocked = ((route_dist_sq < CONFIG['sep_nm'] ** 2)
                        | (route_t_los <= CONFIG['t_warn']))
             np.fill_diagonal(blocked, False)
             self._return_blocked = blocked.any(axis=1).astype(float)
 
-    def _airborne_indices(self):
+    def _airborne_indices(self, index_of=None):
         """(callsigns, BlueSky indices) of everything airborne, in sorted callsign order, mapped in one pass."""
-        index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
+        if index_of is None:
+            index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
         flying, indices = [], []
         for cs in sorted(self._aircraft):
             idx = index_of.get(cs, -1)
@@ -413,20 +414,24 @@ class AirspaceEnv(gym.Env):
         """One RL step of simulated time, flushing the advisory queue and scanning separation at 1 s resolution."""
         self._los_seconds_this_step = 0
 
+        # Nothing is created or deleted inside this loop -- spawns happen before it and exits
+        # after -- so BlueSky's row order is fixed and the map is built once instead of five times.
+        index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
+
         for _ in range(CONFIG['action_freq']):
             self._execute_due_advisories()
             bs.sim.step()
             self._sim_time_s += CONFIG['sim_dt']
 
-            pairs = self._scan_separation()
+            pairs = self._scan_separation(index_of)
             self._los_seconds_this_step += bool(pairs)
             # Entries only: a pair already in LoS a second ago is the same event.
             self._ep_stats['los_events'] += len(pairs - self._prev_los_pairs)
             self._prev_los_pairs = pairs
 
-    def _scan_separation(self):
+    def _scan_separation(self, index_of=None):
         """Callsign pairs closer than the separation minimum at this instant, read from BlueSky directly."""
-        flying, indices = self._airborne_indices()
+        flying, indices = self._airborne_indices(index_of)
         if len(flying) < 2:
             return set()
         pos     = traffic_states(indices)[0]
@@ -474,19 +479,13 @@ class AirspaceEnv(gym.Env):
                                 float(route['sp_ll'][0]), float(route['sp_ll'][1]))
         cand_vel = np.array(heading_to_velocity(CRUISE_SPD_NMS, route['heading']))
 
-        d       = pos - cand_pos
-        dist_sq = np.einsum('ij,ij->i', d, d)
+        dist_sq, tcpa, dcpa_sq, _, moving = cpa(pos - cand_pos, vel - cand_vel)
         if (dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any():
             return False                                    # static buffer
 
-        dv         = vel - cand_vel
-        rel_spd_sq = np.einsum('ij,ij->i', dv, dv)
-        range_rate = np.einsum('ij,ij->i', d, dv)
-        safe_rel   = np.where(rel_spd_sq < 1e-12, 1.0, rel_spd_sq)
-        tcpa       = -range_rate / safe_rel
-        dcpa_sq    = dist_sq - range_rate ** 2 / safe_rel
-
-        predicted_los = ((rel_spd_sq >= 1e-12) & (tcpa >= 0) & (tcpa <= CONFIG['t_warn'])
+        # Judged on tcpa rather than t_los: a spawn is refused if the pair even closes inside
+        # the horizon, which is stricter than the urgency test the rest of the episode uses.
+        predicted_los = (moving & (tcpa >= 0) & (tcpa <= CONFIG['t_warn'])
                          & (dcpa_sq < CONFIG['sep_nm'] ** 2))
         return not bool(predicted_los.any())
 
@@ -533,19 +532,16 @@ class AirspaceEnv(gym.Env):
 
     def _exited_callsigns(self):
         """Callsigns that have left the sector, sorted because each exit draws a respawn from traffic_rng."""
-        callsigns = sorted(self._aircraft)
-        index_of  = {cs: i for i, cs in enumerate(bs.traf.id)}
-        airborne  = [(cs, index_of[cs]) for cs in callsigns if cs in index_of]
+        flying, indices = self._airborne_indices()
 
         inside_sector = {}
-        if airborne:
-            indices = np.array([idx for _, idx in airborne], dtype=int)
+        if flying:
             positions = traffic_states(indices)[0]      # NM, the frame the polygon lives in
             inside_sector = {cs: self._polygon_ready.contains(Point(p[0], p[1]))
-                             for (cs, _), p in zip(airborne, positions)}
+                             for cs, p in zip(flying, positions)}
 
         # Gone from BlueSky altogether counts as exited, hence the False default.
-        return [cs for cs in callsigns if not inside_sector.get(cs, False)]
+        return [cs for cs in sorted(self._aircraft) if not inside_sector.get(cs, False)]
 
     def _no_turn_exit_nm(self, spawn_ll, heading_deg):
         """Where this aircraft would leave if never turned: walks the initial heading out in 2 NM steps."""

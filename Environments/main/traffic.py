@@ -1,14 +1,12 @@
 # The BlueSky bridge: starting it once per process, and reading traffic into our frame.
 
-import math
-
 import numpy as np
 
 import bluesky as bs
 from bluesky.simulation import ScreenIO
 
 from .config import CONFIG
-from .geometry import NMS_PER_MS
+from .geometry import NMS_PER_MS, latlon_to_nm
 
 _started = False
 
@@ -31,13 +29,10 @@ def start_bluesky():
 def traffic_states(indices):
     """Positions (NM, east/north) and velocities (NM/s) for BlueSky indices, as (n, 2) arrays."""
     idx = np.asarray(indices, dtype=int)
-    ref_lat, ref_lon = CONFIG['center_ll']
 
-    east  = (bs.traf.lon[idx] - ref_lon) * 60.0 * math.cos(math.radians(ref_lat))
-    north = (bs.traf.lat[idx] - ref_lat) * 60.0
+    pos   = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
     speed = bs.traf.tas[idx] * NMS_PER_MS
     hdg   = np.radians(bs.traf.hdg[idx])
 
-    pos = np.stack([east, north], axis=1)
     vel = np.stack([speed * np.sin(hdg), speed * np.cos(hdg)], axis=1)
     return pos, vel
