@@ -15,7 +15,6 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv, VecMonitor,
                                               VecNormalize)
 
@@ -31,6 +30,10 @@ from Environments.v4.delays import MEAN_DELAY_S as DEFAULT_MEAN_S
 # A large budget: the BlueSky-Gym benchmark (Groot et al., SID 2024) found 2M too few for PPO to converge. Pilot at 10M first.
 TOTAL_TIMESTEPS = 50_000_000
 
+# Seed stream spacing between workers: worker r of run S uses stream S * WORKER_SEEDS + r,
+# so no two workers and no two runs share traffic. Any n_envs below this cannot collide.
+WORKER_SEEDS = 10_000
+
 # Parallel envs per delay type. Keep N_ENVS x (types running at once) at or below the physical core count.
 N_ENVS     = 2
 N_STEPS    = 4096                 # per env; rollout = 2 x 4096 = 8192 steps
@@ -39,7 +42,7 @@ BATCH_SIZE = 512                  # 8192 / 512 = 16 minibatches per epoch
 GAMMA    = 0.995
 ENT_COEF = 0.01
 
-# No evaluation during training: the reported policy is the one training ended on, scored afterwards by Validation/mc_evaluate on TEST_SEEDS. What is left is a periodic save against a crash.
+# No evaluation during training: the reported policy is the one training ended on, scored afterwards by Validation/validation.py on VALIDATION_SEEDS. What is left is a periodic save against a crash.
 SAVE_EVERY     = 500_000
 PROGRESS_EVERY = 50_000
 
@@ -153,12 +156,18 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     run_dir  = os.path.join(runs_root, delay_type, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    # delay_mode travels via env_kwargs so it reaches the workers; a CONFIG edit here would not survive the spawn.
-    env_kwargs = {'delay_mode': delay_mode, 'delay_mean_s': delay_mean_s}
+    # Everything travels through the constructor so it reaches the worker PROCESSES; a CONFIG
+    # edit here would not survive the spawn. A given --seed draws the same scenarios in every
+    # delay type, which is what makes the delay the only variable between conditions.
+    def make_worker(rank):
+        def _init():
+            return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s,
+                               seed=seed * WORKER_SEEDS + rank)
+        return _init
+
     # One environment does not need a worker process: SubprocVecEnv would pipe every step for no parallelism.
     vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
-    venv = make_vec_env(AirspaceEnv, n_envs=n_envs, vec_env_cls=vec_env_cls, seed=seed,
-                        env_kwargs=env_kwargs)
+    venv = vec_env_cls([make_worker(rank) for rank in range(n_envs)])
     env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                        clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
 

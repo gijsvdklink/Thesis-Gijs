@@ -1,13 +1,17 @@
 # -- Tunable settings ----------------------------------------------------------
 
+from bluesky.tools.aero import ft, kts, mach2tas
+
 CONFIG = {
     # Aircraft & sector
     'ac_type':               'A320',
     'ac_speed':              450.0,
     'ac_mach':               0.78,           # nominal cruise Mach
-    'ac_mach_min':           0.74,           # ATC speed-control envelope at FL350
-    'ac_mach_max':           0.82,
-    'mach_step':             0.04,           # Mach change per speed instruction (~24 kt TAS)
+    # ATC speed-control envelope at FL350. The ceiling is the A320's mmo in BlueSky's
+    # performance model: commanding above M 0.80 is silently clamped, so 0.80 IS the max.
+    'ac_mach_min':           0.76,           # 438.1 kt TAS
+    'ac_mach_max':           0.80,           # 461.1 kt TAS -- mmo, the hard ceiling
+    'mach_step':             0.02,           # Mach change per speed instruction (~11.5 kt TAS)
     'altitude':              350,
     'center_ll':             (0.0, 0.0),     # flat-earth equatorial: cos(0) = 1
     'n_aircraft':            lambda rng: rng.randint(15, 30),            # sampled per episode
@@ -37,7 +41,6 @@ CONFIG = {
     # Focus selection
     'focus_clear_steps':     5,
     'focus_emergency_u':     0.67,          # ~2 min before CPA at t_warn = 360 s
-    'drift_switch_margin':   0.02,          # margin a rival must beat the focus by, on drift's [0, 2] scale
     # Reward weights
     'w_los':                 10.00,         # heavy: separation violation
     'w_drift':               0.50,          # cosine drift penalty on [0, 2]; also scales ACT_COST
@@ -46,13 +49,10 @@ CONFIG = {
     'seed':                  0,
 }
 
-# -- Scenario seed pools: one episode is one seed, the pools never overlap, and episodes step SEED_STRIDE --
-TRAIN_SEEDS = (0, 5_000_000)
-EVAL_SEEDS  = (5_000_000, 6_000_000)
-TEST_SEEDS  = (6_000_000, 11_000_000)
+TRAINING_SCENARIOS = 1_000_000_000     # training draws a seed below this, at random
 
-# A large prime, coprime with every pool size, so the walk visits every seed before repeating.
-SEED_STRIDE = 7919
+# The held-out validation set: the same 100 scenarios for every trained model.
+VALIDATION_SEEDS = tuple(range(2_000_000_000, 2_000_000_100))
 
 # -- Derived constants ---------------------------------------------------------
 
@@ -66,7 +66,10 @@ OBS_DIM      = 7 + N_NEIGHBOURS * 5   # 7 ownship + 4 intruders x 5 = 27
 
 CRUISE_SPD_NMS = CONFIG['ac_speed'] / 3600.0        # nominal cruise speed (NM/s); spawn checks
 NMS_TO_KT      = 3600.0                             # NM/s -> kt (observation reports kt)
-KT_PER_MACH    = CONFIG['ac_speed'] / CONFIG['ac_mach']   # TAS per unit Mach at FL350 (~577 kt)
+# TAS is linear in Mach at a fixed altitude, so one constant is exact: the ISA speed of
+# sound at cruise, straight from BlueSky's atmosphere model rather than an assumed ratio.
+CRUISE_ALT_M   = CONFIG['altitude'] * 100 * ft
+KT_PER_MACH    = mach2tas(1.0, CRUISE_ALT_M) / kts
 
 # Sentinels in raw units: an empty intruder slot, and a pair that never intrudes or lies beyond the horizon.
 EMPTY_RANGE_NM = 1000.0

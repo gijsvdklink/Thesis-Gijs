@@ -115,8 +115,8 @@ def fresh_stats():
             'pending_seen': {}, 'executed': []}
 
 
-def reset_episode(env, seed):
-    obs, _ = env.reset(seed=seed)
+def reset_episode(env, scenario_seed):
+    obs, _ = env.reset(options={'scenario_seed': scenario_seed})
     poly = list(env.polygon) if env.polygon is not None else []
     rng = max(35.0, 1.1 * max((math.hypot(v[0], v[1]) for v in poly), default=60.0))
     scale = (min(CX, CY) - MARGIN) / rng
@@ -126,7 +126,8 @@ def reset_episode(env, seed):
 
 def track_advisories(env, st):
     """Mirror the env's outstanding-advisory queue into st and record executions; the delay is not reimplemented here."""
-    pending = dict(env._pending_advisory)
+    pending = {cs: ac.pending_advisory for cs, ac in env._aircraft.items()
+               if ac.pending_advisory is not None}
 
 
     for cs, advisory in st['pending_seen'].items():
@@ -269,8 +270,8 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
         pygame.draw.polygon(screen, DIM, [to_screen(v[0], v[1], scale) for v in poly], 2)
 
     urg = urgency(env)
-    init_hdg_map = getattr(env, '_initial_hdg', {})
-    for cs in env._active_callsigns:
+    init_hdg_map = {cs: ac.initial_hdg for cs, ac in env._aircraft.items()}
+    for cs in env._aircraft:
         idx = bs.traf.id2idx(cs)
         if idx < 0:
             continue

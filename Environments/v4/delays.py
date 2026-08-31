@@ -9,7 +9,6 @@ SIGMA        = 0.4    # lognormal shape; at mean 30 s, 80% of draws fall in 17-4
 
 
 class ResponseDelay:
-    """How long this type's pilots take to act; rng is injected, never the global scenario stream."""
 
     def __init__(self, mode, rng, mean_s=MEAN_DELAY_S):
         if mode not in DELAY_MODES:

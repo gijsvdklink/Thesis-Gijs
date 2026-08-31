@@ -1,4 +1,4 @@
-"""Find a seed where two aircraft actually come into conflict, listed closest-approach first, for the visualiser."""
+"""Find a SCENARIO SEED where two aircraft actually come into conflict, closest-approach first, for the visualiser."""
 
 import argparse
 import os
@@ -13,9 +13,9 @@ from Environments.v4 import AirspaceEnv, CONFIG
 HOLD = 3
 
 
-def closest_approach_nm(env, seed):
+def closest_approach_nm(env, scenario_seed):
     """Smallest distance between the two aircraft over one uninstructed episode."""
-    env.reset(seed=seed)
+    env.reset(options={'scenario_seed': scenario_seed})
     closest = float('inf')
     while True:
         _, _, _, truncated, _ = env.step(HOLD)
@@ -28,8 +28,8 @@ def closest_approach_nm(env, seed):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--seeds', type=int, default=40, help='how many seeds to try')
-    ap.add_argument('--first', type=int, default=1, help='first seed')
+    ap.add_argument('--seeds', type=int, default=40, help='how many scenarios to try')
+    ap.add_argument('--first', type=int, default=0, help='first scenario seed')
     ap.add_argument('--n_ac', type=int, default=2, help='aircraft in the sector')
     ap.add_argument('--density', type=float, default=1 / 10000, help='aircraft per km^2')
     args = ap.parse_args()

@@ -17,7 +17,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Environments.v4.config import SEED_STRIDE, TEST_SEEDS
+from Environments.v4.config import VALIDATION_SEEDS
 
 # -- The experiment ------------------------------------------------------------
 
@@ -54,10 +54,9 @@ TRAINING_SEEDS = [0, 1000, 2000, 3000, 4000]
 # Mean pilot response time at test time, always lognormally distributed. 0 is the undelayed world.
 DELAYS_S = [0, 15, 30, 45, 60, 90, 120]
 
-# The 100 evaluation episodes, written out rather than walked: reset(seed=s) maps s into the
-# held-out test pool, so every policy at every delay level flies exactly these sectors.
-EPISODES   = 100
-BASE_SEEDS = [1 + i * SEED_STRIDE for i in range(EPISODES)]
+# The held-out scenarios, named directly: every policy at every delay level flies exactly these.
+BASE_SEEDS = list(VALIDATION_SEEDS)
+EPISODES   = len(BASE_SEEDS)
 
 TERMINALS     = 21
 COMMANDS_FILE = os.path.join(os.path.dirname(__file__), 'Terminal commands.txt')
@@ -120,14 +119,13 @@ def make_env(delay_mean_s):
     from Environments.v4 import AirspaceEnv
 
     if delay_mean_s == 0:
-        return AirspaceEnv(delay_mode='none', seed_pool=TEST_SEEDS)
-    return AirspaceEnv(delay_mode='lognormal', delay_mean_s=float(delay_mean_s),
-                       seed_pool=TEST_SEEDS)
+        return AirspaceEnv(delay_mode='none')
+    return AirspaceEnv(delay_mode='lognormal', delay_mean_s=float(delay_mean_s))
 
 
-def run_episode(env, policy, base_seed):
-    """Fly the scenario belonging to one base seed and return its end-of-episode numbers."""
-    observation, _ = env.reset(seed=base_seed)
+def run_episode(env, policy, scenario_seed):
+    """Fly one named scenario and return its end-of-episode numbers."""
+    observation, _ = env.reset(options={'scenario_seed': scenario_seed})
     while True:
         observation, _, _, truncated, info = env.step(pick_action(policy, observation))
         if truncated:
