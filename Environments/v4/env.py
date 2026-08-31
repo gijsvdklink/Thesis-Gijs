@@ -70,83 +70,103 @@ class AirspaceEnv(gym.Env):
         self._reset_episode_state()
 
     def _reset_episode_state(self):
-        """Per-episode state, reset to clean defaults."""
-        self.n_aircraft           = 0
-        self.polygon              = None
-        self._polygon_shape       = None
-        self._polygon_ready       = None
-        self._slots               = []
-        self._active_callsigns    = set()
-        self._focus_cs            = None
-        self._focus_hold_steps    = 0
-        self._next_callsign_id    = 0
-        self._step_count          = 0
-        self._max_steps           = 0
-        self._pending_spawns      = {}   # slot -> steps until the slot is refilled
-        self._los_seconds_this_step = 0   # simulated seconds of this step spent in LoS
-        self._last_intruder_cs    = [None] * N_NEIGHBOURS   # callsign per obs slot (viz only)
-        self._sim_time_s          = 0.0  # simulated seconds since reset; the delay clock
+        """Per-episode state, reset to clean defaults. Comments show a mid-episode example value."""
+        self.n_aircraft           = 0       # 23
+        self.polygon              = None    # array([[41.2, -12.8], [30.5, 36.1], ...]) exterior, NM
+        self._polygon_shape       = None    # <shapely Polygon>, for bounds and geometry
+        self._polygon_ready       = None    # <shapely PreparedGeometry>, for fast contains()
+        self._slots               = []      # ['AC00', None, 'AC02', ...] one entry per slot
+        self._active_callsigns    = set()   # {'AC00', 'AC02', 'AC07'}
+        self._focus_cs            = None    # 'AC02'
+        self._focus_hold_steps    = 0       # 4
+        self._next_callsign_id    = 0       # 12, so the next aircraft is 'AC12'
+        self._step_count          = 0       # 317
+        self._max_steps           = 0       # 1480
+        self._pending_spawns      = {}      # slot -> steps until the slot is refilled: {3: 5, 7: 2}
+        self._los_seconds_this_step = 0     # simulated seconds of this step spent in LoS: 2
+        self._last_intruder_cs    = [None] * N_NEIGHBOURS   # per obs slot, viz only: ['AC05', 'AC01', None, None]
+        self._sim_time_s          = 0.0     # simulated seconds since reset; the delay clock: 1585.0
 
         # Traffic picture, gathered once per step by _refresh_traffic_view.
-        self._urgency_cs_list = []                    # row order of the arrays below
-        self._row_of          = {}                    # callsign -> row
-        self._pos             = np.zeros((0, 2))      # NM, east/north
-        self._vel             = np.zeros((0, 2))      # NM/s
-        self._hdg             = np.zeros(0)           # deg
-        self._urgency_matrix  = np.zeros((0, 0))
-        self._return_blocked  = np.zeros(0)           # 1 = cannot turn back onto route
+        self._clear_traffic_view()
 
         # -- per-aircraft state, all keyed by callsign --
-        self._initial_hdg         = {}   # heading (deg) assigned at spawn; NEVER changes
-        self._exit_ref_nm         = {}   # where it would leave the sector if never turned
-        self._commanded_heading   = {}   # last EXECUTED heading instruction
-        self._commanded_mach      = {}   # last EXECUTED speed instruction
-        self._steps_since_urgency = {}   # steps since this aircraft last had a conflict
-        self._pending_advisory    = {}   # issued, not yet executed by the pilot
-        self._spawn_nm            = {}   # where it entered (NM, east/north)
-        self._flown_nm            = {}   # track length flown so far
-        self._last_pos_nm         = {}   # position at the previous step, for that track length
+        self._initial_hdg         = {}   # heading (deg) assigned at spawn; NEVER changes: {'AC07': 84.0}
+        self._exit_ref_nm         = {}   # where it would leave if never turned: {'AC07': array([31.8, -19.4])}
+        self._commanded_heading   = {}   # last EXECUTED heading instruction: {'AC07': 129.0}
+        self._commanded_mach      = {}   # last EXECUTED speed instruction: {'AC07': 0.82}
+        self._steps_since_urgency = {}   # steps since this aircraft last had a conflict: {'AC07': 12}
+        self._pending_advisory    = {}   # issued, not yet executed by the pilot: {'AC07': {'action': 5,
+                                         #   'target_hdg': 129.0, 'issued_at_s': 480.0, 'execute_at_s': 512.0}}
+        self._spawn_nm            = {}   # where it entered (NM, east/north): {'AC07': (-38.2, 11.6)}
+        self._flown_nm            = {}   # track length flown so far: {'AC07': 62.4}
+        self._last_pos_nm         = {}   # position at the previous step: {'AC07': (-12.0, 30.9)}
 
         # Registry so _forget_aircraft clears every trace of a departed aircraft.
-        self._per_aircraft_state = [
+        self._per_aircraft_state = [     # the nine dicts above, in one list to pop a callsign from
             self._initial_hdg, self._exit_ref_nm,
             self._commanded_heading, self._commanded_mach,
             self._steps_since_urgency, self._pending_advisory,
             self._spawn_nm, self._flown_nm, self._last_pos_nm,
         ]
 
-        self._prev_los_pairs      = set()
-        self._prev_conflict_pairs = set()
-        self._ep_stats = {
-            'reward': 0.0, 'steps': 0, 'actions': [],
-            'los_seconds': 0,      # simulated seconds with at least one pair in LoS
-            'los_events': 0,       # distinct intrusions (entries, scanned every second)
-            'conflicts': 0,        # distinct predicted intrusions within t_warn (entries, per step)
-            'flight_s': 0.0,       # airborne time flown by all aircraft
-            'exits': 0,            # aircraft that left having actually flown
-            'on_route': 0,         # ...of which left within the heading tolerance
-            'deviation_nm': 0.0,   # ...summed distance from the no-turn exit point
-            'flown_nm': 0.0,       # ...summed track length actually flown
-            'route_nm': 0.0,       # ...summed straight-line length of the route they were given
-            # Drift summed over aircraft and steps; divided by aircraft-steps for a mean angle.
-            'drift_deg_sum': 0.0, 'drift_samples': 0,
-            'delay_sum_s': 0.0, 'delay_served': 0,
-            'focus_spells': 0, 'focus_spell_steps': 0,
-            'discarded': 0,        # advisories replaced before they could be flown
-            'repeats': 0,          # the same advice re-selected while it was still standing
-            'turns': 0, 'speeds': 0,   # advisories actually transmitted, by kind
-        }
+        self._prev_los_pairs      = set()   # pairs in LoS a second ago: {('AC02', 'AC05')}
+        self._prev_conflict_pairs = set()   # predicted pairs last step: {('AC02', 'AC05'), ('AC01', 'AC09')}
+        self._ep_stats            = self._new_ep_stats()
 
     # -- Gym interface ---------------------------------------------------------
 
-    def _new_episode_generators(self):
-        """Draw this episode's scenario seed from this environment's pool, then three independent streams from it."""
+    def _next_episode_seed(self):
         low, high = self.seed_pool
-        self.episode_seed = low + (self._seed_base
-                                   + self._episode_index * SEED_STRIDE) % (high - low)
+        pool_size = high - low
+        offset    = self._seed_base + self._episode_index * SEED_STRIDE
         self._episode_index += 1
+        return low + (offset % pool_size)
 
-        # Three streams off one seed, so a delay draw never shifts a scenario decision.
+    def _clear_traffic_view(self):
+        """Empty traffic picture: nothing airborne, nothing for downstream code to read.
+
+        Comments show an example with three aircraft airborne; every array is in row order.
+        """
+        self._urgency_cs_list = []                    # ['AC00', 'AC02', 'AC07']
+        self._row_of          = {}                    # {'AC00': 0, 'AC02': 1, 'AC07': 2}
+        self._pos             = np.zeros((0, 2))      # NM, east/north: array([[12.4, -8.1], [-3.7, 22.0], ...])
+        self._vel             = np.zeros((0, 2))      # NM/s: array([[0.124, 0.013], [-0.068, -0.104], ...])
+        self._hdg             = np.zeros(0)           # deg: array([84.0, 213.5, 129.0])
+        self._urgency_matrix  = np.zeros((0, 0))      # array([[0., 0.4, 0.], [0.4, 0., 0.], [0., 0., 0.]])
+        self._return_blocked  = np.zeros(0)           # 1 = cannot turn back onto route: array([0., 1., 0.])
+
+    def _new_ep_stats(self):
+        """The per-episode counters, all starting at zero. Comments show an end-of-episode example."""
+        return {
+            'reward': 0.0,         # -412.7   summed step reward
+            'steps': 0,            # 1480     RL steps taken
+            'actions': [],         # [3, 3, 5, 7, ...]  one action index per step
+            'los_seconds': 0,      # 14       simulated seconds with at least one pair in LoS
+            'los_events': 0,       # 3        distinct intrusions (entries, scanned every second)
+            'conflicts': 0,        # 47       distinct predicted intrusions within t_warn (entries, per step)
+            'flight_s': 0.0,       # 61200.0  airborne time flown by all aircraft
+            'exits': 0,            # 21       aircraft that left having actually flown
+            'on_route': 0,         # 18       ...of which left within the heading tolerance
+            'deviation_nm': 0.0,   # 96.3     ...summed distance from the no-turn exit point
+            'flown_nm': 0.0,       # 1742.5   ...summed track length actually flown
+            'route_nm': 0.0,       # 1698.0   ...summed straight-line length of the route they were given
+            # Drift summed over aircraft and steps; divided by aircraft-steps for a mean angle.
+            'drift_deg_sum': 0.0,  # 20450.0  summed |drift| over aircraft-steps
+            'drift_samples': 0,    # 17600    aircraft-steps that contributed
+            'delay_sum_s': 0.0,    # 2790.0   summed response delay actually served
+            'delay_served': 0,     # 93       advisories that reached execution
+            'focus_spells': 0,     # 112      times an aircraft became the focus
+            'focus_spell_steps': 0,# 1480     steps summed over those spells
+            'discarded': 0,        # 19       advisories replaced before they could be flown
+            'repeats': 0,          # 240      the same advice re-selected while it was still standing
+            'turns': 0,            # 74       turn advisories actually transmitted
+            'speeds': 0,           # 38       speed advisories actually transmitted
+        }
+
+    def _new_episode_generators(self):
+        """Three independent streams off this episode's seed, so a delay draw never shifts a scenario decision."""
+        self.episode_seed   = self._next_episode_seed()
         self.scenario_rng   = Random(self.episode_seed)
         self.traffic_rng    = Random(self.episode_seed + 1)
         self.delay_rng      = np.random.default_rng(self.episode_seed + 2)
@@ -240,15 +260,13 @@ class AirspaceEnv(gym.Env):
     def _refresh_traffic_view(self):
         """Gather the whole traffic picture once per step; everything downstream reads these arrays."""
         flying, indices = self._airborne_indices()
-        self._urgency_cs_list = flying
-        self._row_of          = {cs: i for i, cs in enumerate(flying)}
-
         if not flying:
-            self._pos = self._vel = np.zeros((0, 2))
-            self._hdg = self._return_blocked = np.zeros(0)
-            self._urgency_matrix = np.zeros((0, 0))
+            self._clear_traffic_view()
             self._prev_conflict_pairs = set()
             return
+
+        self._urgency_cs_list = flying
+        self._row_of          = {cs: i for i, cs in enumerate(flying)}
 
         self._pos, self._vel = traffic_states(indices)
         self._hdg            = bs.traf.hdg[np.asarray(indices, dtype=int)]
