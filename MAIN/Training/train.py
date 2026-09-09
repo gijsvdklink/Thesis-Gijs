@@ -27,6 +27,12 @@ from Environment.config import TRAINING_SEEDS
 # 300k steps, so the slope reacts within a few rollouts without chasing single-episode noise.
 TREND_WINDOW = 200
 
+# Episodes averaged behind every logged KPI. A rollout is only ~3 episodes, and each episode is
+# a different airspace -- aircraft count, density and geometry are all redrawn -- so a per-rollout
+# mean is dominated by which scenarios happened to come up. R_los alone carries about 78% of the
+# episode-to-episode spread. 100 matches SB3's own window for rollout/ep_rew_mean.
+STATS_WINDOW = 100
+
 # -- Settings ------------------------------------------------------------------
 
 # An upper bound rather than a target: training runs until the reward curve has settled and is
@@ -104,14 +110,19 @@ class LogEpisodes(BaseCallback):
 
     def __init__(self):
         super().__init__()
-        self.recent = deque(maxlen=TREND_WINDOW)      # (timestep, episode reward)
+        self.recent  = deque(maxlen=TREND_WINDOW)     # (timestep, episode reward)
+        self.windows = {key: deque(maxlen=STATS_WINDOW) for key, _ in METRICS}
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
             if 'ep_reward_total' not in info:
                 continue
+            # Every KPI is the mean over the last STATS_WINDOW episodes, not over the handful
+            # in this rollout, so the curves show the policy rather than the luck of the draw.
             for key, tag in METRICS:
-                self.logger.record_mean(tag, info[key])
+                window = self.windows[key]
+                window.append(info[key])
+                self.logger.record(tag, sum(window) / len(window))
 
             # Is the reward still climbing? Least-squares slope over the recent episodes, per
             # million steps, so it reads as "reward gained per 1M steps". Once it sits at zero

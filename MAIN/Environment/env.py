@@ -100,7 +100,7 @@ class AirspaceEnv(gym.Env):
             self._issue_advisory(acting_cs, action)
 
         # Separation is scanned every simulated second, so brief intrusions between steps are seen.
-        self._advance_simulation()
+        self._advance_simulation(acting_cs)
         self._step_count += 1
 
         self._remove_exited_aircraft()
@@ -341,10 +341,10 @@ class AirspaceEnv(gym.Env):
         # charged five times a one-second one. R_los is therefore -los_seconds, in [-5, 0].
         r_los = -CONFIG['w_los'] * self._los_seconds_this_step
 
-        r_drift = 0.0
-        if acting_cs and acting_cs in self._aircraft and acting_cs in self._row_of:
-            r_drift = -CONFIG['w_drift'] * heading_drift(
-                self._aircraft[acting_cs].initial_hdg, self._hdg[self._row_of[acting_cs]])
+        # Averaged over the simulated seconds of the step, so w_drift keeps its meaning as the
+        # cost of a full step spent at that heading offset: one 30-degree turn still equals
+        # about 37 s of drifting at 30 degrees.
+        r_drift = -CONFIG['w_drift'] * self._drift_sum_this_step / CONFIG['action_freq']
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
         return float(r_los + r_drift + r_work)
@@ -388,8 +388,9 @@ class AirspaceEnv(gym.Env):
 
     # -- Simulation: advancing BlueSky and scanning separation -------------------
 
-    def _advance_simulation(self):
+    def _advance_simulation(self, acting_cs):
         self._los_seconds_this_step = 0
+        self._drift_sum_this_step   = 0.0
 
         # Nothing is created or deleted inside this loop -- spawns happen before it and exits
         # after -- so BlueSky's row order is fixed and the map is built once instead of five times.
@@ -399,6 +400,15 @@ class AirspaceEnv(gym.Env):
             self._execute_due_advisories()
             bs.sim.step()
             self._sim_time_s += CONFIG['sim_dt']
+
+            # The drift of the advised aircraft is read every simulated second, like the LoS
+            # scan, rather than sampled once at the end of the step. A second in which it has
+            # already left the sector contributes nothing.
+            if acting_cs is not None:
+                row = index_of.get(acting_cs)
+                if row is not None and acting_cs in self._aircraft:
+                    self._drift_sum_this_step += heading_drift(
+                        self._aircraft[acting_cs].initial_hdg, float(bs.traf.hdg[row]))
 
             pairs = self._scan_separation(index_of)
             self._los_seconds_this_step += bool(pairs)
@@ -547,6 +557,10 @@ class AirspaceEnv(gym.Env):
 
         # One Aircraft record per live aircraft; the keys ARE the active callsigns.
         self._aircraft = {}   # {'AC07': Aircraft(initial_hdg=84.0, commanded_hdg=129.0, ...)}
+
+        # Per-step accumulators, both filled one simulated second at a time in _advance_simulation.
+        self._los_seconds_this_step = 0     # 3, out of action_freq
+        self._drift_sum_this_step   = 0.0   # summed heading_drift of the advised aircraft
 
         self._prev_los_pairs      = set()   # pairs in LoS a second ago: {('AC02', 'AC05')}
         self._prev_conflict_pairs = set()   # predicted pairs last step: {('AC02', 'AC05'), ('AC01', 'AC09')}
