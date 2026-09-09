@@ -7,7 +7,7 @@ __pycache__/
 
 # Training output: TensorBoard event files and model checkpoints, written
 # continuously during a run. Regenerate by training, not by cloning.
-MAIN/Models/
+Models/
 
 # macOS
 .DS_Store
@@ -25,5 +25,5 @@ assignments/sandbox/
 OLD/
 
 # Evaluation output: per-episode CSVs and the figures built from them
-MAIN/Validation/results/
-MAIN/Validation/figures/
+Results/
+Figures/

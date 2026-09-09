@@ -59,4 +59,4 @@ python -m Training.train --delay geometric --delay-mean 30 --seed 4 --timesteps 
 python -m Training.train --delay geometric --delay-mean 30 --seed 5 --timesteps 300000000
 
 # tensorboard
-python -m tensorboard.main --logdir Models --port 6016
+python -m tensorboard.main --logdir ../Models --port 6016

@@ -10,7 +10,6 @@ import argparse
 import sys
 import time
 from collections import deque
-from datetime import datetime
 
 import torch
 from stable_baselines3 import PPO
@@ -188,10 +187,15 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT):
+          runs_root=RUNS_ROOT, overwrite=False):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
-    run_name = f'{delay_type}_seed{seed}_{datetime.now():%Y%m%d_%H%M%S}'
-    run_dir  = os.path.join(runs_root, delay_type, run_name)
+    # One directory per (delay type, seed), with no timestamp. A timestamp meant every restart
+    # left another copy behind, TensorBoard drew each seed twice, and validation.find_model
+    # could no longer tell which run it was meant to score.
+    run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
+    if os.path.exists(run_dir) and not overwrite:
+        sys.exit(f'{run_dir} already exists. Delete it, move it aside, or pass --overwrite '
+                 f'to train over it.')
     os.makedirs(run_dir, exist_ok=True)
 
     # Everything travels through the constructor so it reaches the worker PROCESSES; a CONFIG
@@ -240,6 +244,8 @@ def main():
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY,
                         help=f'steps between last_model checkpoints '
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')
+    parser.add_argument('--overwrite', action='store_true',
+                        help='train into an existing run directory instead of refusing')
     parser.add_argument('--runs-root', default=RUNS_ROOT,
                         help='where the run directory is created, so a new set of models '
                              'can sit beside an old one (default Runs_saved/experiments)')
@@ -253,7 +259,7 @@ def main():
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          args.save_every, args.delay_mean, args.runs_root)
+          args.save_every, args.delay_mean, args.runs_root, args.overwrite)
 
 
 if __name__ == '__main__':

@@ -23,10 +23,11 @@ from Environment.config import TRAINING_SEEDS, VALIDATION_SEEDS
 
 # -- The experiment ------------------------------------------------------------
 
-ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# Output lives OUTSIDE MAIN, beside it: MAIN is replaced wholesale on deployment, output is not.
+ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 RUNS_ROOT   = os.path.join(ROOT, 'Models')          # where Training/train.py writes
-RESULTS_DIR = os.path.join(ROOT, 'Validation', 'results')
-FIGURES_DIR = os.path.join(ROOT, 'Validation', 'figures')
+RESULTS_DIR = os.path.join(ROOT, 'Results')
+FIGURES_DIR = os.path.join(ROOT, 'Figures')
 
 # Training condition -> the run directory Training/train.py wrote it to.
 CONDITIONS = {
@@ -76,13 +77,14 @@ HOLD = 3
 
 def find_model(condition, run_seed):
     """The policy for one training run: the one training ended on, else the last checkpoint."""
-    run_dir = os.path.join(RUNS_ROOT, CONDITIONS[condition], f'*seed{run_seed}_*')
+    # An exact path, not a glob: Training/train.py writes exactly one directory per
+    # (delay type, seed), so there is nothing to disambiguate.
+    folder  = CONDITIONS[condition]
+    run_dir = os.path.join(RUNS_ROOT, folder, f'{folder}_seed{run_seed}')
     for name in ('final_model.zip', 'last_model.zip'):
-        matches = sorted(glob.glob(os.path.join(run_dir, name)))
-        if len(matches) > 1:
-            sys.exit(f'{len(matches)} models match {os.path.join(run_dir, name)}; expected one')
-        if matches:
-            return matches[0]
+        path = os.path.join(run_dir, name)
+        if os.path.exists(path):
+            return path
     sys.exit(f'no model for {condition} seed {run_seed}: {os.path.join(run_dir, "final_model.zip")}')
 
 
