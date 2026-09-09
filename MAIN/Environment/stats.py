@@ -1,8 +1,20 @@
 # Episode metrics: the counters accumulated during an episode, and the figures derived from them.
+#
+# The reported set is Table 2.4 of the report -- safety, route efficiency, instruction load and
+# reward -- broken down by the specific heading and speed advisory issued, so that a change of
+# resolution strategy is visible and not only a change of instruction count. Everything reported
+# per flight hour is normalised by traffic, so scenarios of different size stay comparable.
 
-import numpy as np
+from .config import N_ACTIONS, TURN_DELTAS, SPEED_ACTIONS, RETURN_TO_ROUTE_ACTION
 
-from .config import N_ACTIONS, STEP_DURATION_S
+# Advisory index -> the column it is reported in, read off the action layout rather than
+# restated here. Hold is absent: it transmits nothing, so there is nothing to count.
+ADVISORY_LABELS = {}
+for _index, _delta in TURN_DELTAS.items():
+    ADVISORY_LABELS[_index] = f'turn_{"p" if _delta > 0 else "m"}{abs(_delta)}'
+ADVISORY_LABELS[RETURN_TO_ROUTE_ACTION] = 'return'
+for _index, _sign in SPEED_ACTIONS.items():
+    ADVISORY_LABELS[_index] = 'speed_up' if _sign > 0 else 'speed_down'
 
 
 def new_ep_stats():
@@ -30,6 +42,8 @@ def new_ep_stats():
         'repeats': 0,          # 240      the same advice re-selected while it was still standing
         'turns': 0,            # 74       turn advisories actually transmitted
         'speeds': 0,           # 38       speed advisories actually transmitted
+        # Transmitted advisories per action index, so turns and speeds can be read one by one.
+        'transmitted': [0] * N_ACTIONS,
     }
 
 
@@ -42,39 +56,38 @@ def episode_summary(stats):
     # Advisories TRANSMITTED, counted in _issue_advisory rather than off the action histogram.
     turns, speeds = s['turns'], s['speeds']
 
-    return {
-        'mean_episode_reward': s['reward'] / max(s['steps'], 1),
-        'ep_reward_total':     s['reward'],
-        'ep_length':           s['steps'],
-        'ep_los_seconds':      s['los_seconds'],
-        'ep_los_fraction':     s['los_seconds'] / max(s['steps'] * STEP_DURATION_S, 1),
-        'ep_los_events':       s['los_events'],
-        'action_distribution': np.bincount(s['actions'], minlength=N_ACTIONS).tolist(),
-
-        # Traffic-normalised safety: raw LoS counts are not comparable between episodes.
-        'ep_flight_hours':      s['flight_s'] / 3600.0,
+    summary = {
+        # LoS and conflicts.
         'ep_los_events_per_fh': s['los_events'] / flight_hours,
-        'ep_conflicts':         s['conflicts'],
         'ep_conflicts_per_fh':  s['conflicts'] / flight_hours,
 
-        # Route keeping over every exit: arrival within arrival_hdg_tol_deg, deviation from the no-turn exit.
-        'ep_exit_deviation_nm': s['deviation_nm'] / exits if exits else 0.0,
-        # Track flown over the straight route: 1.0 is a perfectly direct crossing.
+        # Route efficiency: track flown over the straight route, and the share of aircraft that
+        # left within the on-route heading tolerance of the heading they entered on.
         'ep_path_ratio':        s['flown_nm'] / s['route_nm'] if s['route_nm'] else 1.0,
-        'ep_arrival_rate':      s['on_route'] / exits if exits else 1.0,
-        'ep_exits':             exits,
+        'ep_on_route_rate':     s['on_route'] / exits if exits else 1.0,
 
-        # Drift from assigned headings and the calls it took; the per-flight-hour rates are the comparable ones.
-        'ep_mean_drift_deg':      s['drift_deg_sum'] / max(s['drift_samples'], 1),
-        'ep_turns':               turns,
-        'ep_speed_changes':       speeds,
-        'ep_turns_per_fh':        turns / flight_hours,
+        # Instruction load, by kind and in total.
+        'ep_turns_per_fh':         turns / flight_hours,
         'ep_speed_changes_per_fh': speeds / flight_hours,
+        'ep_advisories_per_fh':    (turns + speeds) / flight_hours,
 
-        # Diagnostics -- kept in the evaluation CSVs rather than TensorBoard.
-        'ep_delay_mean_s':     s['delay_sum_s'] / acted,
-        'ep_focus_hold_steps': s['focus_spell_steps'] / max(s['focus_spells'], 1),
-        'ep_discarded':        s['discarded'],
-        # The advice already standing, selected again: charged as workload, but nothing new is assessed.
-        'ep_repeats':          s['repeats'],
+        # Reward.
+        'ep_reward_total': s['reward'],
+
+        # Bookkeeping: the denominator behind every rate above, and the episode length.
+        'ep_flight_hours': s['flight_s'] / 3600.0,
+        'ep_length':       s['steps'],
+
+        # Diagnostics on the delay pipeline itself. Kept because they are the only signal that
+        # would show instructions being revised faster than the ATCO can act on them: a mean
+        # response far above the nominal delay, or a discard count near the advisory count.
+        'ep_delay_mean_s': s['delay_sum_s'] / acted,
+        'ep_discarded':    s['discarded'],
+        'ep_repeats':      s['repeats'],
     }
+
+    # The specific advisory issued, per flight hour: which turn, and which way the speed went.
+    for index, label in ADVISORY_LABELS.items():
+        summary[f'ep_{label}_per_fh'] = s['transmitted'][index] / flight_hours
+
+    return summary

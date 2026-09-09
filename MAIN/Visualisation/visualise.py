@@ -5,7 +5,7 @@ from collections import deque
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-# Repo root too, so Environments.* resolves however the script is launched.
+# Repo root too, so Environment.* resolves however the script is launched.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # -- NumPy unpickle shim so SB3 checkpoints load across numpy versions ------------
@@ -39,7 +39,7 @@ from pygame import gfxdraw
 import bluesky as bs
 from stable_baselines3 import PPO
 
-from Environments.main.atco import DELAY_MODES   # for the --delay choices
+from Environment.atco import DELAY_MODES   # for the --delay choices
 
 WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
 CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
@@ -143,7 +143,7 @@ def track_advisories(env, st):
 
 def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_once=False):
     """Advance one RL step and update stats in place; fixed_seq overrides the model, and model=None is HOLD-only."""
-    acting_cs = env.cr_tool.focus_cs
+    acting_cs = env.focus_cs
     if fixed_seq:
         n = st['step_n']
         a = 3 if (seq_once and n >= len(fixed_seq)) else fixed_seq[n % len(fixed_seq)]
@@ -169,7 +169,7 @@ def to_screen(x_nm, y_nm, scale):
 
 
 def urgency(env):
-    U, cs_list = env.cr_tool.urgency, env._urgency_cs_list
+    U, cs_list = env.urgency, env._urgency_cs_list
     row_max = U.max(axis=1) if U.size else np.zeros(0)
     return {cs: float(row_max[i]) for i, cs in enumerate(cs_list)} if U.size else {}
 
@@ -228,9 +228,9 @@ def draw_delay_panel(screen, fonts, env, st, x, y):
     now = env._sim_time_s
     screen.blit(font_hud.render(f'PILOT RESPONSE   t = {now:6.0f} s', True, GREEN), (x, y))
     y += 26
-    mode   = env.atco.mode
-    mean_s = env.atco.mean_s
-    screen.blit(font.render(f'delay model: {mode}  mean {mean_s:g}s', True, DIM),
+    delay_type = env.atco.delay_type
+    mean_s     = env.atco.mean_s
+    screen.blit(font.render(f'delay model: {delay_type}  mean {mean_s:g}s', True, DIM),
                 (x, y)); y += 22
 
     if st['pending_seen']:
@@ -289,7 +289,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
                         (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
         # 2.5 NM protected-zone ring (two overlapping == LoS); the ownship ring is blue.
-        aa_ring(screen, px, py, prot_px, BLUE if cs == env.cr_tool.focus_cs else col)
+        aa_ring(screen, px, py, prot_px, BLUE if cs == env.focus_cs else col)
 
         h = math.radians(hdg_deg)                          # current-heading leader
         lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale
@@ -321,7 +321,7 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
 
     draw_delay_panel(screen, fonts, env, st, 14, 120)
 
-    draw_obs_panel(screen, font, font_hud, obs, env.cr_tool.focus_cs,
+    draw_obs_panel(screen, font, font_hud, obs, env.focus_cs,
                    getattr(env, '_last_intruder_cs', []))
 
 
@@ -346,7 +346,7 @@ def record_mp4(path, screen, fonts, env, model, obs, poly, scale, prot_px,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', default='best_model.zip')
-    ap.add_argument('--env', default='Environments.main',
+    ap.add_argument('--env', default='Environment',
                     help='env module exposing AirspaceEnv / CONFIG / latlon_to_nm')
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--n_ac', type=int, default=14, help='aircraft count')

@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Environments.main import AirspaceEnv, CONFIG
+from Environment import AirspaceEnv, CONFIG
 
 HOLD = 3
 

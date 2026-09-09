@@ -1,5 +1,7 @@
 # -- Tunable settings ----------------------------------------------------------
 
+from random import Random as _Random
+
 from bluesky.tools.aero import ft, kts, mach2tas
 
 CONFIG = {
@@ -17,8 +19,8 @@ CONFIG = {
     'n_aircraft':            lambda rng: rng.randint(15, 30),            # sampled per episode
     'rho':                   lambda rng: rng.uniform(1/20000, 1/10000),  # sampled per episode; area = n/rho
     'sep_nm':                5.0,
-    # Arrival is a METRIC ONLY: exits within this many degrees of the initial heading count as arrived.
-    'arrival_hdg_tol_deg':   5.0,
+    # A METRIC ONLY: an aircraft leaving within this many degrees of its entry heading left ON ROUTE.
+    'on_route_hdg_tol_deg':  5.0,
     'buffer_nm':             10.0,           # spawn buffer: min distance to traffic = sep_nm + buffer_nm
     # Sector polygon -- varied but reasonably round (random convex shapes, circularity >= 0.7)
     'n_vertices':            lambda rng: rng.randint(6, 12),
@@ -32,9 +34,15 @@ CONFIG = {
     'action_freq':           5,             # RL step = 5 s simulated (action_freq x sim_dt)
     # THE conflict horizon, in seconds (360 = 6 min).
     't_warn':                360.0,
-    'crossings_per_episode': 2.0,
-    # Action-response delay: the timing law lives in delays.py, and the type is set per instance.
-    'delay_mode':            'none',        # default delay type; see delays.DELAY_MODES
+    # An episode ends once this many aircraft per slot have left the sector.
+    'exits_per_episode':     4.0,
+    # Safety cap in sector traversals, in case traffic stops leaving at all.
+    'max_crossings':         8.0,
+    # ATCO behaviour: the response-delay law lives in atco.py, and the type is set per instance.
+    'delay_mode':            'none',        # default delay type; see atco.DELAY_MODES
+    'delay_mean_s':          30.0,          # mean time for the controller to act, in seconds
+    'delay_sigma':           0.4,           # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
+    'revision_kappa':        0.7,           # kappa: a revision is taken up in this fraction of a full response time
     # Observation
     'n_neighbours':          4,
     # Focus selection
@@ -48,10 +56,24 @@ CONFIG = {
     'seed':                  0,
 }
 
-TRAINING_SCENARIOS = 1_000_000_000     # training draws a seed below this, at random
+# -- The six seeds of the whole experiment -------------------------------------
+#
+# Seeds 1-5 are the five training runs. Every delay type is trained at all five, so models in
+# the same column start from identical network weights and fly identical scenarios, and the
+# delay is the only thing that differs between them. Seed 6 names the held-out test set.
+# There is nothing else: no multipliers, no offsets, no reserved bands.
 
-# The held-out validation set: the same 100 scenarios for every trained model.
-VALIDATION_SEEDS = tuple(range(2_000_000_000, 2_000_000_100))
+TRAINING_SEEDS  = (1, 2, 3, 4, 5)
+VALIDATION_SEED = 6
+
+VALIDATION_EPISODES = 100
+TRAINING_SCENARIOS  = 1_000_000_000    # training draws a scenario seed below this, at random
+
+# The 100 held-out scenarios, drawn once from seed 6. Training skips any scenario in this set
+# (see AirspaceEnv._new_episode_rngs), so no model can ever have met one, however long it runs.
+VALIDATION_SEEDS = tuple(_Random(VALIDATION_SEED).sample(range(TRAINING_SCENARIOS),
+                                                         VALIDATION_EPISODES))
+HELD_OUT = frozenset(VALIDATION_SEEDS)
 
 # -- Derived constants ---------------------------------------------------------
 

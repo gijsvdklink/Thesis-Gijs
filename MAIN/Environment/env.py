@@ -14,14 +14,15 @@ import bluesky as bs
 from bluesky.stack.stackbase import Stack as _BsStack
 from bluesky.tools.misc import degto180
 
-from .config import (CONFIG, TRAINING_SCENARIOS, STEP_DURATION_S, OBS_DIM,
+from .config import (CONFIG, TRAINING_SCENARIOS, HELD_OUT, STEP_DURATION_S, OBS_DIM,
                      N_ACTIONS, N_NEIGHBOURS,
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, CRUISE_ALT_M,
                      EMPTY_RANGE_NM, NO_CONFLICT_S,
-                     HOLD_ACTION, ACT_COST)
+                     HOLD_ACTION, ACT_COST, TURN_DELTAS, SPEED_ACTIONS,
+                     RETURN_TO_ROUTE_ACTION)
 from .atco import DELAY_MODES, ATCO
-from .cr_tool import CRTool, heading_drift
-from .geometry import (latlon_to_nm, nm_to_latlon, heading_to_velocity, cpa, pairwise)
+from .geometry import (latlon_to_nm, nm_to_latlon, heading_to_velocity, cpa, pairwise,
+                       time_to_los, heading_drift, urgency_matrix, ON_ROUTE_DRIFT)
 from .sector import make_sector_polygon, plan_entry_route, exit_point
 from .stats import new_ep_stats, episode_summary
 from .traffic import start_bluesky, traffic_states
@@ -33,14 +34,14 @@ from .traffic import start_bluesky, traffic_states
 class Aircraft:
 
     def __init__(self, initial_hdg, no_turn_exit_nm, spawn_pos_nm, prev_pos_nm,
-                 commanded_hdg, commanded_mach, steps_since_attention):
+                 commanded_hdg, commanded_mach, steps_since_conflict):
         self.initial_hdg         = initial_hdg          # heading (deg) at spawn; NEVER changes: 84.0
         self.no_turn_exit_nm     = no_turn_exit_nm      # where it would leave if never turned: array([31.8, -19.4])
         self.spawn_pos_nm        = spawn_pos_nm         # where it entered (NM, east/north): (-38.2, 11.6)
         self.prev_pos_nm         = prev_pos_nm          # position at the previous step: (-12.0, 30.9)
         self.commanded_hdg       = commanded_hdg        # last EXECUTED heading instruction: 129.0
         self.commanded_mach      = commanded_mach       # last EXECUTED speed instruction: 0.82
-        self.steps_since_attention = steps_since_attention  # steps since it last needed attention: 12
+        self.steps_since_conflict = steps_since_conflict  # steps since it was last in conflict: 12
         self.flown_nm            = 0.0                  # track length flown so far: 62.4
 
 
@@ -94,7 +95,7 @@ class AirspaceEnv(gym.Env):
         self._spawn_due_aircraft()
 
         # The aircraft that HELD the focus when this action was chosen; the reward is charged to it.
-        acting_cs = self.cr_tool.focus_cs
+        acting_cs = self.focus_cs
         if acting_cs:
             self._issue_advisory(acting_cs, action)
 
@@ -108,64 +109,134 @@ class AirspaceEnv(gym.Env):
         reward         = self._compute_reward(acting_cs, action)
         self._record_step_stats(action, reward)
 
-        truncated = self._step_count >= self._max_steps
+        truncated = (self._ep_stats['exits'] >= self._max_exits
+                     or self._step_count >= self._max_steps)
         info = {'los_seconds': self._los_seconds_this_step,
-                'focus_cs': self.cr_tool.focus_cs, 'n_aircraft': self.n_aircraft}
+                'focus_cs': self.focus_cs, 'n_aircraft': self.n_aircraft}
         if truncated:
             info.update(episode_summary(self._ep_stats))
         return self._build_observation(), reward, False, truncated, info
 
+    # -- Focus selection: which single aircraft is advised this step -------------
+
+    def _drift(self, cs):
+        # How far this aircraft has strayed from the heading it entered on.
+        return heading_drift(self._aircraft[cs].initial_hdg, self._hdg[self._row_of[cs]])
+
     def _select_focus(self):
-        _, closed = self.cr_tool.select_focus(self._urgency_cs_list, self._row_of,
-                                              self._aircraft, self._hdg)
-        if closed is not None:
-            self._ep_stats['focus_spells']      += 1
-            self._ep_stats['focus_spell_steps'] += closed
+        # Pick the aircraft to advise, and close the spell just ended so it can be recorded.
+        flying = self._urgency_cs_list
+        if not flying:
+            return
+
+        worst        = self.urgency.max(axis=1)    # each aircraft's most urgent conflict
+        any_conflict = bool((worst > 0).any())
+
+        # Steps since each aircraft was last in conflict; the conflict hold counts on this.
+        for i, cs in enumerate(flying):
+            ac = self._aircraft[cs]
+            ac.steps_since_conflict = 0 if worst[i] > 0 else ac.steps_since_conflict + 1
+
+        # The incumbent is held until it has been clear of conflict for focus_clear_steps, so it
+        # is not dropped the instant a pair separates. An urgent conflict anywhere overrides the
+        # hold at once; below that threshold the ranking is left alone.
+        incumbent     = self.focus_cs
+        most_drifting = max(flying, key=self._drift)
+        keep = (incumbent in self._row_of
+                and self._aircraft[incumbent].steps_since_conflict < CONFIG['focus_clear_steps']
+                and worst.max() < CONFIG['focus_emergency_u'])
+
+        if keep:
+            best_cs = incumbent
+        elif any_conflict:
+            # The urgency is symmetric, so both aircraft of the worst pair share the same row
+            # maximum. The row sum breaks the tie: the one also caught up in OTHER conflicts is
+            # the one worth advising. Without this the tie would fall to BlueSky's row order.
+            best_cs = max(flying, key=lambda cs: (worst[self._row_of[cs]],
+                                                  self.urgency[self._row_of[cs]].sum()))
+        elif self._drift(most_drifting) > ON_ROUTE_DRIFT:
+            best_cs = most_drifting
+        else:
+            # Quiet sector: nothing in conflict and everyone on route. Someone still has to be
+            # advised, so the incumbent stays until something happens.
+            best_cs = incumbent if incumbent in self._row_of else flying[0]
+
+        if best_cs != incumbent:
+            if incumbent is not None:
+                self._ep_stats['focus_spells']      += 1
+                self._ep_stats['focus_spell_steps'] += self.hold_steps + 1
+            self.hold_steps = 0
+        else:
+            self.hold_steps += 1
+
+        self.focus_cs = best_cs
 
     # -- Advisories: issued now, executed after the ATCO's response delay --------
+
+    def _build_advisory(self, action_idx, ac):
+        # One action from the policy -> what the ATCO is asked to pass on. Turns accumulate on
+        # the last EXECUTED instruction, so the offset is re-derived rather than remembered.
+        advisory = {'action': action_idx}
+
+        if action_idx in SPEED_ACTIONS:
+            mach = ac.commanded_mach + SPEED_ACTIONS[action_idx] * CONFIG['mach_step']
+            advisory['target_mach'] = min(CONFIG['ac_mach_max'],
+                                          max(CONFIG['ac_mach_min'], mach))
+
+        elif action_idx in TURN_DELTAS:
+            offset = degto180(ac.commanded_hdg - ac.initial_hdg) + TURN_DELTAS[action_idx]
+            advisory['target_hdg'] = (ac.initial_hdg + offset) % 360
+
+        elif action_idx == RETURN_TO_ROUTE_ACTION:
+            advisory['target_hdg'] = ac.initial_hdg % 360
+
+        return advisory
 
     def _issue_advisory(self, cs, action_idx):
         if action_idx == HOLD_ACTION or cs not in self._row_of:
             return   # hold is a true no-op: no advisory is transmitted at all
 
-        advisory = self.cr_tool.advisory(action_idx, self._aircraft[cs])
+        advisory = self._build_advisory(action_idx, self._aircraft[cs])
         kind     = 'target_mach' if 'target_mach' in advisory else 'target_hdg'
-        pending  = self.atco.standing_for(cs)
 
-        # What this aircraft is already headed for: the instruction the ATCO is working on when
-        # it is for this aircraft and of this kind, otherwise the last one actually flown.
-        ac = self._aircraft[cs]
-        standing = pending[kind] if pending and kind in pending else (
-            ac.commanded_mach if kind == 'target_mach' else ac.commanded_hdg)
-
-        if abs(advisory[kind] - standing) < 1e-9:
+        # Advising what the aircraft already flies is not an instruction, so nothing is
+        # transmitted. Advice that merely repeats what the ATCO is holding IS transmitted;
+        # the ATCO recognises it and carries on.
+        ac        = self._aircraft[cs]
+        commanded = ac.commanded_mach if kind == 'target_mach' else ac.commanded_hdg
+        if abs(advisory[kind] - commanded) < 1e-9:
             self._ep_stats['repeats'] += 1
             return
 
         # The ATCO works one instruction at a time, so anything already in hand is dropped --
         # including an instruction for a DIFFERENT aircraft, which is then never flown.
-        if self.atco.advisory is not None:
+        held = self.atco.advisory
+        if not self.atco.receive(cs, advisory, self._sim_time_s):
+            self._ep_stats['repeats'] += 1
+            return
+        if held is not None:
             self._ep_stats['discarded'] += 1
 
         # Counted here rather than from the action histogram: these are the advisories transmitted.
         self._ep_stats['speeds' if kind == 'target_mach' else 'turns'] += 1
+        self._ep_stats['transmitted'][action_idx] += 1
 
-        self.atco.accept(cs, advisory, self._sim_time_s)
+    def _still_flying(self, cs):
+        return cs in self._aircraft and bs.traf.id2idx(cs) >= 0
 
     def _execute_due_advisories(self):
-        ready = self.atco.due(self._sim_time_s)
+        ready = self.atco.act_if_ready(self._sim_time_s, self._still_flying)
         if ready is None:
             return
         cs, advisory = ready
 
-        # Recorded here rather than at issue: under the memoryless model no response time exists
-        # until the ATCO acts. Instructions replaced before they were flown never had one.
-        self._ep_stats['delay_sum_s'] += self._sim_time_s - advisory['taken_up_at_s']
+        # Recorded here rather than at issue: a revision can still move the execution time.
+        # Only an instruction actually flown is a response time; one deleted because its
+        # aircraft left the sector never was one.
+        self._ep_stats['delay_sum_s'] += self._sim_time_s - advisory['response_start_s']
         self._ep_stats['delay_acted'] += 1
 
-        ac = self._aircraft.get(cs)
-        if ac is None or bs.traf.id2idx(cs) < 0:
-            return                           # aircraft left before the ATCO got to it
+        ac = self._aircraft[cs]
 
         if 'target_mach' in advisory:
             ac.commanded_mach = advisory['target_mach']
@@ -178,7 +249,7 @@ class AirspaceEnv(gym.Env):
     # -- Observation: what the policy sees ---------------------------------------
 
     def _build_observation(self):
-        cs = self.cr_tool.focus_cs
+        cs = self.focus_cs
         if cs is None or cs not in self._row_of:
             # No controllable aircraft: on route, nominal speed, clear, nothing pending.
             self._last_intruder_cs = [None] * N_NEIGHBOURS
@@ -201,7 +272,7 @@ class AirspaceEnv(gym.Env):
         v_cmd    = ac.commanded_mach * KT_PER_MACH
 
         # Time since the advisory now standing was issued; a replacement restarts it.
-        pending = self.atco.standing_for(cs)
+        pending = self.atco.pending_for(cs)
         wait_s  = self._sim_time_s - pending['issued_at_s'] if pending else 0.0
 
         return [dpsi_act,
@@ -219,7 +290,7 @@ class AirspaceEnv(gym.Env):
         own_hdg = self._hdg[own_row]
         sin_own = math.sin(math.radians(own_hdg))
         cos_own = math.cos(math.radians(own_hdg))
-        urgency_row = self.cr_tool.urgency[own_row]
+        urgency_row = self.urgency[own_row]
 
         intruders = []
         for j, other in enumerate(self._urgency_cs_list):
@@ -236,7 +307,7 @@ class AirspaceEnv(gym.Env):
             v_int = math.hypot(self._vel[j, 0], self._vel[j, 1]) * NMS_TO_KT
 
             # 0 inside the protected zone, otherwise the capped prediction from construct_U.
-            tlos = 0.0 if dist_nm < sep else float(self.cr_tool.t_los[own_row, j])
+            tlos = 0.0 if dist_nm < sep else float(self.t_los[own_row, j])
 
             intruders.append((float(urgency_row[j]), dist_nm,
                               [dist_nm, theta, psi, v_int, tlos], other))
@@ -265,7 +336,10 @@ class AirspaceEnv(gym.Env):
     # -- Reward ------------------------------------------------------------------
 
     def _compute_reward(self, acting_cs, action_idx):
-        r_los = -CONFIG['w_los'] if self._los_seconds_this_step else 0.0
+        # One unit per SECOND of lost separation, not one per step in which any was lost: the
+        # five seconds inside a step are scanned one by one, so a five-second intrusion is
+        # charged five times a one-second one. R_los is therefore -los_seconds, in [-5, 0].
+        r_los = -CONFIG['w_los'] * self._los_seconds_this_step
 
         r_drift = 0.0
         if acting_cs and acting_cs in self._aircraft and acting_cs in self._row_of:
@@ -284,7 +358,7 @@ class AirspaceEnv(gym.Env):
 
         self._pos, self._vel = traffic_states(indices)
         self._hdg            = bs.traf.hdg[np.asarray(indices, dtype=int)]
-        self.cr_tool.rank(self._pos, self._vel)
+        self.urgency, self.t_los = urgency_matrix(self._pos, self._vel)
         self._count_conflicts(flying)
 
         # Whether each aircraft could turn back onto its route: the same pair geometry, but
@@ -375,15 +449,14 @@ class AirspaceEnv(gym.Env):
         cand_pos = route['pos_nm']
         cand_vel = np.array(heading_to_velocity(CRUISE_SPD_NMS, route['heading']))
 
-        dist_sq, tcpa, dcpa_sq, _, moving = cpa(pos - cand_pos, vel - cand_vel)
+        dist_sq, tcpa, dcpa_sq, safe_rel, moving = cpa(pos - cand_pos, vel - cand_vel)
         if (dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any():
             return False                                    # static buffer
 
-        # Judged on tcpa rather than t_los: a spawn is refused if the pair even closes inside
-        # the horizon, which is stricter than the urgency test the rest of the episode uses.
-        predicted_los = (moving & (tcpa >= 0) & (tcpa <= CONFIG['t_warn'])
-                         & (dcpa_sq < CONFIG['sep_nm'] ** 2))
-        return not bool(predicted_los.any())
+        # Judged on t_los, the same predicted loss of separation the urgency ranking uses: a
+        # spawn is refused only if the pair would actually lose separation inside the horizon.
+        t_los = time_to_los(tcpa, np.maximum(0.0, dcpa_sq), safe_rel, moving)
+        return not bool((t_los < CONFIG['t_warn']).any())
 
     def _create_aircraft(self, slot, route):
         cs = f'AC{self._next_callsign_id:02d}'
@@ -407,7 +480,7 @@ class AirspaceEnv(gym.Env):
             prev_pos_nm=entry_nm,
             commanded_hdg=float(route['heading']),
             commanded_mach=CONFIG['ac_mach'],
-            steps_since_attention=CONFIG['focus_clear_steps'])
+            steps_since_conflict=CONFIG['focus_clear_steps'])
         self._slots[slot] = cs
 
     def _remove_exited_aircraft(self):
@@ -415,11 +488,11 @@ class AirspaceEnv(gym.Env):
             slot = self._slots.index(cs)
             idx  = bs.traf.id2idx(cs)
             if idx >= 0:
-                self._score_arrival(cs, idx)
+                self._score_exit(cs, idx)
                 bs.traf.delete(idx)
             self._slots[slot] = None
             self._aircraft.pop(cs, None)   # one record, so nothing can be left behind
-            self.atco.forget(cs)           # nothing outstanding for an aircraft that has gone
+            self.atco.release(cs)           # nothing outstanding for an aircraft that has gone
             if slot not in self._pending_spawns:
                 self._pending_spawns[slot] = 1
 
@@ -441,8 +514,14 @@ class AirspaceEnv(gym.Env):
     # -- Episode setup -----------------------------------------------------------
 
     def _new_episode_rngs(self, scenario_seed):
-        self.episode_seed   = (self._seed_stream.randrange(TRAINING_SCENARIOS)
-                               if scenario_seed is None else int(scenario_seed))
+        if scenario_seed is None:
+            # A training scenario, drawn at random but never one of the 100 held out for the
+            # test set: that is what keeps the evaluation honest however long training runs.
+            self.episode_seed = self._seed_stream.randrange(TRAINING_SCENARIOS)
+            while self.episode_seed in HELD_OUT:
+                self.episode_seed = self._seed_stream.randrange(TRAINING_SCENARIOS)
+        else:
+            self.episode_seed = int(scenario_seed)
 
         # Three streams spun off the episode seed. Drawn through one master rather than
         # seeded episode_seed+1 / +2, which would make neighbouring scenarios share a stream.
@@ -450,10 +529,7 @@ class AirspaceEnv(gym.Env):
         self.scenario_rng   = Random(master.getrandbits(64))
         self.traffic_rng    = Random(master.getrandbits(64))
         self.delay_rng      = np.random.default_rng(master.getrandbits(64))
-        self.cr_tool        = CRTool()
-        self.atco           = ATCO(
-            self.delay_mode, self.delay_rng,
-            **({'mean_s': self.delay_mean_s} if self.delay_mean_s is not None else {}))
+        self.atco           = ATCO(self.delay_mode, self.delay_rng, self.delay_mean_s)
 
     def _reset_episode_state(self):
 
@@ -461,6 +537,13 @@ class AirspaceEnv(gym.Env):
         self._step_count          = 0       # 317
         self._pending_spawns      = {}      # slot -> steps until the slot is refilled: {3: 5, 7: 2}
         self._sim_time_s          = 0.0     # simulated seconds since reset; the delay clock: 1585.0
+
+        # Focus selection: the aircraft being advised, how long it has held the focus, and the
+        # pair matrices the ranking and the observation both read.
+        self.focus_cs             = None    # 'AC07'
+        self.hold_steps           = 0       # 4
+        self.urgency              = np.zeros((0, 0))
+        self.t_los                = np.zeros((0, 0))
 
         # One Aircraft record per live aircraft; the keys ARE the active callsigns.
         self._aircraft = {}   # {'AC07': Aircraft(initial_hdg=84.0, commanded_hdg=129.0, ...)}
@@ -482,10 +565,12 @@ class AirspaceEnv(gym.Env):
         minx, miny, maxx, maxy = poly.bounds
         sector_diam_nm = math.hypot(maxx - minx, maxy - miny)
 
-        # crossings_per_episode traversals at cruise: ~1050-2400 steps, 1.5-3.3 h.
+        # The episode ends on traffic handled, not on the clock: exits_per_episode aircraft per
+        # slot must have left. _max_steps only guards against traffic that never leaves.
+        self._max_exits = round(CONFIG['exits_per_episode'] * n_ac)
         crossing_time_s = sector_diam_nm / CONFIG['ac_speed'] * 3600
         self._max_steps = max(50, round(
-            CONFIG['crossings_per_episode'] * crossing_time_s / STEP_DURATION_S))
+            CONFIG['max_crossings'] * crossing_time_s / STEP_DURATION_S))
 
         self.n_aircraft = n_ac
         self.rho        = n_ac / area_km2      # recorded per episode by the evaluation
@@ -551,12 +636,12 @@ class AirspaceEnv(gym.Env):
         ac.prev_pos_nm = (float(position[0]), float(position[1]))
 
     def _count_conflicts(self, flying):
-        rows, cols = np.where(self.cr_tool.urgency > 0)
+        rows, cols = np.where(self.urgency > 0)
         pairs = {(flying[i], flying[j]) for i, j in zip(rows, cols) if i < j}
         self._ep_stats['conflicts'] += len(pairs - self._prev_conflict_pairs)
         self._prev_conflict_pairs = pairs
 
-    def _score_arrival(self, cs, idx):
+    def _score_exit(self, cs, idx):
         self._ep_stats['exits'] += 1
         pos = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
 
@@ -575,5 +660,5 @@ class AirspaceEnv(gym.Env):
         self._ep_stats['deviation_nm'] += math.hypot(pos[0] - exit_ref[0],
                                                      pos[1] - exit_ref[1])
 
-        if abs(degto180(float(bs.traf.hdg[idx]) - ac.initial_hdg)) <= CONFIG['arrival_hdg_tol_deg']:
+        if abs(degto180(float(bs.traf.hdg[idx]) - ac.initial_hdg)) <= CONFIG['on_route_hdg_tol_deg']:
             self._ep_stats['on_route'] += 1

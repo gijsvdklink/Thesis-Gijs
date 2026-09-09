@@ -7,7 +7,7 @@ __pycache__/
 
 # Training output: TensorBoard event files and model checkpoints, written
 # continuously during a run. Regenerate by training, not by cloning.
-Runs_saved/
+MAIN/Models/
 
 # macOS
 .DS_Store
@@ -21,8 +21,9 @@ VerticalCAS-master/
 assignments/scratch.py
 assignments/sandbox/
 
-# Superseded results, kept local only
-old/
+# Superseded models and report sources, parked until the new runs replace them
+OLD/
 
-# Trained policies and evaluation output for the delay experiment, same reason as Runs_saved
-NEW DELAYS EXPERIMENT/
+# Evaluation output: per-episode CSVs and the figures built from them
+MAIN/Validation/results/
+MAIN/Validation/figures/

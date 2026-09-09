@@ -9,33 +9,37 @@ os.environ.setdefault('MKL_NUM_THREADS', '1')
 import argparse
 import sys
 import time
+from collections import deque
 from datetime import datetime
 
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
-from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv, VecMonitor,
-                                              VecNormalize)
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize
 
 torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from Environments.main import AirspaceEnv, DELAY_MODES
-from Environments.main.atco import MEAN_DELAY_S as DEFAULT_MEAN_S
+from Environment import AirspaceEnv, CONFIG, DELAY_MODES
+from Environment.config import TRAINING_SEEDS
+
+# Episodes kept for the reward trend. At roughly 1,500 steps an episode, 200 of them span about
+# 300k steps, so the slope reacts within a few rollouts without chasing single-episode noise.
+TREND_WINDOW = 200
 
 # -- Settings ------------------------------------------------------------------
 
-# A large budget: the BlueSky-Gym benchmark (Groot et al., SID 2024) found 2M too few for PPO to converge. Pilot at 10M first.
-TOTAL_TIMESTEPS = 50_000_000
+# An upper bound rather than a target: training runs until the reward curve has settled and is
+# then stopped by hand, and Ctrl-C still writes final_model. The BlueSky-Gym benchmark (Groot et
+# al., SID 2024) found 2M far too few for PPO to converge here.
+TOTAL_TIMESTEPS = 300_000_000
 
-# Seed stream spacing between workers: worker r of run S uses stream S * WORKER_SEEDS + r,
-# so no two workers and no two runs share traffic. Any n_envs below this cannot collide.
-WORKER_SEEDS = 10_000
-
-# Parallel envs per delay type. Keep N_ENVS x (types running at once) at or below the physical core count.
-N_ENVS     = 2
-N_STEPS    = 4096                 # per env; rollout = 2 x 4096 = 8192 steps
-BATCH_SIZE = 512                  # 8192 / 512 = 16 minibatches per epoch
+# One environment per delay type: BlueSky is process-global, so a second env in the same process
+# would share one simulation. Parallelism comes from running the delay types side by side, each
+# in its own process, not from vectorising within a run.
+N_ENVS     = 1
+N_STEPS    = 4096                 # rollout = 4096 steps
+BATCH_SIZE = 512                  # 4096 / 512 = 8 minibatches per epoch
 
 GAMMA    = 0.995
 ENT_COEF = 0.01
@@ -44,29 +48,41 @@ ENT_COEF = 0.01
 SAVE_EVERY     = 500_000
 PROGRESS_EVERY = 50_000
 
-RUNS_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', 'Runs_saved', 'experiments'))
+# Beside Environment, Training and Validation; this is also where Validation/validation.py
+# looks, so a finished run needs no moving.
+RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Models'))
 
-ACTION_LABELS = ['-60', '-45', '-30', 'hold', '+30', '+45', '+60', 'return', 'spd+', 'spd-']
-
-# Episode-summary key -> TensorBoard tag, deliberately short; the evaluation CSVs keep the rest.
+# Episode-summary key -> TensorBoard tag. The reported set is Table 2.4 of the report; the
+# specific advisories and the delay diagnostics follow it.
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
 
-    # Safety: the per-flight-hour rate is the comparable one, the raw count the easier one to sanity check.
+    # LoS and conflicts, per flight hour so episodes of different size stay comparable.
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
-    ('ep_los_events',        'safety/los_events'),
+    ('ep_conflicts_per_fh',  'safety/conflicts_per_flight_hour'),
 
-    # Route keeping, over every aircraft that leaves; drift is over all airborne traffic, every step.
-    ('ep_arrival_rate',      'route/arrival_rate'),
-    ('ep_exit_deviation_nm', 'route/exit_deviation_nm'),
-    ('ep_mean_drift_deg',    'route/mean_drift_deg'),
+    # Route efficiency.
+    ('ep_path_ratio',        'route/distance_ratio'),
+    ('ep_on_route_rate',     'route/on_route_exits'),
 
-    # Instruction load, split by kind and normalised by traffic.
+    # Instruction load, split by kind and in total.
     ('ep_turns_per_fh',         'actions/heading_changes_per_flight_hour'),
     ('ep_speed_changes_per_fh', 'actions/speed_changes_per_flight_hour'),
+    ('ep_advisories_per_fh',    'actions/advisories_per_flight_hour'),
 
-    # What the pilots actually did, and what the controller wasted.
+    # Which advisory, not just how many: the resolution strategy itself.
+    ('ep_turn_m60_per_fh',   'advisory/turn_-60'),
+    ('ep_turn_m45_per_fh',   'advisory/turn_-45'),
+    ('ep_turn_m30_per_fh',   'advisory/turn_-30'),
+    ('ep_turn_p30_per_fh',   'advisory/turn_+30'),
+    ('ep_turn_p45_per_fh',   'advisory/turn_+45'),
+    ('ep_turn_p60_per_fh',   'advisory/turn_+60'),
+    ('ep_return_per_fh',     'advisory/return_to_route'),
+    ('ep_speed_up_per_fh',   'advisory/speed_up'),
+    ('ep_speed_down_per_fh', 'advisory/speed_down'),
+
+    # The delay pipeline: a mean response far above the nominal delay, or a discard count near
+    # the advisory count, means instructions are being revised faster than the ATCO can act.
     ('ep_delay_mean_s',      'delay/mean_response_s'),
     ('ep_discarded',         'delay/advisories_discarded'),
     ('ep_repeats',           'delay/advice_re_selected'),
@@ -86,6 +102,10 @@ def save(model, run_dir, name):
 class LogEpisodes(BaseCallback):
     """Log each finished training episode. These come from the EXPLORING policy."""
 
+    def __init__(self):
+        super().__init__()
+        self.recent = deque(maxlen=TREND_WINDOW)      # (timestep, episode reward)
+
     def _on_step(self):
         for info in self.locals.get('infos', []):
             if 'ep_reward_total' not in info:
@@ -93,10 +113,19 @@ class LogEpisodes(BaseCallback):
             for key, tag in METRICS:
                 self.logger.record_mean(tag, info[key])
 
-            dist  = info.get('action_distribution', [])
-            total = max(sum(dist), 1)
-            for label, count in zip(ACTION_LABELS, dist):
-                self.logger.record_mean(f'actions/{label}', count / total)
+            # Is the reward still climbing? Least-squares slope over the recent episodes, per
+            # million steps, so it reads as "reward gained per 1M steps". Once it sits at zero
+            # the run has stopped improving, which is the signal to stop it.
+            self.recent.append((self.num_timesteps, info['ep_reward_total']))
+            if len(self.recent) == TREND_WINDOW:
+                mean_step   = sum(t for t, _ in self.recent) / TREND_WINDOW
+                mean_reward = sum(r for _, r in self.recent) / TREND_WINDOW
+                spread      = sum((t - mean_step) ** 2 for t, _ in self.recent)
+                if spread > 0:
+                    covariance = sum((t - mean_step) * (r - mean_reward)
+                                     for t, r in self.recent)
+                    self.logger.record('episode/reward_slope_per_1M',
+                                       covariance / spread * 1e6)
         return True
 
 
@@ -157,15 +186,12 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     # Everything travels through the constructor so it reaches the worker PROCESSES; a CONFIG
     # edit here would not survive the spawn. A given --seed draws the same scenarios in every
     # delay type, which is what makes the delay the only variable between conditions.
-    def make_worker(rank):
-        def _init():
-            return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s,
-                               seed=seed * WORKER_SEEDS + rank)
-        return _init
+    def make_worker():
+        return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed)
 
-    # One environment does not need a worker process: SubprocVecEnv would pipe every step for no parallelism.
-    vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
-    venv = vec_env_cls([make_worker(rank) for rank in range(n_envs)])
+    # DummyVecEnv throughout: one environment needs no worker process, and BlueSky being a
+    # process-global singleton means more than one env per process is not safe anyway.
+    venv = DummyVecEnv([make_worker for _ in range(n_envs)])
     env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                        clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
 
@@ -192,12 +218,14 @@ def main():
     parser = argparse.ArgumentParser(description='Train one delay type.')
     parser.add_argument('--delay', required=True, choices=list(DELAY_MODES),
                         help='action-response delay condition (the experiment variable)')
-    parser.add_argument('--seed', type=int, default=0,
-                        help='random seed; all delay types at the same seed share their scenarios')
+    parser.add_argument('--seed', type=int, default=TRAINING_SEEDS[0], choices=TRAINING_SEEDS,
+                        help=f'which training run: one of {list(TRAINING_SEEDS)}. All delay '
+                             f'types at the same seed share weights and scenarios.')
     parser.add_argument('--timesteps', type=int, default=TOTAL_TIMESTEPS,
                         help=f'training steps (default {TOTAL_TIMESTEPS:,})')
     parser.add_argument('--n-envs', type=int, default=N_ENVS,
-                        help=f'parallel environments, i.e. cores used (default {N_ENVS})')
+                        help=f'environments in this process (default {N_ENVS}); BlueSky is a '
+                             f'singleton, so leave this at 1')
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY,
                         help=f'steps between last_model checkpoints '
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')
@@ -205,10 +233,11 @@ def main():
                         help='where the run directory is created, so a new set of models '
                              'can sit beside an old one (default Runs_saved/experiments)')
     # --delay-first is the old spelling, kept so existing run scripts still work.
+    default_mean_s = CONFIG['delay_mean_s']
     parser.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
-                        type=float, default=DEFAULT_MEAN_S,
+                        type=float, default=default_mean_s,
                         help=f'delay magnitude: the MEAN pilot response time in seconds '
-                             f'(default {DEFAULT_MEAN_S:g}). Every advisory is drawn from '
+                             f'(default {default_mean_s:g}). Every advisory is drawn from '
                              f'this distribution. Ignored when --delay none.')
     args = parser.parse_args()
 

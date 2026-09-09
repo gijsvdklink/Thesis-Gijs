@@ -1,6 +1,8 @@
 """Phase 1: fly one trained policy in one delay world and write one row per episode.
 
-python Validation/validation.py --condition lognormal --run-seed 2000 --delay-mean 45
+Run from the MAIN folder:
+
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 30
 python Validation/validation.py --commands      # write "Terminal commands.txt"
 """
 
@@ -17,15 +19,14 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Environments.main.config import VALIDATION_SEEDS
+from Environment.config import TRAINING_SEEDS, VALIDATION_SEEDS
 
 # -- The experiment ------------------------------------------------------------
 
 ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXPERIMENT  = os.path.join(ROOT, 'NEW DELAYS EXPERIMENT')
-RUNS_ROOT   = os.path.join(EXPERIMENT, 'seed_study')
-RESULTS_DIR = os.path.join(EXPERIMENT, 'results')
-FIGURES_DIR = os.path.join(EXPERIMENT, 'figures')
+RUNS_ROOT   = os.path.join(ROOT, 'Models')          # where Training/train.py writes
+RESULTS_DIR = os.path.join(ROOT, 'Validation', 'results')
+FIGURES_DIR = os.path.join(ROOT, 'Validation', 'figures')
 
 # Training condition -> the run directory Training/train.py wrote it to.
 CONDITIONS = {
@@ -48,11 +49,18 @@ LABELS = {'none':          'trained without delay',
 NO_CR       = 'no_cr'      # a condition name, so it must survive a command line unquoted
 NO_CR_LABEL = 'no CR'
 
-# The five training runs per condition, spaced so no two share part of their training scenarios.
-TRAINING_SEEDS = [0, 1000, 2000, 3000, 4000]
+# The test worlds: the response law and its mean. The undelayed world is shared by both laws --
+# at a mean of 0 there is nothing to distribute -- so it is flown once and plotted on both curves.
+DELAY_MEANS_S = [15, 30, 60]
+DELAY_LAWS    = ['lognormal', 'deterministic']
 
-# Mean pilot response time at test time, always lognormally distributed. 0 is the undelayed world.
-DELAYS_S = [0, 15, 30, 45, 60, 90, 120]
+NO_DELAY = ('none', 0)
+
+DELAY_LEVELS = [NO_DELAY] + [(law, mean) for law in DELAY_LAWS for mean in DELAY_MEANS_S]
+
+# The means each law is drawn at, with the shared undelayed world at the front of both curves.
+def levels_for(law):
+    return [NO_DELAY] + [(law, mean) for mean in DELAY_MEANS_S]
 
 # The held-out scenarios, named directly: every policy at every delay level flies exactly these.
 BASE_SEEDS = list(VALIDATION_SEEDS)
@@ -67,15 +75,15 @@ HOLD = 3
 # -- One evaluation run --------------------------------------------------------
 
 def find_model(condition, run_seed):
-    """The checkpoint for one training run, located by condition and seed."""
-    pattern = os.path.join(RUNS_ROOT, CONDITIONS[condition],
-                           f'*seed{run_seed}_*', 'last_model.zip')
-    matches = sorted(glob.glob(pattern))
-    if not matches:
-        sys.exit(f'no model for {condition} seed {run_seed}: {pattern}')
-    if len(matches) > 1:
-        sys.exit(f'{len(matches)} models match {pattern}; expected one')
-    return matches[0]
+    """The policy for one training run: the one training ended on, else the last checkpoint."""
+    run_dir = os.path.join(RUNS_ROOT, CONDITIONS[condition], f'*seed{run_seed}_*')
+    for name in ('final_model.zip', 'last_model.zip'):
+        matches = sorted(glob.glob(os.path.join(run_dir, name)))
+        if len(matches) > 1:
+            sys.exit(f'{len(matches)} models match {os.path.join(run_dir, name)}; expected one')
+        if matches:
+            return matches[0]
+    sys.exit(f'no model for {condition} seed {run_seed}: {os.path.join(run_dir, "final_model.zip")}')
 
 
 class _Unpickler(pickle.Unpickler):
@@ -114,13 +122,13 @@ def pick_action(policy, observation):
     return int(np.asarray(action).flat[0])
 
 
-def make_env(delay_mean_s):
-    """The test world: a mean of 0 is the undelayed one, every other level is lognormal."""
-    from Environments.main import AirspaceEnv
+def make_env(delay_law, delay_mean_s):
+    """The test world: one response law at one mean. A mean of 0 is the undelayed world."""
+    from Environment import AirspaceEnv
 
-    if delay_mean_s == 0:
+    if delay_law == 'none' or delay_mean_s == 0:
         return AirspaceEnv(delay_mode='none')
-    return AirspaceEnv(delay_mode='lognormal', delay_mean_s=float(delay_mean_s))
+    return AirspaceEnv(delay_mode=delay_law, delay_mean_s=float(delay_mean_s))
 
 
 def run_episode(env, policy, scenario_seed):
@@ -133,11 +141,11 @@ def run_episode(env, policy, scenario_seed):
                     if isinstance(value, (int, float))}
 
 
-def evaluate(condition, run_seed, delay_mean_s, base_seeds, path):
+def evaluate(condition, run_seed, delay_law, delay_mean_s, base_seeds, path):
     """Fly the fixed scenario set in one delay world and write it to one CSV."""
     model_path = None if condition == NO_CR else find_model(condition, run_seed)
     policy     = load_policy(model_path)
-    env        = make_env(delay_mean_s)
+    env        = make_env(delay_law, delay_mean_s)
 
     started = time.time()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -147,7 +155,7 @@ def evaluate(condition, run_seed, delay_mean_s, base_seeds, path):
         for episode, base_seed in enumerate(base_seeds):
             summary = run_episode(env, policy, base_seed)
             row = {'condition': condition, 'run_seed': run_seed,
-                   'delay_mean_s': delay_mean_s, 'episode': episode,
+                   'delay_law': delay_law, 'delay_mean_s': delay_mean_s, 'episode': episode,
                    'episode_seed': env.episode_seed,
                    'n_ac': env.n_aircraft, 'rho': env.rho, **summary}
 
@@ -167,25 +175,28 @@ def evaluate(condition, run_seed, delay_mean_s, base_seeds, path):
     print('done ->', path, flush=True)
 
 
-def output_name(condition, run_seed, delay_mean_s):
+def output_name(condition, run_seed, delay_law, delay_mean_s):
     """The CSV one evaluation run writes to."""
     if condition == NO_CR:
         return os.path.join(RESULTS_DIR, 'no_cr.csv')
-    return os.path.join(RESULTS_DIR, f'{condition}_s{run_seed}_{delay_mean_s:g}s.csv')
+    return os.path.join(RESULTS_DIR,
+                        f'{condition}_s{run_seed}_{delay_law}_{delay_mean_s:g}s.csv')
 
 
 # -- The sweep, dealt over the terminals ---------------------------------------
 
 def grid():
     """Every evaluation run: the whole sweep, plus the delay-independent no-CR reference."""
-    cells = list(itertools.product(CONDITIONS, TRAINING_SEEDS, DELAYS_S))
-    cells.append((NO_CR, 0, 0))
+    cells = [(condition, seed, law, mean)
+             for condition, seed, (law, mean)
+             in itertools.product(CONDITIONS, TRAINING_SEEDS, DELAY_LEVELS)]
+    cells.append((NO_CR, 0) + NO_DELAY)
     return cells
 
 
-def command(condition, run_seed, delay_mean_s):
+def command(condition, run_seed, delay_law, delay_mean_s):
     return (f'python Validation/validation.py --condition {condition} '
-            f'--run-seed {run_seed} --delay-mean {delay_mean_s:g}')
+            f'--run-seed {run_seed} --delay-law {delay_law} --delay-mean {delay_mean_s:g}')
 
 
 def share(cells):
@@ -198,7 +209,7 @@ def write_commands(path=COMMANDS_FILE):
     cells = grid()
     lines = ['PHASE 1 -- VALIDATION',
              f'{len(cells)} evaluation runs of {EPISODES} episodes, over {TERMINALS} terminals.',
-             'Run every terminal from the project root; they are independent and may be',
+             'Run every terminal from the MAIN folder. They are independent and may be',
              'started in any order.',
              '']
 
@@ -210,8 +221,8 @@ def write_commands(path=COMMANDS_FILE):
     lines += ['',
               'PHASE 2 -- PLOTTING',
               'One terminal, after every run of Phase 1 has finished. It reports what is on',
-              'disk, then writes fig_degradation.png; it stops with a list of missing runs',
-              'if Phase 1 is incomplete.',
+              'disk, then writes the figures; it stops with a list of missing runs if Phase 1',
+              'is incomplete.',
               '',
               'python Validation/create_plots.py',
               '']
@@ -227,6 +238,8 @@ def main():
     parser.add_argument('--condition', choices=list(CONDITIONS) + [NO_CR])
     parser.add_argument('--run-seed', type=int, default=0,
                         help='which training run of that condition to evaluate')
+    parser.add_argument('--delay-law', choices=['none'] + DELAY_LAWS, default='lognormal',
+                        help='the response law of the test world (default lognormal)')
     parser.add_argument('--delay-mean', type=float, default=30.0,
                         help='mean pilot response time in seconds; 0 is the undelayed world')
     parser.add_argument('--episodes', type=int, default=EPISODES,
@@ -242,10 +255,12 @@ def main():
     if args.condition is None:
         parser.error('--condition is required (or pass --commands)')
 
-    path = args.out or output_name(args.condition, args.run_seed, args.delay_mean)
-    print(f'{args.condition} seed {args.run_seed}  {args.delay_mean:g} s  '
+    law = 'none' if args.delay_mean == 0 else args.delay_law
+    path = args.out or output_name(args.condition, args.run_seed, law, args.delay_mean)
+    print(f'{args.condition} seed {args.run_seed}  {law} {args.delay_mean:g} s  '
           f'{args.episodes} episodes -> {os.path.basename(path)}', flush=True)
-    evaluate(args.condition, args.run_seed, args.delay_mean, BASE_SEEDS[:args.episodes], path)
+    evaluate(args.condition, args.run_seed, law, args.delay_mean,
+             BASE_SEEDS[:args.episodes], path)
 
 
 if __name__ == '__main__':
