@@ -347,6 +347,12 @@ class AirspaceEnv(gym.Env):
         r_drift = -CONFIG['w_drift'] * self._drift_sum_this_step
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
+
+        # Kept apart as well as summed: the three terms answer different questions, and their
+        # split is what says whether a policy is paying for safety, for drift or for workload.
+        self._ep_stats['reward_los']   += r_los
+        self._ep_stats['reward_drift'] += r_drift
+        self._ep_stats['reward_work']  += r_work
         return float(r_los + r_drift + r_work)
 
     # -- Traffic picture: the state everything above reads -----------------------

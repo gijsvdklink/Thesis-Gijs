@@ -1,62 +1,67 @@
+# Run everything from the MAIN folder:
+#     cd <wherever MAIN is>
+# Check you are in the right place -- this must list Environment, Training, Validation:
+#     ls
+
 # terminal 1
-python -m Training.train --delay none --seed 1 --timesteps 300000000
+python Training/train.py --delay none --seed 1 --timesteps 300000000
 
 # terminal 2
-python -m Training.train --delay none --seed 2 --timesteps 300000000
+python Training/train.py --delay none --seed 2 --timesteps 300000000
 
 # terminal 3
-python -m Training.train --delay none --seed 3 --timesteps 300000000
+python Training/train.py --delay none --seed 3 --timesteps 300000000
 
 # terminal 4
-python -m Training.train --delay none --seed 4 --timesteps 300000000
+python Training/train.py --delay none --seed 4 --timesteps 300000000
 
 # terminal 5
-python -m Training.train --delay none --seed 5 --timesteps 300000000
+python Training/train.py --delay none --seed 5 --timesteps 300000000
 
 # terminal 6
-python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
 
 # terminal 7
-python -m Training.train --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
 
 # terminal 8
-python -m Training.train --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
 
 # terminal 9
-python -m Training.train --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
 
 # terminal 10
-python -m Training.train --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
 
 # terminal 11
-python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
 
 # terminal 12
-python -m Training.train --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
 
 # terminal 13
-python -m Training.train --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
 
 # terminal 14
-python -m Training.train --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
 
 # terminal 15
-python -m Training.train --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
 
 # terminal 16
-python -m Training.train --delay geometric --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay geometric --delay-mean 30 --seed 1 --timesteps 300000000
 
 # terminal 17
-python -m Training.train --delay geometric --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay geometric --delay-mean 30 --seed 2 --timesteps 300000000
 
 # terminal 18
-python -m Training.train --delay geometric --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay geometric --delay-mean 30 --seed 3 --timesteps 300000000
 
 # terminal 19
-python -m Training.train --delay geometric --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay geometric --delay-mean 30 --seed 4 --timesteps 300000000
 
 # terminal 20
-python -m Training.train --delay geometric --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay geometric --delay-mean 30 --seed 5 --timesteps 300000000
 
-# tensorboard
+# tensorboard -- Models is created beside MAIN, not inside it
 python -m tensorboard.main --logdir ../Models --port 6016

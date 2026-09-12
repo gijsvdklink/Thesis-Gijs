@@ -20,6 +20,9 @@ for _index, _sign in SPEED_ACTIONS.items():
 def new_ep_stats():
     return {
         'reward': 0.0,         # -412.7   summed step reward
+        'reward_los': 0.0,     # -310.0   ...of which the LoS term
+        'reward_drift': 0.0,   # -42.7    ...of which the drift term
+        'reward_work': 0.0,    # -60.0    ...of which the workload term
         'steps': 0,            # 1480     RL steps taken
         'actions': [],         # [3, 3, 5, 7, ...]  one action index per step
         'los_seconds': 0,      # 14       simulated seconds with at least one pair in LoS
@@ -75,6 +78,12 @@ def episode_summary(stats):
         # different traffic and length stay comparable.
         'ep_reward_total':  s['reward'],
         'ep_reward_per_fh': s['reward'] / flight_hours,
+
+        # The same reward split into its three terms, on the same per-flight-hour scale, so
+        # they add up to ep_reward_per_fh and can be read against each other.
+        'ep_reward_los_per_fh':   s['reward_los'] / flight_hours,
+        'ep_reward_drift_per_fh': s['reward_drift'] / flight_hours,
+        'ep_reward_work_per_fh':  s['reward_work'] / flight_hours,
 
         # Bookkeeping: the denominator behind every rate above, and the episode length.
         'ep_flight_hours': s['flight_s'] / 3600.0,

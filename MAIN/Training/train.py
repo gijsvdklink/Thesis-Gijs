@@ -64,6 +64,11 @@ METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
     ('ep_reward_per_fh',     'episode/reward_per_flight_hour'),
 
+    # Where the reward actually goes. The three add up to reward_per_flight_hour.
+    ('ep_reward_los_per_fh',   'reward/los_per_flight_hour'),
+    ('ep_reward_drift_per_fh', 'reward/drift_per_flight_hour'),
+    ('ep_reward_work_per_fh',  'reward/work_per_flight_hour'),
+
     # LoS and conflicts, per flight hour so episodes of different size stay comparable.
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
     ('ep_conflicts_per_fh',  'safety/conflicts_per_flight_hour'),
