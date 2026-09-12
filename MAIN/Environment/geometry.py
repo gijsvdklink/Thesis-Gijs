@@ -70,9 +70,11 @@ def time_to_los(tcpa, dcpa_sq, safe_rel, moving):
                     np.inf)
 
 
-def pairwise(pos, vel):
+def pairwise(pos, vel, own_vel=None):
+    # own_vel, if given, replaces each row's own velocity: row i then asks what happens if
+    # aircraft i flies own_vel[i] while every other aircraft keeps its vel.
     rel_pos = pos[None, :, :] - pos[:, None, :]     # rel_pos[i, j] = pos[j] - pos[i]
-    rel_vel = vel[None, :, :] - vel[:, None, :]
+    rel_vel = vel[None, :, :] - (vel if own_vel is None else own_vel)[:, None, :]
 
     dist_sq, tcpa, dcpa_sq, safe_rel, moving = cpa(rel_pos, rel_vel)
     dcpa_sq = np.maximum(0.0, dcpa_sq)              # against round-off; dcpa is never really negative

@@ -19,7 +19,7 @@ from .config import (CONFIG, TRAINING_SCENARIOS, HELD_OUT, STEP_DURATION_S, OBS_
                      CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, CRUISE_ALT_M,
                      EMPTY_RANGE_NM, NO_CONFLICT_S,
                      HOLD_ACTION, ACT_COST, TURN_DELTAS, SPEED_ACTIONS,
-                     RETURN_TO_ROUTE_ACTION)
+                     RETURN_TO_INITIAL_HDG_ACTION)
 from .atco import DELAY_MODES, ATCO
 from .geometry import (latlon_to_nm, nm_to_latlon, heading_to_velocity, cpa, pairwise,
                        time_to_los, heading_drift, urgency_matrix, ON_ROUTE_DRIFT)
@@ -187,7 +187,7 @@ class AirspaceEnv(gym.Env):
             offset = degto180(ac.commanded_hdg - ac.initial_hdg) + TURN_DELTAS[action_idx]
             advisory['target_hdg'] = (ac.initial_hdg + offset) % 360
 
-        elif action_idx == RETURN_TO_ROUTE_ACTION:
+        elif action_idx == RETURN_TO_INITIAL_HDG_ACTION:
             advisory['target_hdg'] = ac.initial_hdg % 360
 
         return advisory
@@ -267,7 +267,7 @@ class AirspaceEnv(gym.Env):
         cmd_hdg  = ac.commanded_hdg
 
         dpsi_act = math.radians(degto180(own_hdg - init_hdg))   # drift from assigned heading
-        a_cmd    = math.radians(degto180(cmd_hdg - init_hdg))   # commanded offset
+        h_cmd    = math.radians(degto180(cmd_hdg - init_hdg))   # commanded offset
         v_own    = math.hypot(self._vel[row, 0], self._vel[row, 1]) * NMS_TO_KT
         v_cmd    = ac.commanded_mach * KT_PER_MACH
 
@@ -277,7 +277,7 @@ class AirspaceEnv(gym.Env):
 
         return [dpsi_act,
                 v_own,
-                a_cmd,
+                h_cmd,
                 v_cmd,
                 float(self._return_blocked[row]),   # 1 = returning is BLOCKED
                 1.0 if pending else 0.0,            # constant 0 when delay_mode='none'
@@ -341,10 +341,10 @@ class AirspaceEnv(gym.Env):
         # charged five times a one-second one. R_los is therefore -los_seconds, in [-5, 0].
         r_los = -CONFIG['w_los'] * self._los_seconds_this_step
 
-        # Averaged over the simulated seconds of the step, so w_drift keeps its meaning as the
-        # cost of a full step spent at that heading offset: one 30-degree turn still equals
-        # about 37 s of drifting at 30 degrees.
-        r_drift = -CONFIG['w_drift'] * self._drift_sum_this_step / CONFIG['action_freq']
+        # Summed over the simulated seconds of the step, so w_drift is the cost of one second
+        # at that heading offset: one 30-degree turn still equals about 37 s of drifting at
+        # 30 degrees.
+        r_drift = -CONFIG['w_drift'] * self._drift_sum_this_step
 
         r_work = -CONFIG['w_work'] * ACT_COST[action_idx] if acting_cs else 0.0
         return float(r_los + r_drift + r_work)
@@ -361,15 +361,16 @@ class AirspaceEnv(gym.Env):
         self.urgency, self.t_los = urgency_matrix(self._pos, self._vel)
         self._count_conflicts(flying)
 
-        # Whether each aircraft could turn back onto its route: the same pair geometry, but
-        # flown on INITIAL headings. 1.0 = returning is blocked, by a live LoS or one within t_warn.
+        # Whether each aircraft could return to its initial heading: row i flies its INITIAL
+        # heading while every other aircraft keeps its CURRENT velocity. 1.0 = returning is
+        # blocked, by a live LoS or one within t_warn.
         speed     = np.hypot(self._vel[:, 0], self._vel[:, 1])
         init_hdg  = np.radians([self._aircraft[cs].initial_hdg for cs in flying])
         route_vel = np.stack([speed * np.sin(init_hdg), speed * np.cos(init_hdg)], axis=1)
         if len(self._pos) < 2:
             self._return_blocked = np.zeros(len(self._pos))
         else:
-            route_dist_sq, route_t_los = pairwise(self._pos, route_vel)
+            route_dist_sq, route_t_los = pairwise(self._pos, self._vel, own_vel=route_vel)
             blocked = ((route_dist_sq < CONFIG['sep_nm'] ** 2)
                        | (route_t_los <= CONFIG['t_warn']))
             np.fill_diagonal(blocked, False)

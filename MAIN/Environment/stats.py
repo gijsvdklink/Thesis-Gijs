@@ -5,14 +5,14 @@
 # resolution strategy is visible and not only a change of instruction count. Everything reported
 # per flight hour is normalised by traffic, so scenarios of different size stay comparable.
 
-from .config import N_ACTIONS, TURN_DELTAS, SPEED_ACTIONS, RETURN_TO_ROUTE_ACTION
+from .config import N_ACTIONS, TURN_DELTAS, SPEED_ACTIONS, RETURN_TO_INITIAL_HDG_ACTION
 
 # Advisory index -> the column it is reported in, read off the action layout rather than
 # restated here. Hold is absent: it transmits nothing, so there is nothing to count.
 ADVISORY_LABELS = {}
 for _index, _delta in TURN_DELTAS.items():
     ADVISORY_LABELS[_index] = f'turn_{"p" if _delta > 0 else "m"}{abs(_delta)}'
-ADVISORY_LABELS[RETURN_TO_ROUTE_ACTION] = 'return'
+ADVISORY_LABELS[RETURN_TO_INITIAL_HDG_ACTION] = 'return'
 for _index, _sign in SPEED_ACTIONS.items():
     ADVISORY_LABELS[_index] = 'speed_up' if _sign > 0 else 'speed_down'
 
@@ -71,8 +71,10 @@ def episode_summary(stats):
         'ep_speed_changes_per_fh': speeds / flight_hours,
         'ep_advisories_per_fh':    (turns + speeds) / flight_hours,
 
-        # Reward.
-        'ep_reward_total': s['reward'],
+        # Reward: the raw episode sum, and the same sum per flight hour so that episodes with
+        # different traffic and length stay comparable.
+        'ep_reward_total':  s['reward'],
+        'ep_reward_per_fh': s['reward'] / flight_hours,
 
         # Bookkeeping: the denominator behind every rate above, and the episode length.
         'ep_flight_hours': s['flight_s'] / 3600.0,

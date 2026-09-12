@@ -167,12 +167,12 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
     label(screen, small, 'Destination (initial hdg)',
           bearing_point(CX, CY, b_route, min(CX, CY) - 30), GREY)
 
-    # -- the commanded heading: a_cmd is measured from the initial heading
-    b_cmd = own['a_cmd'] - dpsi
-    if abs(own['a_cmd']) > 1e-6:
+    # -- the commanded heading: h_cmd is measured from the initial heading
+    b_cmd = own['h_cmd'] - dpsi
+    if abs(own['h_cmd']) > 1e-6:
         cmd_end = bearing_point(CX, CY, b_cmd, 132)
         dashed(screen, (198, 120, 200), (CX, CY), cmd_end, 5, 5, 2)
-        label(screen, tiny, 'a_cmd (commanded hdg)',
+        label(screen, tiny, 'h_cmd (commanded hdg)',
               bearing_point(CX, CY, b_cmd, 150), (170, 90, 175))
 
     # -- delta-psi: from the current heading round to the route
@@ -247,7 +247,7 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
 
     # -- flags that have no geometry
     y = CY + 190
-    flags = [('retn_conf', own['retn_conf'], 'returning to route is BLOCKED'),
+    flags = [('retn_conf', own['retn_conf'], 'returning to initial heading is BLOCKED'),
              ('pending',   own['pending'],   'an advisory is with the ATCO'),
              ('wait_s',    own['wait_s'],    'seconds since it was issued')]
     label(screen, small, 'ownship features with no geometry:', (60, y), (120, 120, 120), False)
@@ -279,9 +279,9 @@ def draw_panel(screen, fonts, obs, intruder_cs, focus_cs, step_n, n_ac):
 
     own, intruders = unpack(obs)
     label(screen, font, f'ownship  [{focus_cs or "--"}]', (x, y), BLUE, False); y += 22
-    units = {'dpsi': 'rad', 'v_own': 'kt', 'a_cmd': 'rad', 'v_cmd': 'kt',
+    units = {'dpsi': 'rad', 'v_own': 'kt', 'h_cmd': 'rad', 'v_cmd': 'kt',
              'retn_conf': '', 'pending': '', 'wait_s': 's'}
-    drawn = {'dpsi': 'shown as Δψ', 'v_own': 'shown as v_own', 'a_cmd': 'dashed violet',
+    drawn = {'dpsi': 'shown as Δψ', 'v_own': 'shown as v_own', 'h_cmd': 'dashed violet',
              'v_cmd': 'not drawn', 'retn_conf': 'flag', 'pending': 'flag', 'wait_s': 'flag'}
     for i, lbl in enumerate(OBS_OWNSHIP_LABELS):
         v = own[lbl]

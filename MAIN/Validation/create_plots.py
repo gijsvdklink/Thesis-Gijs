@@ -22,10 +22,10 @@ import validation as v
 
 # -- KPIs ----------------------------------------------------------------------
 
-# Every KPI but the last is normalised -- a rate per flight hour, a fraction, a ratio or a
-# per-step average -- so that scenarios of different size and episode length stay comparable.
-# The episode total is plotted beside the per-step reward, and is comparable between policies
-# only because they all fly the same scenarios.
+# Every KPI but the episode total is normalised -- a rate per flight hour, a fraction or a
+# ratio -- so that scenarios of different size and episode length stay comparable. The episode
+# total is plotted beside the reward per flight hour, and is comparable between policies only
+# because they all fly the same scenarios.
 # Table 2.4 of the report, in its order.
 KPIS = [
     ('ep_los_events_per_fh',    'LoS events / flight hour'),
@@ -36,6 +36,7 @@ KPIS = [
     ('ep_speed_changes_per_fh', 'Speed changes / flight hour'),
     ('ep_advisories_per_fh',    'Advisories / flight hour'),
     ('ep_reward_total',         'Episode reward'),
+    ('ep_reward_per_fh',        'Episode reward / flight hour'),
 ]
 
 # The specific advisory issued, for the resolution-strategy question.
@@ -46,7 +47,7 @@ ADVISORY_KPIS = [
     ('ep_turn_p30_per_fh',   'Turn +30 / flight hour'),
     ('ep_turn_p45_per_fh',   'Turn +45 / flight hour'),
     ('ep_turn_p60_per_fh',   'Turn +60 / flight hour'),
-    ('ep_return_per_fh',     'Return to route / flight hour'),
+    ('ep_return_per_fh',     'Return to initial heading / flight hour'),
     ('ep_speed_up_per_fh',   'Speed up / flight hour'),
     ('ep_speed_down_per_fh', 'Speed down / flight hour'),
 ]

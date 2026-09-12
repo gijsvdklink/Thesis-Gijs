@@ -34,9 +34,10 @@ STATS_WINDOW = 100
 
 # -- Settings ------------------------------------------------------------------
 
-# An upper bound rather than a target: training runs until the reward curve has settled and is
-# then stopped by hand, and Ctrl-C still writes final_model. The BlueSky-Gym benchmark (Groot et
-# al., SID 2024) found 2M far too few for PPO to converge here.
+# The fixed training budget of every model, so that differences between models do not come from
+# a different training length: runs are not stopped early. Ctrl-C still writes final_model, but
+# only for aborted runs. The BlueSky-Gym benchmark (Groot et al., SID 2024) found 2M far too few
+# for PPO to converge here.
 TOTAL_TIMESTEPS = 300_000_000
 
 # One environment per delay type: BlueSky is process-global, so a second env in the same process
@@ -61,6 +62,7 @@ RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Model
 # specific advisories and the delay diagnostics follow it.
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
+    ('ep_reward_per_fh',     'episode/reward_per_flight_hour'),
 
     # LoS and conflicts, per flight hour so episodes of different size stay comparable.
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
@@ -82,7 +84,7 @@ METRICS = [
     ('ep_turn_p30_per_fh',   'advisory/turn_+30'),
     ('ep_turn_p45_per_fh',   'advisory/turn_+45'),
     ('ep_turn_p60_per_fh',   'advisory/turn_+60'),
-    ('ep_return_per_fh',     'advisory/return_to_route'),
+    ('ep_return_per_fh',     'advisory/return_to_initial_hdg'),
     ('ep_speed_up_per_fh',   'advisory/speed_up'),
     ('ep_speed_down_per_fh', 'advisory/speed_down'),
 

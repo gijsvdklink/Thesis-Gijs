@@ -50,7 +50,7 @@ CONFIG = {
     'focus_emergency_u':     0.67,          # ~2 min before CPA at t_warn = 360 s
     # Reward weights
     'w_los':                 10.00,         # heavy: separation violation
-    'w_drift':               0.50,          # cosine drift penalty on [0, 2]; also scales ACT_COST
+    'w_drift':               0.10,          # per simulated second, cosine drift penalty on [0, 2]
     'w_work':                1.00,          # master scale for ACT_COST; tune magnitudes via w_drift
     # Fallback master seed, so a bare AirspaceEnv() is reproducible out of the box.
     'seed':                  0,
@@ -100,7 +100,7 @@ NO_CONFLICT_S  = CONFIG['t_warn']
 TURN_DELTAS   = {0: -60, 1: -45, 2: -30, 4: 30, 5: 45, 6: 60}
 SPEED_ACTIONS = {8: +1, 9: -1}        # +1/-1 x mach_step on the commanded Mach
 HOLD_ACTION   = 3                     # true no-op: no instruction is transmitted at all
-RETURN_TO_ROUTE_ACTION = 7            # the zero-offset action: fly the initial heading
+RETURN_TO_INITIAL_HDG_ACTION = 7      # the zero-offset action: fly the initial heading
 N_ACTIONS     = 10
 
 # -- Workload cost, SUB-ADDITIVE in the turn commanded so splitting one turn is never cheaper. r_work = -w_work * ACT_COST --
@@ -115,11 +115,11 @@ ACT_COST = [
     0.5,                  # 4  turn +30
     0.625,                # 5  turn +45
     0.75,                 # 6  turn +60
-    0.25 * _TURN_30,      # 7  return to route (cheap: undoing a deviation)
+    0.25 * _TURN_30,      # 7  return to initial heading (cheap: undoing a deviation)
     0.5  * _TURN_30,      # 8  speed up   (half a 30-deg turn)
     0.5  * _TURN_30,      # 9  speed down
 ]
 
 # -- Observation labels (visualiser obs panel): angles in rad, speeds in kt, dist in NM, times in s --
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'a_cmd', 'v_cmd', 'retn_conf', 'pending', 'wait_s']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'h_cmd', 'v_cmd', 'retn_conf', 'pending', 'wait_s']
 OBS_INTRUDER_LABELS = ['dist', 'theta', 'psi', 'vint', 'tlos']
