@@ -380,6 +380,10 @@ def main():
     ap.add_argument('--mp4', default=None, metavar='PATH',
                     help='render a single episode to this mp4 file and exit')
     ap.add_argument('--fps', type=int, default=10, help='interactive / mp4 frame rate')
+    ap.add_argument('--scale', type=float, default=1.0, metavar='F',
+                    help='window size as a fraction of 1920x1080, e.g. 0.6 for a small '
+                         'window. The frame is drawn at full size and scaled down, so the '
+                         'layout is identical -- only the window shrinks.')
     ap.add_argument('--stochastic', action='store_true',
                     help='sample actions instead of the argmax (best) policy')
     ap.add_argument('--vecnorm', default='best_model_vecnorm.pkl', metavar='PATH',
@@ -444,7 +448,11 @@ def main():
         os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
     pygame.init()
-    screen = pygame.display.set_mode((WIN_W, WIN_H))
+    # Drawn at full size on an off-screen surface, then scaled onto a window of whatever size
+    # was asked for: the layout never has to know about the window.
+    win = (max(1, round(WIN_W * args.scale)), max(1, round(WIN_H * args.scale)))
+    display = pygame.display.set_mode(win)
+    screen = pygame.Surface((WIN_W, WIN_H)) if win != (WIN_W, WIN_H) else display
     pygame.display.set_caption('ATC Radar -- policy visualisation')
     fonts = (pygame.font.SysFont('consolas,monospace', 13),
              pygame.font.SysFont('consolas,monospace', 18, bold=True))
@@ -485,6 +493,8 @@ def main():
                 st = fresh_stats()
 
         draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs)
+        if screen is not display:
+            pygame.transform.smoothscale(screen, win, display)
         pygame.display.flip()
         clock.tick(args.fps)
 

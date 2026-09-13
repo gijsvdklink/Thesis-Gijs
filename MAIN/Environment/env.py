@@ -165,6 +165,13 @@ class AirspaceEnv(gym.Env):
             if incumbent is not None:
                 self._ep_stats['focus_spells']      += 1
                 self._ep_stats['focus_spell_steps'] += self.hold_steps + 1
+                # The controller's attention moves with the focus: a half-formed instruction for
+                # the aircraft just released is abandoned, not left to fire later. Without this
+                # the ATCO holds state for an aircraft the observation no longer describes, so
+                # pending reads 0 while an instruction is in fact outstanding.
+                if self.atco.cs == incumbent and self.atco.advisory is not None:
+                    self._ep_stats['discarded'] += 1
+                self.atco.release(incumbent)
             self.hold_steps = 0
         else:
             self.hold_steps += 1
@@ -275,13 +282,27 @@ class AirspaceEnv(gym.Env):
         pending = self.atco.pending_for(cs)
         wait_s  = self._sim_time_s - pending['issued_at_s'] if pending else 0.0
 
+        # What the controller is holding, as the OFFSET from what the aircraft already flies --
+        # the same quantity an action adds, so the policy can see whether the action it is about
+        # to choose reproduces the held instruction (a repeat, which lets it mature) or changes
+        # it (a revision, which discards it and restarts the response). Without this the two are
+        # indistinguishable, and the transition depends on state the policy cannot observe.
+        pend_hdg = pend_spd = 0.0
+        if pending is not None:
+            if 'target_hdg' in pending:
+                pend_hdg = math.radians(degto180(pending['target_hdg'] - cmd_hdg))
+            else:
+                pend_spd = (pending['target_mach'] - ac.commanded_mach) * KT_PER_MACH
+
         return [dpsi_act,
                 v_own,
                 h_cmd,
                 v_cmd,
                 float(self._return_blocked[row]),   # 1 = returning is BLOCKED
                 1.0 if pending else 0.0,            # constant 0 when delay_mode='none'
-                wait_s]
+                wait_s,
+                pend_hdg,                           # 0 when nothing is held
+                pend_spd]
 
     def _intruder_features(self, cs):
         own_row = self._row_of[cs]
@@ -336,9 +357,11 @@ class AirspaceEnv(gym.Env):
     # -- Reward ------------------------------------------------------------------
 
     def _compute_reward(self, acting_cs, action_idx):
-        # One unit per SECOND of lost separation, not one per step in which any was lost: the
-        # five seconds inside a step are scanned one by one, so a five-second intrusion is
-        # charged five times a one-second one. R_los is therefore -los_seconds, in [-5, 0].
+        # One unit per SECOND in which the ADVISED aircraft has lost separation, not one per
+        # step in which any was lost: the five seconds inside a step are scanned one by one, so
+        # a five-second intrusion is charged five times a one-second one. R_los is therefore
+        # -los_seconds, in [-5, 0], and every second of it is attributable to the aircraft the
+        # policy was actually given.
         r_los = -CONFIG['w_los'] * self._los_seconds_this_step
 
         # Summed over the simulated seconds of the step, so w_drift is the cost of one second
@@ -418,7 +441,17 @@ class AirspaceEnv(gym.Env):
                         self._aircraft[acting_cs].initial_hdg, float(bs.traf.hdg[row]))
 
             pairs = self._scan_separation(index_of)
-            self._los_seconds_this_step += bool(pairs)
+
+            # The REWARD counts only seconds in which the ADVISED aircraft is the one losing
+            # separation. A loss between two aircraft it was never given cannot be explained
+            # from its observation -- only four neighbours are encoded -- and could not have
+            # been acted on either, since one aircraft is advised at a time. A loss involving
+            # the focus ship is always visible: a pair inside sep_nm carries the highest
+            # urgency there is, so it always fills the first intruder slot.
+            if acting_cs is not None:
+                self._los_seconds_this_step += any(acting_cs in pair for pair in pairs)
+
+            # The KPI stays GLOBAL: the reward is a local proxy, the measurement is not.
             # Entries only: a pair already in LoS a second ago is the same event.
             self._ep_stats['los_events'] += len(pairs - self._prev_los_pairs)
             self._prev_los_pairs = pairs
