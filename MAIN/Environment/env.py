@@ -7,8 +7,8 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from shapely.geometry import Point
-from shapely.prepared import prep
+import shapely
+
 
 import bluesky as bs
 from bluesky.stack.stackbase import Stack as _BsStack
@@ -552,8 +552,10 @@ class AirspaceEnv(gym.Env):
         inside_sector = {}
         if flying:
             positions = traffic_states(indices)[0]      # NM, the frame the polygon lives in
-            inside_sector = {cs: self._polygon_ready.contains(Point(p[0], p[1]))
-                             for cs, p in zip(flying, positions)}
+            # One vectorised predicate for the whole sector rather than a Point object and a
+            # separate call per aircraft: this runs every step, for every aircraft.
+            inside = shapely.contains_xy(self._polygon_ready, positions[:, 0], positions[:, 1])
+            inside_sector = dict(zip(flying, inside))
 
         # Gone from BlueSky altogether counts as exited, hence the False default.
         return [cs for cs in sorted(self._aircraft) if not inside_sector.get(cs, False)]
@@ -613,7 +615,8 @@ class AirspaceEnv(gym.Env):
 
         self._polygon_shape = poly
         # Prepared once per episode: _no_turn_exit_nm runs tens of thousands of containment tests.
-        self._polygon_ready = prep(poly)
+        shapely.prepare(poly)          # predicates below use the prepared index
+        self._polygon_ready = poly
         self.polygon        = np.array(poly.exterior.coords[:-1])
 
         minx, miny, maxx, maxy = poly.bounds
@@ -647,7 +650,7 @@ class AirspaceEnv(gym.Env):
         for _ in range(CONFIG['max_placement_tries']):
             east  = self.scenario_rng.uniform(minx, maxx)
             north = self.scenario_rng.uniform(miny, maxy)
-            if not self._polygon_ready.contains(Point(east, north)):
+            if not shapely.contains_xy(self._polygon_ready, east, north):
                 continue                       # the bounding box is not the sector
 
             heading = self.scenario_rng.uniform(0.0, 360.0)

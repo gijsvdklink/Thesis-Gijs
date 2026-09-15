@@ -1,4 +1,4 @@
-# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal|geometric. The same --seed sees identical scenarios in every type.
+# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal. The same --seed sees identical scenarios in every type.
 
 import os
 

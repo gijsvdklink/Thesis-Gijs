@@ -42,6 +42,7 @@ CONFIG = {
     'delay_mode':            'none',        # default delay type; see atco.DELAY_MODES
     'delay_mean_s':          30.0,          # mean time for the controller to act, in seconds
     'delay_sigma':           0.4,           # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
+    'delay_max_s':           70.0,          # cap on a drawn response time; 1.0% of lognormal draws reach it           # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
     'revision_kappa':        0.7,           # kappa: a revision is taken up in this fraction of a full response time
     # Observation
     'n_neighbours':          4,
@@ -58,13 +59,13 @@ CONFIG = {
 
 # -- The six seeds of the whole experiment -------------------------------------
 #
-# Seeds 1-5 are the five training runs. Every delay type is trained at all five, so models in
+# Seeds 1-7 are the seven training runs. Every delay type is trained at all seven, so models in
 # the same column start from identical network weights and fly identical scenarios, and the
-# delay is the only thing that differs between them. Seed 6 names the held-out test set.
+# delay is the only thing that differs between them. Seed 8 names the held-out test set.
 # There is nothing else: no multipliers, no offsets, no reserved bands.
 
-TRAINING_SEEDS  = (1, 2, 3, 4, 5)
-VALIDATION_SEED = 6
+TRAINING_SEEDS  = (1, 2, 3, 4, 5, 6, 7)
+VALIDATION_SEED = 8
 
 VALIDATION_EPISODES = 100
 TRAINING_SCENARIOS  = 1_000_000_000    # training draws a scenario seed below this, at random

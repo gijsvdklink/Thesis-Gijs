@@ -1,8 +1,10 @@
+import math
+
 import numpy as np
 
 from .config import CONFIG
 
-DELAY_MODES = ('none', 'deterministic', 'lognormal', 'geometric')
+DELAY_MODES = ('none', 'deterministic', 'lognormal')
 
 
 class ATCO:
@@ -13,6 +15,8 @@ class ATCO:
         self.delay_type = delay_type
         self.rng        = rng
         self.mean_s     = float(mean_s if mean_s is not None else CONFIG['delay_mean_s'])
+
+        self._mu = self._mu_for_capped_mean() if delay_type == 'lognormal' else 0.0
 
         self.cs       = None
         self.advisory = None
@@ -36,9 +40,18 @@ class ATCO:
         if revision:
             tau = CONFIG['revision_kappa'] * tau
 
+        execute_at = now_s + round(tau)
+        if revision:
+            # A revision may only POSTPONE the response, never advance it. The controller is
+            # already committed to acting at the standing time, so revising cannot buy an
+            # earlier one: with kappa = 0.7 a revision drawn 5 s in would otherwise land at
+            # 5 + 21 = 26 s against a standing 30 s, and changing the advice would be rewarded.
+            # Applies to every law, the drawn tau being the only thing that differs.
+            execute_at = max(held['execute_at_s'], execute_at)
+
         advisory['issued_at_s']      = now_s
         advisory['response_start_s'] = self.advisory['response_start_s'] if revision else now_s
-        advisory['execute_at_s']     = now_s + round(tau)
+        advisory['execute_at_s']     = execute_at
 
         self.cs, self.advisory = cs, advisory
         return True
@@ -67,14 +80,36 @@ class ATCO:
         self.cs, self.advisory = None, None
         return ready
 
+    def _mu_for_capped_mean(self):
+        # The cap removes mass from the upper tail, so the plain mu = ln(mean) - sigma^2/2
+        # would leave the CAPPED mean below mean_s. Solve instead for the mu whose capped mean
+        # is exactly mean_s, by bisection on the closed form of E[min(X, cap)].
+        sigma, cap = CONFIG['delay_sigma'], CONFIG['delay_max_s']
+
+        def phi(z):
+            return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+        def capped_mean(mu):
+            lnc = math.log(cap)
+            return (math.exp(mu + sigma ** 2 / 2.0) * phi((lnc - mu - sigma ** 2) / sigma)
+                    + cap * (1.0 - phi((lnc - mu) / sigma)))
+
+        lo, hi = math.log(self.mean_s) - 4 * sigma, math.log(self.mean_s) + 4 * sigma
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            if capped_mean(mid) < self.mean_s:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
     def _draw_delay_s(self):
-        # Every law has a mean of mean_s, so the four differ in spread alone.
+        # Both laws have a mean of mean_s, so they differ in spread alone.
         if self.delay_type == 'none':
             return 0.0
         if self.delay_type == 'deterministic':
             return self.mean_s
-        if self.delay_type == 'geometric':
-            return float(self.rng.geometric(1.0 / self.mean_s))
-        sigma = CONFIG['delay_sigma']
-        mu    = np.log(self.mean_s) - sigma ** 2 / 2.0      # so that E[tau] = mean_s
-        return float(self.rng.lognormal(mu, sigma))
+        # Capped: a controller does not take minutes to act on a single conflict. mu is solved
+        # so that the mean AFTER capping is exactly mean_s, keeping the two laws comparable.
+        return float(min(self.rng.lognormal(self._mu, CONFIG['delay_sigma']),
+                         CONFIG['delay_max_s']))

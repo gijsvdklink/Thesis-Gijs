@@ -33,18 +33,15 @@ FIGURES_DIR = os.path.join(ROOT, 'Figures')
 CONDITIONS = {
     'none':          'none',
     'deterministic': 'deterministic_30s',
-    'geometric':     'geometric_30s',
     'lognormal':     'lognormal_30s',
 }
 
 COLOURS = {'none':          'tab:blue',
            'deterministic': 'tab:red',
-           'geometric':     'tab:orange',
            'lognormal':     'tab:green'}
 
 LABELS = {'none':          'trained without delay',
           'deterministic': 'trained with 30 s deterministic delay',
-          'geometric':     'trained with 30 s geometric delay',
           'lognormal':     'trained with 30 s lognormal delay'}
 
 NO_CR       = 'no_cr'      # a condition name, so it must survive a command line unquoted

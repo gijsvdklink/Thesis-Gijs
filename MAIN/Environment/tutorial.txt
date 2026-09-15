@@ -19,49 +19,52 @@ python Training/train.py --delay none --seed 4 --timesteps 300000000
 python Training/train.py --delay none --seed 5 --timesteps 300000000
 
 # terminal 6
-python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay none --seed 6 --timesteps 300000000
 
 # terminal 7
-python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay none --seed 7 --timesteps 300000000
 
 # terminal 8
-python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
 
 # terminal 9
-python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
 
 # terminal 10
-python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
 
 # terminal 11
-python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
 
 # terminal 12
-python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
 
 # terminal 13
-python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000
 
 # terminal 14
-python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000
 
 # terminal 15
-python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
 
 # terminal 16
-python Training/train.py --delay geometric --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
 
 # terminal 17
-python Training/train.py --delay geometric --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
 
 # terminal 18
-python Training/train.py --delay geometric --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
 
 # terminal 19
-python Training/train.py --delay geometric --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
 
 # terminal 20
-python Training/train.py --delay geometric --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000
+
+# terminal 21
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000
 
 # tensorboard -- Models is created beside MAIN, not inside it
 python -m tensorboard.main --logdir ../Models --port 6016
