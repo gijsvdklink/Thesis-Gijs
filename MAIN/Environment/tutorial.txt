@@ -68,3 +68,95 @@ python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timest
 
 # tensorboard -- Models is created beside MAIN, not inside it
 python -m tensorboard.main --logdir ../Models --port 6016
+
+
+================================================================================
+RESUMING AFTER A DISCONNECT
+================================================================================
+
+# Same commands, plus --resume. Each run continues from its own last checkpoint,
+# keeping the step count and the TensorBoard curves continuous. At most
+# --save-every steps (500,000) are lost per run.
+#
+# Do NOT delete ../Models. Do NOT pass --overwrite; that starts from scratch.
+
+# terminal 1
+python Training/train.py --delay none --seed 1 --timesteps 300000000 --resume
+
+# terminal 2
+python Training/train.py --delay none --seed 2 --timesteps 300000000 --resume
+
+# terminal 3
+python Training/train.py --delay none --seed 3 --timesteps 300000000 --resume
+
+# terminal 4
+python Training/train.py --delay none --seed 4 --timesteps 300000000 --resume
+
+# terminal 5
+python Training/train.py --delay none --seed 5 --timesteps 300000000 --resume
+
+# terminal 6
+python Training/train.py --delay none --seed 6 --timesteps 300000000 --resume
+
+# terminal 7
+python Training/train.py --delay none --seed 7 --timesteps 300000000 --resume
+
+# terminal 8
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+# terminal 9
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+
+# terminal 10
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+
+# terminal 11
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+
+# terminal 12
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+
+# terminal 13
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+
+# terminal 14
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000 --resume
+
+# terminal 15
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+# terminal 16
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+
+# terminal 17
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+
+# terminal 18
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+
+# terminal 19
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+
+# terminal 20
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+
+# terminal 21
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000 --resume
+
+
+================================================================================
+SURVIVING A DISCONNECT NEXT TIME
+================================================================================
+
+# A terminal closed by a dropped SSH connection takes its training run with it.
+# Start each run inside tmux so it keeps going without the laptop attached:
+#
+#     tmux new -s t1                  # one session per run
+#     python Training/train.py --delay none --seed 1 --timesteps 300000000
+#     Ctrl-B then D                   # detach; training continues
+#
+#     tmux ls                         # list sessions
+#     tmux attach -t t1               # reattach later
+#
+# Or prefix a single command:
+#     nohup python Training/train.py --delay none --seed 1 --timesteps 300000000 > t1.log 2>&1 &

@@ -194,13 +194,23 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT, overwrite=False):
+          runs_root=RUNS_ROOT, overwrite=False, resume=False):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     # One directory per (delay type, seed), with no timestamp. A timestamp meant every restart
     # left another copy behind, TensorBoard drew each seed twice, and validation.find_model
     # could no longer tell which run it was meant to score.
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
-    if os.path.exists(run_dir) and not overwrite:
+    if resume:
+        # Pick up where a killed run left off. last_model is written every save_every steps,
+        # so at most that many steps are lost; final_model only exists if the run exited
+        # cleanly, and is preferred when it does.
+        for name in ('final_model', 'last_model'):
+            if os.path.exists(os.path.join(run_dir, f'{name}.zip')):
+                checkpoint = name
+                break
+        else:
+            sys.exit(f'--resume: no checkpoint in {run_dir}')
+    elif os.path.exists(run_dir) and not overwrite:
         sys.exit(f'{run_dir} already exists. Delete it, move it aside, or pass --overwrite '
                  f'to train over it.')
     os.makedirs(run_dir, exist_ok=True)
@@ -214,19 +224,35 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     # DummyVecEnv throughout: one environment needs no worker process, and BlueSky being a
     # process-global singleton means more than one env per process is not safe anyway.
     venv = DummyVecEnv([make_worker for _ in range(n_envs)])
-    env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
-                       clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
+    if resume:
+        # The running observation statistics have to come back with the weights: a policy
+        # trained on normalised observations is meaningless against a fresh normaliser.
+        env = VecNormalize.load(os.path.join(run_dir, f'{checkpoint}_vecnorm.pkl'),
+                                VecMonitor(venv))
+        env.training = True
+        env.norm_reward = True
+    else:
+        env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
+                           clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
 
     # verbose=0: the Progress callback prints a compact line instead of SB3's full table.
-    model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
-                n_steps=N_STEPS, batch_size=BATCH_SIZE, gamma=GAMMA, ent_coef=ENT_COEF)
+    if resume:
+        model = PPO.load(os.path.join(run_dir, checkpoint), env=env,
+                         tensorboard_log=run_dir, device='cpu')
+        print(f'resumed from {checkpoint} at {model.num_timesteps:,} steps', flush=True)
+    else:
+        model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
+                    n_steps=N_STEPS, batch_size=BATCH_SIZE, gamma=GAMMA, ent_coef=ENT_COEF)
 
     callbacks = CallbackList([Progress(), LogEpisodes(), Checkpoint(run_dir, save_every)])
 
     print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
     try:
-        model.learn(total_timesteps, callback=callbacks)
+        # reset_num_timesteps=False keeps the step counter and the TensorBoard x-axis
+        # continuous across a resume, so the curves join up instead of restarting at zero.
+        model.learn(total_timesteps, callback=callbacks,
+                    reset_num_timesteps=not resume)
     except KeyboardInterrupt:
         print('interrupted', flush=True)
     finally:
@@ -253,6 +279,9 @@ def main():
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')
     parser.add_argument('--overwrite', action='store_true',
                         help='train into an existing run directory instead of refusing')
+    parser.add_argument('--resume', action='store_true',
+                        help='continue an interrupted run from its last checkpoint, keeping '
+                             'the step count and the TensorBoard curves continuous')
     parser.add_argument('--runs-root', default=RUNS_ROOT,
                         help='where the run directory is created, so a new set of models '
                              'can sit beside an old one (default Runs_saved/experiments)')
@@ -266,7 +295,7 @@ def main():
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          args.save_every, args.delay_mean, args.runs_root, args.overwrite)
+          args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume)
 
 
 if __name__ == '__main__':
