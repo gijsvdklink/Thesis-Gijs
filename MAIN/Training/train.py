@@ -1,8 +1,5 @@
-# PPO trainer for the response-delay experiment, one delay type per process: python -m Training.train --delay none|deterministic|lognormal. The same --seed sees identical scenarios in every type.
-
 import os
 
-# Must precede the torch import: a 64x64 MLP gains nothing from intra-op threading, and one OpenMP pool per worker would spin-wait more than it computes.
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 
@@ -22,67 +19,43 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from Environment import AirspaceEnv, CONFIG, DELAY_MODES
 from Environment.config import TRAINING_SEEDS
 
-# Episodes kept for the reward trend. At roughly 1,500 steps an episode, 200 of them span about
-# 300k steps, so the slope reacts within a few rollouts without chasing single-episode noise.
 TREND_WINDOW = 200
 
-# Episodes averaged behind every logged KPI. A rollout is only ~3 episodes, and each episode is
-# a different airspace -- aircraft count, density and geometry are all redrawn -- so a per-rollout
-# mean is dominated by which scenarios happened to come up. R_los alone carries about 78% of the
-# episode-to-episode spread. 100 matches SB3's own window for rollout/ep_rew_mean.
 STATS_WINDOW = 100
 
-# -- Settings ------------------------------------------------------------------
 
-# The fixed training budget of every model, so that differences between models do not come from
-# a different training length: runs are not stopped early. Ctrl-C still writes final_model, but
-# only for aborted runs. The BlueSky-Gym benchmark (Groot et al., SID 2024) found 2M far too few
-# for PPO to converge here.
 TOTAL_TIMESTEPS = 300_000_000
 
-# One environment per delay type: BlueSky is process-global, so a second env in the same process
-# would share one simulation. Parallelism comes from running the delay types side by side, each
-# in its own process, not from vectorising within a run.
 N_ENVS     = 1
-N_STEPS    = 4096                 # rollout = 4096 steps
-BATCH_SIZE = 512                  # 4096 / 512 = 8 minibatches per epoch
+N_STEPS    = 4096
+BATCH_SIZE = 512
 
 GAMMA    = 0.995
 ENT_COEF = 0.01
 
-# No evaluation during training: the reported policy is the one training ended on, scored afterwards by Validation/validation.py on VALIDATION_SEEDS. What is left is a periodic save against a crash.
 SAVE_EVERY     = 500_000
 PROGRESS_EVERY = 50_000
 
-# Beside Environment, Training and Validation; this is also where Validation/validation.py
-# looks, so a finished run needs no moving.
 RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Models'))
 
-# Episode-summary key -> TensorBoard tag. The reported set is Table 2.4 of the report; the
-# specific advisories and the delay diagnostics follow it.
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
     ('ep_reward_per_fh',     'episode/reward_per_flight_hour'),
 
-    # Where the reward actually goes. The three add up to reward_per_flight_hour.
     ('ep_reward_los_per_fh',   'reward/los_per_flight_hour'),
     ('ep_reward_drift_per_fh', 'reward/drift_per_flight_hour'),
     ('ep_reward_work_per_fh',  'reward/work_per_flight_hour'),
 
-    # LoS and conflicts, per flight hour so episodes of different size stay comparable.
     ('ep_los_events_per_fh', 'safety/los_events_per_flight_hour'),
     ('ep_conflicts_per_fh',  'safety/conflicts_per_flight_hour'),
 
-    # Route efficiency.
     ('ep_path_ratio',        'route/distance_ratio'),
     ('ep_on_route_rate',     'route/on_route_exits'),
 
-    # Instruction load, split by kind and in total.
     ('ep_turns_per_fh',         'actions/heading_changes_per_flight_hour'),
     ('ep_speed_changes_per_fh', 'actions/speed_changes_per_flight_hour'),
     ('ep_advisories_per_fh',    'actions/advisories_per_flight_hour'),
 
-    # Which advisory, not just how many: the resolution strategy itself.
     ('ep_turn_m60_per_fh',   'advisory/turn_-60'),
     ('ep_turn_m45_per_fh',   'advisory/turn_-45'),
     ('ep_turn_m30_per_fh',   'advisory/turn_-30'),
@@ -93,15 +66,11 @@ METRICS = [
     ('ep_speed_up_per_fh',   'advisory/speed_up'),
     ('ep_speed_down_per_fh', 'advisory/speed_down'),
 
-    # The delay pipeline: a mean response far above the nominal delay, or a discard count near
-    # the advisory count, means instructions are being revised faster than the ATCO can act.
     ('ep_delay_mean_s',      'delay/mean_response_s'),
     ('ep_discarded',         'delay/advisories_discarded'),
     ('ep_repeats',           'delay/advice_re_selected'),
 ]
 
-
-# -- Saving --------------------------------------------------------------------
 
 def save(model, run_dir, name):
     """A checkpoint and its VecNormalize statistics, which must travel together as <name>_vecnorm.pkl."""
@@ -109,30 +78,23 @@ def save(model, run_dir, name):
     model.get_env().save(os.path.join(run_dir, f'{name}_vecnorm.pkl'))
 
 
-# -- Callbacks -----------------------------------------------------------------
-
 class LogEpisodes(BaseCallback):
     """Log each finished training episode. These come from the EXPLORING policy."""
 
     def __init__(self):
         super().__init__()
-        self.recent  = deque(maxlen=TREND_WINDOW)     # (timestep, episode reward)
+        self.recent  = deque(maxlen=TREND_WINDOW)
         self.windows = {key: deque(maxlen=STATS_WINDOW) for key, _ in METRICS}
 
     def _on_step(self):
         for info in self.locals.get('infos', []):
             if 'ep_reward_total' not in info:
                 continue
-            # Every KPI is the mean over the last STATS_WINDOW episodes, not over the handful
-            # in this rollout, so the curves show the policy rather than the luck of the draw.
             for key, tag in METRICS:
                 window = self.windows[key]
                 window.append(info[key])
                 self.logger.record(tag, sum(window) / len(window))
 
-            # Is the reward still climbing? Least-squares slope over the recent episodes, per
-            # million steps, so it reads as "reward gained per 1M steps". Once it sits at zero
-            # the run has stopped improving, which is the signal to stop it.
             self.recent.append((self.num_timesteps, info['ep_reward_total']))
             if len(self.recent) == TREND_WINDOW:
                 mean_step   = sum(t for t, _ in self.recent) / TREND_WINDOW
@@ -156,7 +118,6 @@ class Checkpoint(BaseCallback):
         self.last_save = 0
 
     def _on_training_start(self):
-        # Count from where this process started, or a resumed run saves immediately.
         self.last_save = self.num_timesteps
 
     def _on_step(self):
@@ -174,8 +135,6 @@ class Progress(BaseCallback):
     def _on_training_start(self):
         self.t0 = time.time()
         self.last = self.num_timesteps
-        # Steps already done before this process started, so a resumed run reports the rate it
-        # is achieving now rather than dividing its whole history by a few seconds of runtime.
         self.start_steps = self.num_timesteps
         self.total = self.start_steps + self.locals.get('total_timesteps', TOTAL_TIMESTEPS)
 
@@ -193,8 +152,6 @@ class Progress(BaseCallback):
         return True
 
 
-# -- Training ------------------------------------------------------------------
-
 def delay_type_name(delay_mode, delay_mean_s):
     """Directory name for one delay type, e.g. 'lognormal_30s'; the baseline stays plain 'none'."""
     return 'none' if delay_mode == 'none' else f'{delay_mode}_{delay_mean_s:g}s'
@@ -203,14 +160,8 @@ def delay_type_name(delay_mode, delay_mean_s):
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
           runs_root=RUNS_ROOT, overwrite=False, resume=False):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
-    # One directory per (delay type, seed), with no timestamp. A timestamp meant every restart
-    # left another copy behind, TensorBoard drew each seed twice, and validation.find_model
-    # could no longer tell which run it was meant to score.
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
-        # Pick up where a killed run left off. last_model is written every save_every steps,
-        # so at most that many steps are lost; final_model only exists if the run exited
-        # cleanly, and is preferred when it does.
         for name in ('final_model', 'last_model'):
             if os.path.exists(os.path.join(run_dir, f'{name}.zip')):
                 checkpoint = name
@@ -222,18 +173,11 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
                  f'to train over it.')
     os.makedirs(run_dir, exist_ok=True)
 
-    # Everything travels through the constructor so it reaches the worker PROCESSES; a CONFIG
-    # edit here would not survive the spawn. A given --seed draws the same scenarios in every
-    # delay type, which is what makes the delay the only variable between conditions.
     def make_worker():
         return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed)
 
-    # DummyVecEnv throughout: one environment needs no worker process, and BlueSky being a
-    # process-global singleton means more than one env per process is not safe anyway.
     venv = DummyVecEnv([make_worker for _ in range(n_envs)])
     if resume:
-        # The running observation statistics have to come back with the weights: a policy
-        # trained on normalised observations is meaningless against a fresh normaliser.
         env = VecNormalize.load(os.path.join(run_dir, f'{checkpoint}_vecnorm.pkl'),
                                 VecMonitor(venv))
         env.training = True
@@ -242,7 +186,6 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
         env = VecNormalize(VecMonitor(venv), norm_obs=True, norm_reward=True,
                            clip_obs=10.0, clip_reward=10.0, gamma=GAMMA)
 
-    # verbose=0: the Progress callback prints a compact line instead of SB3's full table.
     if resume:
         model = PPO.load(os.path.join(run_dir, checkpoint), env=env,
                          tensorboard_log=run_dir, device='cpu')
@@ -256,21 +199,15 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
     try:
-        # --timesteps is the TOTAL the run should reach, so a resumed run asks only for what
-        # is left. Without this, learn() would add the full budget on top of what is already
-        # done and runs resumed at different points would stop at different totals.
         remaining = total_timesteps - model.num_timesteps if resume else total_timesteps
         if remaining <= 0:
             print(f'already at {model.num_timesteps:,} of {total_timesteps:,} steps; '
                   f'nothing to do', flush=True)
         else:
-            # reset_num_timesteps=False keeps the step counter and the TensorBoard x-axis
-            # continuous across a resume, so the curves join up instead of restarting at zero.
             model.learn(remaining, callback=callbacks, reset_num_timesteps=not resume)
     except KeyboardInterrupt:
         print('interrupted', flush=True)
     finally:
-        # Also written on Ctrl-C, so a hand-stopped run leaves the policy at the exact step it stopped on.
         save(model, run_dir, 'final_model')
         env.close()
         print(f'saved to {run_dir}', flush=True)
@@ -299,7 +236,6 @@ def main():
     parser.add_argument('--runs-root', default=RUNS_ROOT,
                         help='where the run directory is created, so a new set of models '
                              'can sit beside an old one (default Runs_saved/experiments)')
-    # --delay-first is the old spelling, kept so existing run scripts still work.
     default_mean_s = CONFIG['delay_mean_s']
     parser.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
                         type=float, default=default_mean_s,
