@@ -57,7 +57,7 @@ CONFIG = {
     'seed':                  0,
 }
 
-# -- The six seeds of the whole experiment -------------------------------------
+# -- The eight seeds of the whole experiment -----------------------------------
 #
 # Seeds 1-7 are the seven training runs. Every delay type is trained at all seven, so models in
 # the same column start from identical network weights and fly identical scenarios, and the
@@ -67,10 +67,10 @@ CONFIG = {
 TRAINING_SEEDS  = (1, 2, 3, 4, 5, 6, 7)
 VALIDATION_SEED = 8
 
-VALIDATION_EPISODES = 100
+VALIDATION_EPISODES = 300
 TRAINING_SCENARIOS  = 1_000_000_000    # training draws a scenario seed below this, at random
 
-# The 100 held-out scenarios, drawn once from seed 6. Training skips any scenario in this set
+# The 100 held-out scenarios, drawn once from VALIDATION_SEED. Training skips any scenario in this set
 # (see AirspaceEnv._new_episode_rngs), so no model can ever have met one, however long it runs.
 VALIDATION_SEEDS = tuple(_Random(VALIDATION_SEED).sample(range(TRAINING_SCENARIOS),
                                                          VALIDATION_EPISODES))

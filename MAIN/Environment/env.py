@@ -43,6 +43,9 @@ class Aircraft:
         self.commanded_mach      = commanded_mach       # last EXECUTED speed instruction: 0.82
         self.steps_since_conflict = steps_since_conflict  # steps since it was last in conflict: 12
         self.flown_nm            = 0.0                  # track length flown so far: 62.4
+        # The last advisory TRANSMITTED for this aircraft, so that repeating the same advice can
+        # be told from changing it. None until it has been advised at all.
+        self.last_advisory_action = None                # 2, meaning the last advice was turn -30
 
 
 class AirspaceEnv(gym.Env):
@@ -227,6 +230,14 @@ class AirspaceEnv(gym.Env):
         # Counted here rather than from the action histogram: these are the advisories transmitted.
         self._ep_stats['speeds' if kind == 'target_mach' else 'turns'] += 1
         self._ep_stats['transmitted'][action_idx] += 1
+
+        # The same instruction repeated to the same aircraft is ONE piece of advice, however many
+        # times it is sent: turn -30 five times running, or with holds in between, is one. A
+        # different action ends the run and starts a new one. Hold transmits nothing, so it never
+        # reaches here and cannot break a run.
+        if ac.last_advisory_action != action_idx:
+            self._ep_stats['speeds_distinct' if kind == 'target_mach' else 'turns_distinct'] += 1
+        ac.last_advisory_action = action_idx
 
     def _still_flying(self, cs):
         return cs in self._aircraft and bs.traf.id2idx(cs) >= 0

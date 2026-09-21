@@ -45,6 +45,9 @@ def new_ep_stats():
         'repeats': 0,          # 240      the same advice re-selected while it was still standing
         'turns': 0,            # 74       turn advisories actually transmitted
         'speeds': 0,           # 38       speed advisories actually transmitted
+        # The same advice repeated to the same aircraft counts once; see env._issue_advisory.
+        'turns_distinct': 0,   # 51       ...of which changed the advice rather than repeating it
+        'speeds_distinct': 0,  # 29
         # Transmitted advisories per action index, so turns and speeds can be read one by one.
         'transmitted': [0] * N_ACTIONS,
     }
@@ -56,23 +59,49 @@ def episode_summary(stats):
     acted        = max(s['delay_acted'], 1)
     exits        = s['exits']
 
-    # Advisories TRANSMITTED, counted in _issue_advisory rather than off the action histogram.
-    turns, speeds = s['turns'], s['speeds']
+    # THE instruction load: advice repeated to the same aircraft counts once, so the figure is
+    # pieces of advice given rather than radio calls made.
+    turns, speeds = s['turns_distinct'], s['speeds_distinct']
+
+    # Every advisory transmitted, repeats included. Kept beside the deduplicated count because
+    # the gap between the two IS the amount of repetition a policy does.
+    sent_turns, sent_speeds = s['turns'], s['speeds']
 
     summary = {
+        # Every KPI appears twice: the raw episode count, and the same count per flight hour so
+        # that scenarios of different size and length stay comparable.
+
         # LoS and conflicts.
+        'ep_los_events':        s['los_events'],
         'ep_los_events_per_fh': s['los_events'] / flight_hours,
+        'ep_conflicts':         s['conflicts'],
         'ep_conflicts_per_fh':  s['conflicts'] / flight_hours,
 
         # Route efficiency: track flown over the straight route, and the share of aircraft that
-        # left within the on-route heading tolerance of the heading they entered on.
+        # left within the on-route heading tolerance of the heading they entered on. Both are
+        # already ratios, so what is reported raw is the two totals each divides.
+        'ep_flown_nm':          s['flown_nm'],
+        'ep_route_nm':          s['route_nm'],
         'ep_path_ratio':        s['flown_nm'] / s['route_nm'] if s['route_nm'] else 1.0,
+        'ep_on_route':          s['on_route'],
+        'ep_exits':             exits,
         'ep_on_route_rate':     s['on_route'] / exits if exits else 1.0,
 
-        # Instruction load, by kind and in total.
+        # Instruction load, by kind and in total. Repeated advice counts once.
+        'ep_turns':                turns,
         'ep_turns_per_fh':         turns / flight_hours,
+        'ep_speed_changes':        speeds,
         'ep_speed_changes_per_fh': speeds / flight_hours,
+        'ep_advisories':           turns + speeds,
         'ep_advisories_per_fh':    (turns + speeds) / flight_hours,
+
+        # The same three counting every transmission, repeats included.
+        'ep_turns_sent':                sent_turns,
+        'ep_turns_sent_per_fh':         sent_turns / flight_hours,
+        'ep_speed_changes_sent':        sent_speeds,
+        'ep_speed_changes_sent_per_fh': sent_speeds / flight_hours,
+        'ep_advisories_sent':           sent_turns + sent_speeds,
+        'ep_advisories_sent_per_fh':    (sent_turns + sent_speeds) / flight_hours,
 
         # Reward: the raw episode sum, and the same sum per flight hour so that episodes with
         # different traffic and length stay comparable.
