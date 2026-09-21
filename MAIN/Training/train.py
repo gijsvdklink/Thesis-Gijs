@@ -155,6 +155,10 @@ class Checkpoint(BaseCallback):
         self.every     = every
         self.last_save = 0
 
+    def _on_training_start(self):
+        # Count from where this process started, or a resumed run saves immediately.
+        self.last_save = self.num_timesteps
+
     def _on_step(self):
         if not self.every or self.num_timesteps - self.last_save < self.every:
             return True
@@ -169,15 +173,18 @@ class Progress(BaseCallback):
 
     def _on_training_start(self):
         self.t0 = time.time()
-        self.last = 0
-        self.total = self.locals.get('total_timesteps', TOTAL_TIMESTEPS)
+        self.last = self.num_timesteps
+        # Steps already done before this process started, so a resumed run reports the rate it
+        # is achieving now rather than dividing its whole history by a few seconds of runtime.
+        self.start_steps = self.num_timesteps
+        self.total = self.start_steps + self.locals.get('total_timesteps', TOTAL_TIMESTEPS)
 
     def _on_step(self):
         if self.num_timesteps - self.last < PROGRESS_EVERY:
             return True
         self.last = self.num_timesteps
         elapsed = time.time() - self.t0
-        rate    = self.num_timesteps / max(elapsed, 1e-9)
+        rate    = (self.num_timesteps - self.start_steps) / max(elapsed, 1e-9)
         eta_h   = (self.total - self.num_timesteps) / max(rate, 1e-9) / 3600
         print(f'{self.num_timesteps:>10,} / {self.total:,} '
               f'({100 * self.num_timesteps / self.total:5.1f}%)   '
@@ -249,10 +256,17 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
     try:
-        # reset_num_timesteps=False keeps the step counter and the TensorBoard x-axis
-        # continuous across a resume, so the curves join up instead of restarting at zero.
-        model.learn(total_timesteps, callback=callbacks,
-                    reset_num_timesteps=not resume)
+        # --timesteps is the TOTAL the run should reach, so a resumed run asks only for what
+        # is left. Without this, learn() would add the full budget on top of what is already
+        # done and runs resumed at different points would stop at different totals.
+        remaining = total_timesteps - model.num_timesteps if resume else total_timesteps
+        if remaining <= 0:
+            print(f'already at {model.num_timesteps:,} of {total_timesteps:,} steps; '
+                  f'nothing to do', flush=True)
+        else:
+            # reset_num_timesteps=False keeps the step counter and the TensorBoard x-axis
+            # continuous across a resume, so the curves join up instead of restarting at zero.
+            model.learn(remaining, callback=callbacks, reset_num_timesteps=not resume)
     except KeyboardInterrupt:
         print('interrupted', flush=True)
     finally:
