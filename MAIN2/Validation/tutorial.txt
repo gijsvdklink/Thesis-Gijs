@@ -1,0 +1,77 @@
+# from the MAIN folder
+
+# terminal 1
+python Validation/run_test_scenarios.py --terminal 1
+
+# terminal 2
+python Validation/run_test_scenarios.py --terminal 2
+
+# terminal 3
+python Validation/run_test_scenarios.py --terminal 3
+
+# terminal 4
+python Validation/run_test_scenarios.py --terminal 4
+
+# terminal 5
+python Validation/run_test_scenarios.py --terminal 5
+
+# terminal 6
+python Validation/run_test_scenarios.py --terminal 6
+
+# terminal 7
+python Validation/run_test_scenarios.py --terminal 7
+
+# terminal 8
+python Validation/run_test_scenarios.py --terminal 8
+
+# terminal 9
+python Validation/run_test_scenarios.py --terminal 9
+
+# terminal 10
+python Validation/run_test_scenarios.py --terminal 10
+
+# terminal 11
+python Validation/run_test_scenarios.py --terminal 11
+
+# terminal 12
+python Validation/run_test_scenarios.py --terminal 12
+
+# terminal 13
+python Validation/run_test_scenarios.py --terminal 13
+
+# terminal 14
+python Validation/run_test_scenarios.py --terminal 14
+
+# terminal 15
+python Validation/run_test_scenarios.py --terminal 15
+
+# terminal 16
+python Validation/run_test_scenarios.py --terminal 16
+
+# terminal 17
+python Validation/run_test_scenarios.py --terminal 17
+
+# terminal 18
+python Validation/run_test_scenarios.py --terminal 18
+
+# terminal 19
+python Validation/run_test_scenarios.py --terminal 19
+
+# terminal 20
+python Validation/run_test_scenarios.py --terminal 20
+
+# terminal 21
+python Validation/run_test_scenarios.py --terminal 21
+
+# terminal 22
+python Validation/run_test_scenarios.py --terminal 22
+
+# terminal 23
+python Validation/run_test_scenarios.py --terminal 23
+
+# terminal 24
+python Validation/run_test_scenarios.py --terminal 24
+
+# after all 24 terminals have finished
+python Validation/run_test_scenarios.py --merge
+python Validation/Analysis.py

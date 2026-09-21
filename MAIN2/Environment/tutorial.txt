@@ -1,0 +1,59 @@
+# OBSERVATION EXPERIMENT
+#
+# The instruction the ATCO is evaluating is observed as its TARGET heading and speed
+# (pend_hdg, pend_spd in the same frame as h_cmd and v_cmd) instead of the offset from the
+# commanded heading and speed. Everything else is the same as the main experiment, so seed 1
+# gives the same scenarios and starting weights as N1, D1 and L1.
+#
+# Run everything from the MAIN2 folder:
+#     cd <wherever MAIN2 is>
+# Check you are in the right place -- this must list Environment, Training, Validation:
+#     ls
+# The models are written to MAIN2/experiment Gijs.
+
+# terminal 1: none
+python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+
+# terminal 2: lognormal 30 s
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+
+# terminal 3: deterministic 30 s
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+
+# tensorboard
+python -m tensorboard.main --logdir "experiment Gijs" --port 6016
+
+
+================================================================================
+RESUMING AFTER A DISCONNECT
+================================================================================
+
+# Same commands, plus --resume. Each run continues from its own last checkpoint,
+# keeping the step count and the TensorBoard curves continuous. At most
+# --save-every steps (500,000) are lost per run.
+#
+# Do NOT delete "experiment Gijs". Do NOT pass --overwrite; that starts from scratch.
+
+# terminal 1: none
+python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+
+# terminal 2: lognormal 30 s
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+
+# terminal 3: deterministic 30 s
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+
+
+================================================================================
+SURVIVING A DISCONNECT NEXT TIME
+================================================================================
+
+# A terminal closed by a dropped SSH connection takes its training run with it.
+# Start each run inside tmux so it keeps going without the laptop attached:
+#
+#     tmux new -s t1                  # one session per run
+#     python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+#     Ctrl-B then D                   # detach; training continues
+#
+#     tmux ls                         # list sessions
+#     tmux attach -t t1               # reattach later
