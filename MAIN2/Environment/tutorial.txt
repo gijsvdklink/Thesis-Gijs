@@ -2,8 +2,9 @@
 #
 # The instruction the ATCO is evaluating is observed as its TARGET heading and speed
 # (pend_hdg, pend_spd in the same frame as h_cmd and v_cmd) instead of the offset from the
-# commanded heading and speed. Everything else is the same as the main experiment, so seed 1
-# gives the same scenarios and starting weights as N1, D1 and L1.
+# commanded heading and speed. New aircraft may also spawn in a conflict predicted within
+# t_warn (--spawn-conflicts); they must still be 15 NM from all traffic, and d_chord still
+# applies. This gives about 60% more conflicts per flight hour.
 #
 # Run everything from the MAIN2 folder:
 #     cd <wherever MAIN2 is>
@@ -12,13 +13,13 @@
 # The models are written to MAIN2/experiment Gijs.
 
 # terminal 1: none
-python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+python -m Training.train --delay none --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs"
 
 # terminal 2: lognormal 30 s
-python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs"
 
 # terminal 3: deterministic 30 s
-python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs"
 
 # tensorboard
 python -m tensorboard.main --logdir "experiment Gijs" --port 6016
@@ -35,13 +36,13 @@ RESUMING AFTER A DISCONNECT
 # Do NOT delete "experiment Gijs". Do NOT pass --overwrite; that starts from scratch.
 
 # terminal 1: none
-python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+python -m Training.train --delay none --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs" --resume
 
 # terminal 2: lognormal 30 s
-python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs" --resume
 
 # terminal 3: deterministic 30 s
-python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs" --resume
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs" --resume
 
 
 ================================================================================
@@ -52,7 +53,7 @@ SURVIVING A DISCONNECT NEXT TIME
 # Start each run inside tmux so it keeps going without the laptop attached:
 #
 #     tmux new -s t1                  # one session per run
-#     python -m Training.train --delay none --seed 1 --pending-obs target --timesteps 300000000 --runs-root "experiment Gijs"
+#     python -m Training.train --delay none --seed 1 --pending-obs target --spawn-conflicts --timesteps 300000000 --runs-root "experiment Gijs"
 #     Ctrl-B then D                   # detach; training continues
 #
 #     tmux ls                         # list sessions
