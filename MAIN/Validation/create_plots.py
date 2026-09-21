@@ -28,15 +28,26 @@ import validation as v
 # because they all fly the same scenarios.
 # Table 2.4 of the report, in its order.
 KPIS = [
-    ('ep_los_events_per_fh',    'LoS events / flight hour'),
-    ('ep_conflicts_per_fh',     'Conflicts / flight hour'),
-    ('ep_path_ratio',           'Distance ratio'),
-    ('ep_on_route_rate',        'On-route exits'),
-    ('ep_turns_per_fh',         'Heading changes / flight hour'),
-    ('ep_speed_changes_per_fh', 'Speed changes / flight hour'),
-    ('ep_advisories_per_fh',    'Advisories / flight hour'),
-    ('ep_reward_total',         'Episode reward'),
-    ('ep_reward_per_fh',        'Episode reward / flight hour'),
+    # Each KPI twice: the raw episode figure, and the same normalised by traffic. The ratios are
+    # already normalised, so what stands beside them is the two totals each is formed from.
+    ('ep_los_events',            'LoS events'),
+    ('ep_los_events_per_fh',     'LoS events / flight hour'),
+    ('ep_conflicts',             'Conflicts'),
+    ('ep_conflicts_per_fh',      'Conflicts / flight hour'),
+    ('ep_flown_nm',              'Distance flown [NM]'),
+    ('ep_route_nm',              'Route length [NM]'),
+    ('ep_path_ratio',            'Distance ratio'),
+    ('ep_on_route',              'On-route exits'),
+    ('ep_exits',                 'Exits'),
+    ('ep_on_route_rate',         'On-route exit rate'),
+    ('ep_turns',                 'Heading changes'),
+    ('ep_turns_per_fh',          'Heading changes / flight hour'),
+    ('ep_speed_changes',         'Speed changes'),
+    ('ep_speed_changes_per_fh',  'Speed changes / flight hour'),
+    ('ep_advisories',            'Advisories'),
+    ('ep_advisories_per_fh',     'Advisories / flight hour'),
+    ('ep_reward_total',          'Episode reward'),
+    ('ep_reward_per_fh',         'Episode reward / flight hour'),
 ]
 
 # The specific advisory issued, for the resolution-strategy question.
@@ -65,8 +76,8 @@ def load_results():
     return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
 
 
-def score_matrix(frame, kpi, condition, level):
-    """One (runs x scenarios) matrix: a row per training run, a column per scenario."""
+def score_table(frame, kpi, condition, level):
+    """One (runs x scenarios) table: a row per training run, a column per scenario."""
     law, mean = level
     rows = frame[(frame['condition'] == condition)
                  & (frame['delay_law'] == law)
@@ -76,13 +87,53 @@ def score_matrix(frame, kpi, condition, level):
     table = rows.pivot(index='run_seed', columns='episode_seed', values=kpi)
     if table.isna().to_numpy().any():
         sys.exit(f'{condition} at {law} {mean:g} s: not every run flew every scenario')
-    return table.to_numpy(dtype=float)
+    return table
+
+
+def score_matrix(frame, kpi, condition, level):
+    """The same table as a bare array, which is what the bootstrap resamples."""
+    return score_table(frame, kpi, condition, level).to_numpy(dtype=float)
 
 
 def no_cr_matrix(frame, kpi):
     """The no-CR reference as a one-row matrix; it is delay-independent, so it is flown once."""
     rows = frame[frame['condition'] == v.NO_CR]
     return rows.pivot(index='run_seed', columns='episode_seed', values=kpi).to_numpy(dtype=float)
+
+
+# -- The score matrices, written out -------------------------------------------
+
+def world_name(law, mean):
+    """The test world as a filename part. The undelayed world is shared by both laws."""
+    return 'none' if law == 'none' or mean == 0 else f'{law}_{mean:g}s'
+
+
+def write_tables(frame):
+    """One CSV per (policy, test world, KPI): a row per training run, a column per scenario.
+
+    Tables/<kpi>/<policy>_in_<world>.csv -- so "the deterministic models' reward in the
+    lognormal 30 s world" is one 7 x 100 file, and the references are the same shape with a
+    single row.
+    """
+    written = 0
+    for kpi, _ in KPIS:
+        folder = os.path.join(v.TABLES_DIR, kpi)
+        os.makedirs(folder, exist_ok=True)
+
+        for policy in list(v.CONDITIONS) + [v.RANDOM]:
+            for law, mean in v.DELAY_LEVELS:
+                table = score_table(frame, kpi, policy, (law, mean))
+                table.to_csv(os.path.join(folder,
+                                          f'{policy}_in_{world_name(law, mean)}.csv'))
+                written += 1
+
+        # No CR never transmits, so the response delay cannot reach it: one table, not nine.
+        no_cr = frame[frame['condition'] == v.NO_CR].pivot(
+            index='run_seed', columns='episode_seed', values=kpi)
+        no_cr.to_csv(os.path.join(folder, f'{v.NO_CR}.csv'))
+        written += 1
+
+    print(f'wrote {written} tables under {v.TABLES_DIR}', flush=True)
 
 
 def describe(frame):
@@ -100,10 +151,18 @@ def describe(frame):
                 if flown != v.EPISODES:
                     missing.append(f'{condition} seed {seed} at {law} {mean:g} s: '
                                    f'{flown} of {v.EPISODES} episodes')
+    for law, mean in v.DELAY_LEVELS:
+        flown = len(frame[(frame['condition'] == v.RANDOM)
+                          & (frame['delay_law'] == law)
+                          & (frame['delay_mean_s'] == mean)])
+        if flown != v.EPISODES:
+            missing.append(f'{v.RANDOM} at {law} {mean:g} s: '
+                           f'{flown} of {v.EPISODES} episodes')
+
     if v.NO_CR not in set(frame['condition']):
         missing.append('no_cr: not evaluated')
 
-    for condition in list(v.CONDITIONS) + [v.NO_CR]:
+    for condition in list(v.CONDITIONS) + list(v.REFERENCES):
         rows = frame[frame['condition'] == condition]
         print(f'  {condition:<14} {len(rows):>6,} episodes, '
               f'{rows["run_seed"].nunique()} runs, '
@@ -176,7 +235,7 @@ def figure_for_law(frame, law, kpis, name):
         spare.axis('off')
 
     for axis, (kpi, label) in zip(axes.ravel(), kpis):
-        for condition in v.CONDITIONS:
+        for condition in list(v.CONDITIONS) + [v.RANDOM]:
             points, lows, highs = curve(frame, kpi, condition, levels)
             colour = v.COLOURS[condition]
             axis.plot(means, points, marker='o', color=colour, label=v.LABELS[condition])
@@ -206,6 +265,7 @@ def figure_for_law(frame, law, kpis, name):
 def main():
     frame = load_results()
     describe(frame)
+    write_tables(frame)
     for law in v.DELAY_LAWS:
         figure_for_law(frame, law, KPIS, f'fig_degradation_{law}.png')
         figure_for_law(frame, law, ADVISORY_KPIS, f'fig_advisories_{law}.png')

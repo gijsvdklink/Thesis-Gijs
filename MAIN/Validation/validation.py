@@ -10,24 +10,32 @@ import argparse
 import csv
 import glob
 import itertools
+import json
 import os
 import pickle
+import zipfile
 import sys
 import time
+from random import Random
 
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from Environment.config import TRAINING_SEEDS, VALIDATION_SEEDS
+from Environment.config import N_ACTIONS, TRAINING_SEEDS, VALIDATION_SEEDS
 
 # -- The experiment ------------------------------------------------------------
 
-# Output lives OUTSIDE MAIN, beside it: MAIN is replaced wholesale on deployment, output is not.
-ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-RUNS_ROOT   = os.path.join(ROOT, 'Models')          # where Training/train.py writes
+# Models live inside MAIN, at the path Training/train.py writes them to. Output lives OUTSIDE
+# MAIN, beside it: MAIN is replaced wholesale on deployment, output is not.
+MAIN_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+ROOT        = os.path.abspath(os.path.join(MAIN_DIR, '..'))
+RUNS_ROOT   = os.path.join(MAIN_DIR, 'Models')      # where Training/train.py writes
 RESULTS_DIR = os.path.join(ROOT, 'Results')
+# Beside Results rather than inside it, so that globbing Results never picks the merge up.
+COMBINED_CSV = os.path.join(ROOT, 'all_episodes.csv')
 FIGURES_DIR = os.path.join(ROOT, 'Figures')
+TABLES_DIR  = os.path.join(ROOT, 'Tables')
 
 # Training condition -> the run directory Training/train.py wrote it to.
 CONDITIONS = {
@@ -36,20 +44,29 @@ CONDITIONS = {
     'lognormal':     'lognormal_30s',
 }
 
-COLOURS = {'none':          'tab:blue',
-           'deterministic': 'tab:red',
-           'lognormal':     'tab:green'}
-
-LABELS = {'none':          'trained without delay',
-          'deterministic': 'trained with 30 s deterministic delay',
-          'lognormal':     'trained with 30 s lognormal delay'}
-
 NO_CR       = 'no_cr'      # a condition name, so it must survive a command line unquoted
 NO_CR_LABEL = 'no CR'
 
+RANDOM       = 'random'    # the untrained reference: one action drawn uniformly per step
+RANDOM_LABEL = 'random actions'
+RANDOM_SEED  = 0           # fixed, so a random-reference run repeats exactly
+
+# Neither reference has training runs, so both are flown at run seed 0.
+REFERENCES = (NO_CR, RANDOM)
+
+COLOURS = {'none':          'tab:blue',
+           'deterministic': 'tab:red',
+           'lognormal':     'tab:green',
+           RANDOM:          'tab:orange'}
+
+LABELS = {'none':          'trained without delay',
+          'deterministic': 'trained with 30 s deterministic delay',
+          'lognormal':     'trained with 30 s lognormal delay',
+          RANDOM:          RANDOM_LABEL}
+
 # The test worlds: the response law and its mean. The undelayed world is shared by both laws --
 # at a mean of 0 there is nothing to distribute -- so it is flown once and plotted on both curves.
-DELAY_MEANS_S = [15, 30, 60]
+DELAY_MEANS_S = [15, 30, 45, 60]
 DELAY_LAWS    = ['lognormal', 'deterministic']
 
 NO_DELAY = ('none', 0)
@@ -64,7 +81,7 @@ def levels_for(law):
 BASE_SEEDS = list(VALIDATION_SEEDS)
 EPISODES   = len(BASE_SEEDS)
 
-TERMINALS     = 21
+TERMINALS     = 24
 COMMANDS_FILE = os.path.join(os.path.dirname(__file__), 'Terminal commands.txt')
 
 HOLD = 3
@@ -72,17 +89,38 @@ HOLD = 3
 
 # -- One evaluation run --------------------------------------------------------
 
+def checkpoint_steps(path):
+    """The step a checkpoint was written at, read from the zip without loading the policy."""
+    with zipfile.ZipFile(path) as archive:
+        return int(json.loads(archive.read('data').decode())['num_timesteps'])
+
+
 def find_model(condition, run_seed):
-    """The policy for one training run: the one training ended on, else the last checkpoint."""
+    """The FURTHEST-TRAINED policy of one run, whichever file holds it.
+
+    Training/train.py writes final_model from a finally block, so it is written on a crash or a
+    Ctrl-C as well as on a clean finish. A run interrupted and then resumed therefore leaves
+    final_model at the step it was interrupted on and last_model far beyond it: the name says
+    nothing about which is later, so the step count in the checkpoint decides.
+    """
     # An exact path, not a glob: Training/train.py writes exactly one directory per
     # (delay type, seed), so there is nothing to disambiguate.
     folder  = CONDITIONS[condition]
     run_dir = os.path.join(RUNS_ROOT, folder, f'{folder}_seed{run_seed}')
-    for name in ('final_model.zip', 'last_model.zip'):
-        path = os.path.join(run_dir, name)
-        if os.path.exists(path):
-            return path
-    sys.exit(f'no model for {condition} seed {run_seed}: {os.path.join(run_dir, "final_model.zip")}')
+
+    found = [(checkpoint_steps(path), path)
+             for path in (os.path.join(run_dir, name)
+                          for name in ('final_model.zip', 'last_model.zip'))
+             if os.path.exists(path)]
+    if not found:
+        sys.exit(f'no model for {condition} seed {run_seed}: nothing in {run_dir}')
+
+    steps, path = max(found)
+    if len(found) > 1:
+        print(f'  {os.path.basename(path)} @ {steps:,} steps '
+              f'(over {min(found)[1] and os.path.basename(min(found)[1])} '
+              f'@ {min(found)[0]:,})', flush=True)
+    return path
 
 
 class _Unpickler(pickle.Unpickler):
@@ -95,9 +133,7 @@ class _Unpickler(pickle.Unpickler):
 
 
 def load_policy(model_path):
-    """(model, mean, std, clip) for normalising observations, or None to fly no CR."""
-    if model_path is None:
-        return None
+    """(model, mean, std, clip) for normalising observations."""
     from stable_baselines3 import PPO
 
     stats_path = model_path.replace('.zip', '_vecnorm.pkl')
@@ -112,9 +148,11 @@ def load_policy(model_path):
 
 
 def pick_action(policy, observation):
-    """What to do this step. Without a policy that is always HOLD."""
+    """What to do this step: HOLD without a policy, a uniform draw for the random reference."""
     if policy is None:
         return HOLD
+    if isinstance(policy, Random):
+        return policy.randrange(N_ACTIONS)
     model, mean, std, clip = policy
     normalised = np.clip((observation - mean) / std, -clip, clip)
     action, _ = model.predict(normalised, deterministic=True)
@@ -142,9 +180,13 @@ def run_episode(env, policy, scenario_seed):
 
 def evaluate(condition, run_seed, delay_law, delay_mean_s, base_seeds, path):
     """Fly the fixed scenario set in one delay world and write it to one CSV."""
-    model_path = None if condition == NO_CR else find_model(condition, run_seed)
-    policy     = load_policy(model_path)
-    env        = make_env(delay_law, delay_mean_s)
+    if condition == NO_CR:
+        policy = None                       # HOLD every step: no advisory is ever transmitted
+    elif condition == RANDOM:
+        policy = Random(RANDOM_SEED)        # seeded once per run, so the run repeats exactly
+    else:
+        policy = load_policy(find_model(condition, run_seed))
+    env = make_env(delay_law, delay_mean_s)
 
     started = time.time()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -174,10 +216,38 @@ def evaluate(condition, run_seed, delay_law, delay_mean_s, base_seeds, path):
     print('done ->', path, flush=True)
 
 
+def combine(path=COMBINED_CSV):
+    """Every per-episode row Phase 1 wrote, in one file.
+
+    Phase 1 keeps one CSV per evaluation run rather than appending to a shared file: two dozen
+    terminals writing to one handle would interleave their rows, and a run that died could not
+    then be repeated on its own. The merge happens here instead, once Phase 1 has finished.
+    """
+    paths = sorted(glob.glob(os.path.join(RESULTS_DIR, '*.csv')))
+    if not paths:
+        sys.exit(f'no result CSVs in {RESULTS_DIR}; run Phase 1 first')
+
+    episodes = 0
+    with open(path, 'w', newline='') as out:
+        writer = None
+        for source in paths:
+            with open(source, newline='') as handle:
+                for row in csv.DictReader(handle):
+                    if writer is None:
+                        writer = csv.DictWriter(out, fieldnames=list(row))
+                        writer.writeheader()
+                    writer.writerow(row)
+                    episodes += 1
+
+    print(f'{episodes:,} episodes from {len(paths)} runs -> {path}', flush=True)
+
+
 def output_name(condition, run_seed, delay_law, delay_mean_s):
     """The CSV one evaluation run writes to."""
     if condition == NO_CR:
         return os.path.join(RESULTS_DIR, 'no_cr.csv')
+    if condition == RANDOM:
+        return os.path.join(RESULTS_DIR, f'random_{delay_law}_{delay_mean_s:g}s.csv')
     return os.path.join(RESULTS_DIR,
                         f'{condition}_s{run_seed}_{delay_law}_{delay_mean_s:g}s.csv')
 
@@ -185,10 +255,15 @@ def output_name(condition, run_seed, delay_law, delay_mean_s):
 # -- The sweep, dealt over the terminals ---------------------------------------
 
 def grid():
-    """Every evaluation run: the whole sweep, plus the delay-independent no-CR reference."""
+    """Every evaluation run: the trained sweep, the random reference over it, and no CR once."""
     cells = [(condition, seed, law, mean)
              for condition, seed, (law, mean)
              in itertools.product(CONDITIONS, TRAINING_SEEDS, DELAY_LEVELS)]
+
+    # The random reference transmits advisories, so the response delay changes what it flies and
+    # it is swept like a trained model. No CR transmits nothing at all, so the delay never
+    # applies and every world would repeat the same episode; it is flown once.
+    cells += [(RANDOM, 0, law, mean) for law, mean in DELAY_LEVELS]
     cells.append((NO_CR, 0) + NO_DELAY)
     return cells
 
@@ -218,6 +293,13 @@ def write_commands(path=COMMANDS_FILE):
         lines.append('')
 
     lines += ['',
+              'PHASE 1b -- MERGE',
+              'One terminal, after every run of Phase 1 has finished. It gathers every',
+              'per-episode CSV into one file beside Results.',
+              '',
+              'python Validation/validation.py --combine',
+              '',
+              '',
               'PHASE 2 -- PLOTTING',
               'One terminal, after every run of Phase 1 has finished. It reports what is on',
               'disk, then writes the figures; it stops with a list of missing runs if Phase 1',
@@ -234,7 +316,7 @@ def write_commands(path=COMMANDS_FILE):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--condition', choices=list(CONDITIONS) + [NO_CR])
+    parser.add_argument('--condition', choices=list(CONDITIONS) + list(REFERENCES))
     parser.add_argument('--run-seed', type=int, default=0,
                         help='which training run of that condition to evaluate')
     parser.add_argument('--delay-law', choices=['none'] + DELAY_LAWS, default='lognormal',
@@ -246,10 +328,15 @@ def main():
     parser.add_argument('--out', default=None, help='override the output CSV path')
     parser.add_argument('--commands', action='store_true',
                         help='write "Terminal commands.txt" instead of evaluating')
+    parser.add_argument('--combine', action='store_true',
+                        help='merge every Phase 1 CSV into one file instead of evaluating')
     args = parser.parse_args()
 
     if args.commands:
         write_commands()
+        return
+    if args.combine:
+        combine()
         return
     if args.condition is None:
         parser.error('--condition is required (or pass --commands)')

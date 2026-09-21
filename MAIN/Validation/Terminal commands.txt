@@ -1,197 +1,261 @@
 PHASE 1 -- VALIDATION
-148 evaluation runs of 100 episodes, over 21 terminals.
+199 evaluation runs of 300 episodes, over 24 terminals.
 Run every terminal from the MAIN folder. They are independent and may be
 started in any order.
 
-terminal 1 (8 runs):
+terminal 1 (9 runs):
 python Validation/validation.py --condition none --run-seed 1 --delay-law none --delay-mean 0
+python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law none --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition random --run-seed 0 --delay-law lognormal --delay-mean 45
+
+terminal 2 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition random --run-seed 0 --delay-law lognormal --delay-mean 60
+
+terminal 3 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition random --run-seed 0 --delay-law deterministic --delay-mean 15
+
+terminal 4 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 45
 python Validation/validation.py --condition none --run-seed 4 --delay-law none --delay-mean 0
+python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 6 --delay-law none --delay-mean 0
+python Validation/validation.py --condition random --run-seed 0 --delay-law deterministic --delay-mean 30
+
+terminal 5 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition random --run-seed 0 --delay-law deterministic --delay-mean 45
+
+terminal 6 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition random --run-seed 0 --delay-law deterministic --delay-mean 60
+
+terminal 7 (9 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 45
 python Validation/validation.py --condition none --run-seed 7 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law none --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 45
 python Validation/validation.py --condition no_cr --run-seed 0 --delay-law none --delay-mean 0
 
-terminal 2 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 15
-
-terminal 3 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 30
-
-terminal 4 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law lognormal --delay-mean 60
+terminal 8 (8 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 45
 python Validation/validation.py --condition none --run-seed 4 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 60
-
-terminal 5 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 15
-
-terminal 6 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 30
-
-terminal 7 (7 runs):
-python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 60
-
-terminal 8 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law none --delay-mean 0
-python Validation/validation.py --condition none --run-seed 5 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 6 --delay-law none --delay-mean 0
-
-terminal 9 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 15
-
-terminal 10 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 30
-
-terminal 11 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 45
 python Validation/validation.py --condition lognormal --run-seed 6 --delay-law lognormal --delay-mean 60
 
-terminal 12 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 15
+terminal 9 (8 runs):
+python Validation/validation.py --condition none --run-seed 1 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 60
 python Validation/validation.py --condition lognormal --run-seed 6 --delay-law deterministic --delay-mean 15
 
-terminal 13 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 30
+terminal 10 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law none --delay-mean 0
+python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law none --delay-mean 0
 python Validation/validation.py --condition lognormal --run-seed 6 --delay-law deterministic --delay-mean 30
 
-terminal 14 (7 runs):
-python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 7 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 3 --delay-law deterministic --delay-mean 60
+terminal 11 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition none --run-seed 7 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 6 --delay-law deterministic --delay-mean 45
+
+terminal 12 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition none --run-seed 4 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 30
 python Validation/validation.py --condition lognormal --run-seed 6 --delay-law deterministic --delay-mean 60
 
-terminal 15 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law none --delay-mean 0
-python Validation/validation.py --condition none --run-seed 6 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law none --delay-mean 0
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law none --delay-mean 0
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law none --delay-mean 0
+terminal 13 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition none --run-seed 5 --delay-law none --delay-mean 0
+python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law none --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 45
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law none --delay-mean 0
 
-terminal 16 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 15
+terminal 14 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 60
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law lognormal --delay-mean 15
 
-terminal 17 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 30
+terminal 15 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition none --run-seed 7 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 15
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law lognormal --delay-mean 30
 
-terminal 18 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law lognormal --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law lognormal --delay-mean 60
+terminal 16 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law none --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 7 --delay-law lognormal --delay-mean 45
+
+terminal 17 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition none --run-seed 5 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 45
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law lognormal --delay-mean 60
 
-terminal 19 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 15
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 15
+terminal 18 (8 runs):
+python Validation/validation.py --condition none --run-seed 2 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 3 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 60
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law deterministic --delay-mean 15
 
-terminal 20 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 30
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 30
+terminal 19 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law none --delay-mean 0
+python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law none --delay-mean 0
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law deterministic --delay-mean 30
 
-terminal 21 (7 runs):
-python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition none --run-seed 6 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 2 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition deterministic --run-seed 5 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 1 --delay-law deterministic --delay-mean 60
-python Validation/validation.py --condition lognormal --run-seed 4 --delay-law deterministic --delay-mean 60
+terminal 20 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 7 --delay-law deterministic --delay-mean 45
+
+terminal 21 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition none --run-seed 5 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 6 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 30
 python Validation/validation.py --condition lognormal --run-seed 7 --delay-law deterministic --delay-mean 60
+
+terminal 22 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition none --run-seed 6 --delay-law none --delay-mean 0
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law none --delay-mean 0
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 45
+python Validation/validation.py --condition random --run-seed 0 --delay-law none --delay-mean 0
+
+terminal 23 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 15
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 45
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law lognormal --delay-mean 60
+python Validation/validation.py --condition random --run-seed 0 --delay-law lognormal --delay-mean 15
+
+terminal 24 (8 runs):
+python Validation/validation.py --condition none --run-seed 3 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition none --run-seed 6 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition deterministic --run-seed 1 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition deterministic --run-seed 4 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition deterministic --run-seed 7 --delay-law lognormal --delay-mean 30
+python Validation/validation.py --condition lognormal --run-seed 2 --delay-law deterministic --delay-mean 60
+python Validation/validation.py --condition lognormal --run-seed 5 --delay-law deterministic --delay-mean 15
+python Validation/validation.py --condition random --run-seed 0 --delay-law lognormal --delay-mean 30
+
+
+PHASE 1b -- MERGE
+One terminal, after every run of Phase 1 has finished. It gathers every
+per-episode CSV into one file beside Results.
+
+python Validation/validation.py --combine
 
 
 PHASE 2 -- PLOTTING
