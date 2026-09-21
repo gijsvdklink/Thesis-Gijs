@@ -158,13 +158,10 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT, overwrite=False, resume=False, pending_obs='offset',
-          spawn_conflicts=False):
+          runs_root=RUNS_ROOT, overwrite=False, resume=False, pending_obs='offset'):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     if pending_obs != 'offset':
         delay_type += f'_pending-{pending_obs}'
-    if spawn_conflicts:
-        delay_type += '_spawn-conflicts'
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
         for name in ('final_model', 'last_model'):
@@ -180,7 +177,7 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
 
     def make_worker():
         return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed,
-                           pending_obs=pending_obs, spawn_conflicts=spawn_conflicts)
+                           pending_obs=pending_obs)
 
     venv = DummyVecEnv([make_worker for _ in range(n_envs)])
     if resume:
@@ -251,14 +248,11 @@ def main():
     parser.add_argument('--pending-obs', choices=list(PENDING_OBS), default='offset',
                         help='how the instruction the ATCO holds is observed: as an offset from '
                              'the commanded heading and speed (default), or as the target itself')
-    parser.add_argument('--spawn-conflicts', action='store_true',
-                        help='let aircraft spawn in a conflict predicted within t_warn; they must '
-                             'still keep the spawn distance')
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
           args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume,
-          args.pending_obs, args.spawn_conflicts)
+          args.pending_obs)
 
 
 if __name__ == '__main__':

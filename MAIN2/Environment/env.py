@@ -57,8 +57,7 @@ class AirspaceEnv(gym.Env):
     # Empty intruder slot: unreachably far, stationary, no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None, pending_obs='offset',
-                 spawn_conflicts=False):
+    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None, pending_obs='offset'):
         super().__init__()
         # Per-instance rather than a CONFIG edit: SubprocVecEnv workers do not inherit CONFIG changes.
         self.delay_mode = delay_mode if delay_mode is not None else CONFIG['delay_mode']
@@ -71,10 +70,6 @@ class AirspaceEnv(gym.Env):
         if pending_obs not in PENDING_OBS:
             raise ValueError(f'unknown pending_obs {pending_obs!r}; expected {PENDING_OBS}')
         self.pending_obs = pending_obs
-
-        # Whether an aircraft may be placed in a conflict already predicted within t_warn. By
-        # default it may not; either way it must be sep_nm + buffer_nm clear of all traffic.
-        self.spawn_conflicts = spawn_conflicts
 
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
@@ -531,20 +526,11 @@ class AirspaceEnv(gym.Env):
         if not indices:
             return True
 
-        pos, vel = traffic_states(indices)
-        cand_pos = route['pos_nm']
-        cand_vel = np.array(heading_to_velocity(CRUISE_SPD_NMS, route['heading']))
-
-        dist_sq, tcpa, dcpa_sq, safe_rel, moving = cpa(pos - cand_pos, vel - cand_vel)
-        if (dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any():
-            return False                                    # static buffer
-        if self.spawn_conflicts:
-            return True
-
-        # Judged on t_los, the same predicted loss of separation the urgency ranking uses: a
-        # spawn is refused only if the pair would actually lose separation inside the horizon.
-        t_los = time_to_los(tcpa, np.maximum(0.0, dcpa_sq), safe_rel, moving)
-        return not bool((t_los < CONFIG['t_warn']).any())
+        # Only the distance counts: an aircraft may appear in a conflict that is already predicted
+        # within t_warn, as long as it is sep_nm + buffer_nm clear of all traffic.
+        pos, _ = traffic_states(indices)
+        dist_sq = ((pos - route['pos_nm']) ** 2).sum(axis=1)
+        return not bool((dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any())
 
     def _create_aircraft(self, slot, route):
         cs = f'AC{self._next_callsign_id:02d}'
