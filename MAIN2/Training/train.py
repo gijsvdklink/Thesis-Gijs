@@ -16,7 +16,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormali
 torch.set_num_threads(1)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from Environment import AirspaceEnv, CONFIG, DELAY_MODES, PENDING_OBS
+from Environment import AirspaceEnv, CONFIG, DELAY_MODES
 from Environment.config import TRAINING_SEEDS
 
 TREND_WINDOW = 200
@@ -36,7 +36,7 @@ ENT_COEF = 0.01
 SAVE_EVERY     = 500_000
 PROGRESS_EVERY = 50_000
 
-RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Models'))
+RUNS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'Experiment Gijs'))
 
 METRICS = [
     ('ep_reward_total',      'episode/reward_total'),
@@ -158,10 +158,8 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT, overwrite=False, resume=False, pending_obs='offset'):
+          runs_root=RUNS_ROOT, overwrite=False, resume=False):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
-    if pending_obs != 'offset':
-        delay_type += f'_pending-{pending_obs}'
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
         for name in ('final_model', 'last_model'):
@@ -176,8 +174,7 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     os.makedirs(run_dir, exist_ok=True)
 
     def make_worker():
-        return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed,
-                           pending_obs=pending_obs)
+        return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed)
 
     venv = DummyVecEnv([make_worker for _ in range(n_envs)])
     if resume:
@@ -238,21 +235,17 @@ def main():
                              'the step count and the TensorBoard curves continuous')
     parser.add_argument('--runs-root', default=RUNS_ROOT,
                         help='where the run directory is created, so a new set of models '
-                             'can sit beside an old one (default Runs_saved/experiments)')
+                             'can sit beside an old one (default MAIN2/Experiment Gijs)')
     default_mean_s = CONFIG['delay_mean_s']
     parser.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
                         type=float, default=default_mean_s,
                         help=f'delay magnitude: the MEAN pilot response time in seconds '
                              f'(default {default_mean_s:g}). Every advisory is drawn from '
                              f'this distribution. Ignored when --delay none.')
-    parser.add_argument('--pending-obs', choices=list(PENDING_OBS), default='offset',
-                        help='how the instruction the ATCO holds is observed: as an offset from '
-                             'the commanded heading and speed (default), or as the target itself')
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume,
-          args.pending_obs)
+          args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume)
 
 
 if __name__ == '__main__':

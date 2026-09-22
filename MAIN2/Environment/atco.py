@@ -52,6 +52,8 @@ class ATCO:
         advisory['issued_at_s']      = now_s
         advisory['response_start_s'] = self.advisory['response_start_s'] if revision else now_s
         advisory['execute_at_s']     = execute_at
+        # Advisories discarded so far in this response: each one added a draw to the max above.
+        advisory['revisions']        = held['revisions'] + 1 if revision else 0
 
         self.cs, self.advisory = cs, advisory
         return True

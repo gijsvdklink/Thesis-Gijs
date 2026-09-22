@@ -27,9 +27,6 @@ from .sector import make_sector_polygon, plan_entry_route, exit_point
 from .stats import new_ep_stats, episode_summary
 from .traffic import start_bluesky, traffic_states
 
-# The two ways the held instruction can be observed; see AirspaceEnv.__init__.
-PENDING_OBS = ('offset', 'target')
-
 
 # -- The per-aircraft record: what the CONTROLLER knows, not what BlueSky simulates ---
 
@@ -57,19 +54,12 @@ class AirspaceEnv(gym.Env):
     # Empty intruder slot: unreachably far, stationary, no predicted LoS.
     _EMPTY_SLOT = [EMPTY_RANGE_NM, 0.0, 0.0, 0.0, NO_CONFLICT_S]
 
-    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None, pending_obs='offset'):
+    def __init__(self, delay_mode=None, seed=None, delay_mean_s=None):
         super().__init__()
         # Per-instance rather than a CONFIG edit: SubprocVecEnv workers do not inherit CONFIG changes.
         self.delay_mode = delay_mode if delay_mode is not None else CONFIG['delay_mode']
         if self.delay_mode not in DELAY_MODES:
             raise ValueError(f'unknown delay_mode {self.delay_mode!r}; expected {DELAY_MODES}')
-
-        # How the instruction the ATCO is holding appears in pend_hdg and pend_spd: 'offset' from
-        # what the aircraft already flies (what every trained model so far has seen), or 'target',
-        # the held heading and speed themselves in the frame of h_cmd and v_cmd.
-        if pending_obs not in PENDING_OBS:
-            raise ValueError(f'unknown pending_obs {pending_obs!r}; expected {PENDING_OBS}')
-        self.pending_obs = pending_obs
 
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space      = spaces.Discrete(N_ACTIONS)
@@ -181,7 +171,7 @@ class AirspaceEnv(gym.Env):
                 # The controller's attention moves with the focus: a half-formed instruction for
                 # the aircraft just released is abandoned, not left to fire later. Without this
                 # the ATCO holds state for an aircraft the observation no longer describes, so
-                # pending reads 0 while an instruction is in fact outstanding.
+                # the ATCO clocks read 0 while an instruction is in fact outstanding.
                 if self.atco.cs == incumbent and self.atco.advisory is not None:
                     self._ep_stats['discarded'] += 1
                 self.atco.release(incumbent)
@@ -281,7 +271,8 @@ class AirspaceEnv(gym.Env):
         if cs is None or cs not in self._row_of:
             # No controllable aircraft: on route, nominal speed, clear, nothing pending.
             self._last_intruder_cs = [None] * N_NEIGHBOURS
-            return np.array([0.0, CONFIG['ac_speed'], 0.0, CONFIG['ac_speed'], 0.0, 0.0, 0.0]
+            return np.array([0.0, CONFIG['ac_speed'], 0.0, CONFIG['ac_speed'], 0.0,
+                             0.0, CONFIG['ac_speed'], 0.0, 0.0, 0.0]
                             + self._EMPTY_SLOT * N_NEIGHBOURS, dtype=np.float32)
 
         obs = self._ownship_features(cs) + self._intruder_features(cs)
@@ -299,41 +290,44 @@ class AirspaceEnv(gym.Env):
         v_own    = math.hypot(self._vel[row, 0], self._vel[row, 1]) * NMS_TO_KT
         v_cmd    = ac.commanded_mach * KT_PER_MACH
 
-        # Time since the advisory now standing was issued; a replacement restarts it.
+        # The ATCO as far as the tool can know it: WHAT it last sent and WHEN. The response time
+        # the ATCO drew is hidden, so it is not given, not even as an expectation.
         pending = self.atco.pending_for(cs)
-        wait_s  = self._sim_time_s - pending['issued_at_s'] if pending else 0.0
 
-        # What the controller is holding, as the OFFSET from what the aircraft already flies --
-        # the same quantity an action adds, so the policy can see whether the action it is about
-        # to choose reproduces the held instruction (a repeat, which lets it mature) or changes
-        # it (a revision, which discards it and restarts the response). Without this the two are
-        # indistinguishable, and the transition depends on state the policy cannot observe.
-        pend_hdg = pend_spd = 0.0
+        # What the controller is holding, as the target it will fly, in the same frame as h_cmd
+        # and v_cmd; with nothing held, the target is what the aircraft is already told to fly.
+        # The policy can then see whether the action it is about to choose reproduces the held
+        # instruction (a repeat, which lets it mature) or changes it (a revision).
+        advised_hdg, advised_spd = h_cmd, v_cmd
+        t_first = t_last = 0.0
+        n_rev = 0
         if pending is not None:
             if 'target_hdg' in pending:
-                pend_hdg = math.radians(degto180(pending['target_hdg'] - cmd_hdg))
+                advised_hdg = math.radians(degto180(pending['target_hdg'] - init_hdg))
             else:
-                pend_spd = (pending['target_mach'] - ac.commanded_mach) * KT_PER_MACH
+                advised_spd = pending['target_mach'] * KT_PER_MACH
 
-        # The same instruction as the heading and speed it sets, measured like h_cmd and v_cmd, so
-        # that nothing held reads as h_cmd and v_cmd themselves.
-        if self.pending_obs == 'target':
-            pend_hdg, pend_spd = h_cmd, v_cmd
-            if pending is not None:
-                if 'target_hdg' in pending:
-                    pend_hdg = math.radians(degto180(pending['target_hdg'] - init_hdg))
-                else:
-                    pend_spd = pending['target_mach'] * KT_PER_MACH
+            # Two clocks, because a revision postpones the response to max(tau, t_rev + kappa*tau):
+            # with a deterministic delay they fix the execution time exactly. Advice is sent before
+            # the simulation advances, so anything held has waited at least one step, and both
+            # clocks read 0 only when nothing is held. That is why there is no pending flag.
+            t_first = self._sim_time_s - pending['response_start_s']   # since the first advice of this response
+            t_last  = self._sim_time_s - pending['issued_at_s']        # since the latest revision
+
+            # With a lognormal delay every revision adds a draw to that max, so how many advisories
+            # this response has discarded also tells how late it is likely to be acted on.
+            n_rev = pending['revisions']
 
         return [dpsi_act,
                 v_own,
                 h_cmd,
                 v_cmd,
                 float(self._return_blocked[row]),   # 1 = returning is BLOCKED
-                1.0 if pending else 0.0,            # constant 0 when delay_mode='none'
-                wait_s,
-                pend_hdg,                           # 0 when nothing is held
-                pend_spd]
+                advised_hdg,
+                advised_spd,
+                t_first,                            # constant 0 when delay_mode='none'
+                t_last,
+                float(n_rev)]
 
     def _intruder_features(self, cs):
         own_row = self._row_of[cs]
@@ -526,11 +520,18 @@ class AirspaceEnv(gym.Env):
         if not indices:
             return True
 
-        # Only the distance counts: an aircraft may appear in a conflict that is already predicted
-        # within t_warn, as long as it is sep_nm + buffer_nm clear of all traffic.
-        pos, _ = traffic_states(indices)
-        dist_sq = ((pos - route['pos_nm']) ** 2).sum(axis=1)
-        return not bool((dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any())
+        pos, vel = traffic_states(indices)
+        cand_pos = route['pos_nm']
+        cand_vel = np.array(heading_to_velocity(CRUISE_SPD_NMS, route['heading']))
+
+        dist_sq, tcpa, dcpa_sq, safe_rel, moving = cpa(pos - cand_pos, vel - cand_vel)
+        if (dist_sq < (CONFIG['sep_nm'] + CONFIG['buffer_nm']) ** 2).any():
+            return False                                    # static buffer
+
+        # Judged on t_los, the same predicted loss of separation the urgency ranking uses: a
+        # spawn is refused only if the pair would actually lose separation inside the horizon.
+        t_los = time_to_los(tcpa, np.maximum(0.0, dcpa_sq), safe_rel, moving)
+        return not bool((t_los < CONFIG['t_warn']).any())
 
     def _create_aircraft(self, slot, route):
         cs = f'AC{self._next_callsign_id:02d}'

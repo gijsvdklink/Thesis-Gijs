@@ -84,7 +84,7 @@ KM_TO_NM = 1.0 / NM_TO_KM
 STEP_DURATION_S = CONFIG['action_freq'] * CONFIG['sim_dt']   # simulated seconds per RL step
 
 N_NEIGHBOURS = CONFIG['n_neighbours']
-OBS_DIM      = 9 + N_NEIGHBOURS * 5   # 9 ownship + 4 intruders x 5 = 29
+OBS_DIM      = 10 + N_NEIGHBOURS * 5  # 10 ownship + 4 intruders x 5 = 30
 
 CRUISE_SPD_NMS = CONFIG['ac_speed'] / 3600.0        # nominal cruise speed (NM/s); spawn checks
 NMS_TO_KT      = 3600.0                             # NM/s -> kt (observation reports kt)
@@ -122,6 +122,6 @@ ACT_COST = [
 ]
 
 # -- Observation labels (visualiser obs panel): angles in rad, speeds in kt, dist in NM, times in s --
-OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'h_cmd', 'v_cmd', 'retn_conf', 'pending', 'wait_s',
-                       'pend_hdg', 'pend_spd']
+OBS_OWNSHIP_LABELS  = ['dpsi', 'v_own', 'h_cmd', 'v_cmd', 'retn_conf', 'advised_hdg', 'advised_spd',
+                       't_first', 't_last', 'n_rev']
 OBS_INTRUDER_LABELS = ['dist', 'theta', 'psi', 'vint', 'tlos']
