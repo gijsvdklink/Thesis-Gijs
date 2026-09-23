@@ -10,25 +10,22 @@ from gymnasium import spaces
 import shapely
 
 
-import bluesky as bs
-from bluesky.stack.stackbase import Stack as _BsStack
-from bluesky.tools.misc import degto180
 
 from .config import (CONFIG, TRAINING_SCENARIOS, HELD_OUT, STEP_DURATION_S, OBS_DIM,
                      N_ACTIONS, N_NEIGHBOURS,
-                     CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH, CRUISE_ALT_M,
+                     CRUISE_SPD_NMS, NMS_TO_KT, KT_PER_MACH,
                      EMPTY_RANGE_NM, NO_CONFLICT_S,
                      HOLD_ACTION, ACT_COST, TURN_DELTAS, SPEED_ACTIONS,
                      RETURN_TO_INITIAL_HDG_ACTION)
 from .atco import DELAY_MODES, ATCO
-from .geometry import (latlon_to_nm, nm_to_latlon, heading_to_velocity, cpa, pairwise,
+from .geometry import (degto180, heading_to_velocity, cpa, pairwise,
                        time_to_los, heading_drift, urgency_matrix, ON_ROUTE_DRIFT)
 from .sector import make_sector_polygon, plan_entry_route, exit_point
 from .stats import new_ep_stats, episode_summary
-from .traffic import start_bluesky, traffic_states
+from .traffic import Traffic
 
 
-# -- The per-aircraft record: what the CONTROLLER knows, not what BlueSky simulates ---
+# -- The per-aircraft record: what the CONTROLLER knows, not what the traffic model integrates ---
 
 
 class Aircraft:
@@ -70,7 +67,8 @@ class AirspaceEnv(gym.Env):
         # The stream this environment draws its training scenarios from.
         self._seed_stream = Random(int(seed if seed is not None else CONFIG['seed']))
 
-        start_bluesky()
+        # One traffic model per environment: no global state, so these vectorise.
+        self.traf = Traffic()
 
         self._new_episode_rngs(None)
         self._reset_episode_state()
@@ -81,9 +79,7 @@ class AirspaceEnv(gym.Env):
             self._seed_stream = Random(int(seed))
         self._new_episode_rngs((options or {}).get('scenario_seed'))
 
-        _BsStack.cmdstack.clear()
-        bs.traf.reset()
-        bs.stack.stack(f"DT {CONFIG['sim_dt']};FF")
+        self.traf.reset()
 
         self._reset_episode_state()
         self._build_sector()
@@ -154,7 +150,7 @@ class AirspaceEnv(gym.Env):
         elif any_conflict:
             # The urgency is symmetric, so both aircraft of the worst pair share the same row
             # maximum. The row sum breaks the tie: the one also caught up in OTHER conflicts is
-            # the one worth advising. Without this the tie would fall to BlueSky's row order.
+            # the one worth advising. Without this the tie would fall to the traffic row order.
             best_cs = max(flying, key=lambda cs: (worst[self._row_of[cs]],
                                                   self.urgency[self._row_of[cs]].sum()))
         elif self._drift(most_drifting) > ON_ROUTE_DRIFT:
@@ -240,7 +236,7 @@ class AirspaceEnv(gym.Env):
         ac.last_advisory_action = action_idx
 
     def _still_flying(self, cs):
-        return cs in self._aircraft and bs.traf.id2idx(cs) >= 0
+        return cs in self._aircraft and self.traf.id2idx(cs) >= 0
 
     def _execute_due_advisories(self):
         ready = self.atco.act_if_ready(self._sim_time_s, self._still_flying)
@@ -258,11 +254,11 @@ class AirspaceEnv(gym.Env):
 
         if 'target_mach' in advisory:
             ac.commanded_mach = advisory['target_mach']
-            bs.stack.stack(f'SPD {cs} {advisory["target_mach"]:.3f}')
+            self.traf.set_mach(cs, advisory['target_mach'])
         else:
             # Absolute target fixed at issue time: the initial heading it offsets never moves.
             ac.commanded_hdg = advisory['target_hdg']
-            bs.stack.stack(f'HDG {cs} {advisory["target_hdg"]:.1f}')
+            self.traf.set_heading(cs, advisory['target_hdg'])
 
     # -- Observation: what the policy sees ---------------------------------------
 
@@ -410,8 +406,8 @@ class AirspaceEnv(gym.Env):
         self._urgency_cs_list = flying
         self._row_of          = {cs: i for i, cs in enumerate(flying)}
 
-        self._pos, self._vel = traffic_states(indices)
-        self._hdg            = bs.traf.hdg[np.asarray(indices, dtype=int)]
+        self._pos, self._vel = self.traf.states(indices)
+        self._hdg            = self.traf.hdg[np.asarray(indices, dtype=int)]
         self.urgency, self.t_los = urgency_matrix(self._pos, self._vel)
         self._count_conflicts(flying)
 
@@ -432,7 +428,7 @@ class AirspaceEnv(gym.Env):
 
     def _airborne_indices(self, index_of=None):
         if index_of is None:
-            index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
+            index_of = {cs: i for i, cs in enumerate(self.traf.id)}
         flying, indices = [], []
         for cs in sorted(self._aircraft):
             idx = index_of.get(cs, -1)
@@ -441,19 +437,19 @@ class AirspaceEnv(gym.Env):
                 indices.append(idx)
         return flying, indices
 
-    # -- Simulation: advancing BlueSky and scanning separation -------------------
+    # -- Simulation: advancing the traffic and scanning separation ---------------
 
     def _advance_simulation(self, acting_cs):
         self._los_seconds_this_step = 0
         self._drift_sum_this_step   = 0.0
 
         # Nothing is created or deleted inside this loop -- spawns happen before it and exits
-        # after -- so BlueSky's row order is fixed and the map is built once instead of five times.
-        index_of = {cs: i for i, cs in enumerate(bs.traf.id)}
+        # after -- so the row order is fixed and the map is built once instead of five times.
+        index_of = {cs: i for i, cs in enumerate(self.traf.id)}
 
         for _ in range(CONFIG['action_freq']):
             self._execute_due_advisories()
-            bs.sim.step()
+            self.traf.step(CONFIG['sim_dt'])
             self._sim_time_s += CONFIG['sim_dt']
 
             # The drift of the advised aircraft is read every simulated second, like the LoS
@@ -463,7 +459,7 @@ class AirspaceEnv(gym.Env):
                 row = index_of.get(acting_cs)
                 if row is not None and acting_cs in self._aircraft:
                     self._drift_sum_this_step += heading_drift(
-                        self._aircraft[acting_cs].initial_hdg, float(bs.traf.hdg[row]))
+                        self._aircraft[acting_cs].initial_hdg, float(self.traf.hdg[row]))
 
             pairs = self._scan_separation(index_of)
 
@@ -485,7 +481,7 @@ class AirspaceEnv(gym.Env):
         flying, indices = self._airborne_indices(index_of)
         if len(flying) < 2:
             return set()
-        pos     = traffic_states(indices)[0]
+        pos     = self.traf.states(indices)[0]
         delta   = pos[:, None, :] - pos[None, :, :]
         dist_sq = (delta ** 2).sum(axis=-1)
         rows, cols = np.where(dist_sq < CONFIG['sep_nm'] ** 2)
@@ -520,7 +516,7 @@ class AirspaceEnv(gym.Env):
         if not indices:
             return True
 
-        pos, vel = traffic_states(indices)
+        pos, vel = self.traf.states(indices)
         cand_pos = route['pos_nm']
         cand_vel = np.array(heading_to_velocity(CRUISE_SPD_NMS, route['heading']))
 
@@ -538,14 +534,8 @@ class AirspaceEnv(gym.Env):
         self._next_callsign_id += 1
         mach    = CONFIG['ac_mach']
         heading = float(route['heading'])
-        lat, lon = nm_to_latlon(CONFIG['center_ll'], *route['pos_nm'])
 
-        bs.traf.cre(cs, actype=CONFIG['ac_type'],
-                    aclat=float(lat), aclon=float(lon),
-                    achdg=heading, acspd=mach,
-                    acalt=CRUISE_ALT_M)
-        bs.stack.stack(f'SPD {cs} {mach}')
-        bs.stack.stack(f'ALT {cs} FL{CONFIG["altitude"]}')
+        self.traf.create(cs, route['pos_nm'][0], route['pos_nm'][1], heading, mach)
 
         entry_nm = (float(route['pos_nm'][0]), float(route['pos_nm'][1]))
         self._aircraft[cs] = Aircraft(
@@ -561,10 +551,10 @@ class AirspaceEnv(gym.Env):
     def _remove_exited_aircraft(self):
         for cs in self._exited_callsigns():
             slot = self._slots.index(cs)
-            idx  = bs.traf.id2idx(cs)
+            idx  = self.traf.id2idx(cs)
             if idx >= 0:
                 self._score_exit(cs, idx)
-                bs.traf.delete(idx)
+                self.traf.delete_idx(idx)
             self._slots[slot] = None
             self._aircraft.pop(cs, None)   # one record, so nothing can be left behind
             self.atco.release(cs)           # nothing outstanding for an aircraft that has gone
@@ -576,13 +566,13 @@ class AirspaceEnv(gym.Env):
 
         inside_sector = {}
         if flying:
-            positions = traffic_states(indices)[0]      # NM, the frame the polygon lives in
+            positions = self.traf.states(indices)[0]    # NM, the frame the polygon lives in
             # One vectorised predicate for the whole sector rather than a Point object and a
             # separate call per aircraft: this runs every step, for every aircraft.
             inside = shapely.contains_xy(self._polygon_ready, positions[:, 0], positions[:, 1])
             inside_sector = dict(zip(flying, inside))
 
-        # Gone from BlueSky altogether counts as exited, hence the False default.
+        # Gone from the traffic model altogether counts as exited, hence the False default.
         return [cs for cs in sorted(self._aircraft) if not inside_sector.get(cs, False)]
 
     def _no_turn_exit_nm(self, start_nm, heading_deg):
@@ -658,8 +648,6 @@ class AirspaceEnv(gym.Env):
         self.rho        = n_ac / area_km2      # recorded per episode by the evaluation
         self._slots     = [None] * n_ac
 
-        bs.stack.stack('ASAS OFF')
-
     def _spawn_initial_traffic(self):
         for slot in range(self.n_aircraft):
             for _ in range(CONFIG['max_placement_tries']):
@@ -725,7 +713,7 @@ class AirspaceEnv(gym.Env):
 
     def _score_exit(self, cs, idx):
         self._ep_stats['exits'] += 1
-        pos = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
+        pos = self.traf.pos[idx]
 
         # Track flown against the straight route it was given: spawn point to the no-turn exit.
         self._advance_track(cs, pos)
@@ -742,5 +730,5 @@ class AirspaceEnv(gym.Env):
         self._ep_stats['deviation_nm'] += math.hypot(pos[0] - exit_ref[0],
                                                      pos[1] - exit_ref[1])
 
-        if abs(degto180(float(bs.traf.hdg[idx]) - ac.initial_hdg)) <= CONFIG['on_route_hdg_tol_deg']:
+        if abs(degto180(float(self.traf.hdg[idx]) - ac.initial_hdg)) <= CONFIG['on_route_hdg_tol_deg']:
             self._ep_stats['on_route'] += 1

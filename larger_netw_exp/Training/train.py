@@ -7,11 +7,13 @@ import argparse
 import sys
 import time
 from collections import deque
+from random import Random
 
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import (DummyVecEnv, SubprocVecEnv, VecMonitor,
+                                              VecNormalize)
 
 torch.set_num_threads(1)
 
@@ -26,18 +28,22 @@ STATS_WINDOW = 100
 
 TOTAL_TIMESTEPS = 300_000_000
 
-N_ENVS     = 1
-N_STEPS    = 4096
+# The environment no longer uses BlueSky, which was a process-wide singleton and forced
+# one environment per process. A Traffic model is per-instance, so the rollout is collected
+# in parallel: N_ENVS workers, each stepping its own sector.
+N_ENVS     = 8
+N_STEPS    = 512          # 8 x 512 = 4096 transitions per update, as with one env at 4096
 BATCH_SIZE = 512
 
 GAMMA    = 0.995
 ENT_COEF = 0.01
 
-# THE one difference from MAIN2. MAIN2 leaves net_arch unset, which is SB3's MlpPolicy
-# default of [64, 64]; Nilsson et al. tested nothing below 256x3. Everything else in this
-# folder is MAIN2 byte for byte, so the only thing separating a run here from its MAIN2
-# twin is the width of the policy and value networks.
-NET_ARCH = [256, 256, 256]
+# Wider than MAIN2, but the SAME SHAPE. MAIN2 leaves net_arch unset, which is SB3's
+# MlpPolicy default of two layers of 64 (13.0k parameters). This doubles the width and
+# keeps the depth, giving two layers of 128 (42.4k parameters). Depth is left alone
+# deliberately: for a 30-element observation the earlier 256x3 (282k parameters) changed
+# shape and capacity at once, so a result could not be attributed to either.
+NET_ARCH = [128, 128]
 
 SAVE_EVERY     = 500_000
 PROGRESS_EVERY = 50_000
@@ -179,10 +185,24 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
                  f'to train over it.')
     os.makedirs(run_dir, exist_ok=True)
 
-    def make_worker():
-        return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s, seed=seed)
+    # Every worker needs its OWN scenario stream. Constructed from the run seed alone, all
+    # n_envs workers would draw the same episodes and the rollout would be n_envs copies of
+    # one trajectory. The streams are drawn in order from the run seed, so worker k always
+    # gets the same stream whatever n_envs is, and --seed still fixes the whole run.
+    stream       = Random(seed)
+    worker_seeds = [stream.randrange(2 ** 63) for _ in range(n_envs)]
 
-    venv = DummyVecEnv([make_worker for _ in range(n_envs)])
+    def make_worker(worker_seed):
+        def _init():
+            return AirspaceEnv(delay_mode=delay_mode, delay_mean_s=delay_mean_s,
+                               seed=worker_seed)
+        return _init
+
+    factories = [make_worker(ws) for ws in worker_seeds]
+
+    # Subprocesses only pay for themselves once there is more than one environment; a single
+    # worker stays in-process and skips the pickling and IPC altogether.
+    venv = DummyVecEnv(factories) if n_envs == 1 else SubprocVecEnv(factories)
     if resume:
         env = VecNormalize.load(os.path.join(run_dir, f'{checkpoint}_vecnorm.pkl'),
                                 VecMonitor(venv))
@@ -230,8 +250,10 @@ def main():
     parser.add_argument('--timesteps', type=int, default=TOTAL_TIMESTEPS,
                         help=f'training steps (default {TOTAL_TIMESTEPS:,})')
     parser.add_argument('--n-envs', type=int, default=N_ENVS,
-                        help=f'environments in this process (default {N_ENVS}); BlueSky is a '
-                             f'singleton, so leave this at 1')
+                        help=f'parallel environments (default {N_ENVS}), each in its own '
+                             f'subprocess above 1. The rollout is n_envs x N_STEPS '
+                             f'({N_ENVS} x {N_STEPS} = {N_ENVS * N_STEPS}), so changing this '
+                             f'changes the update size unless N_STEPS is changed to match.')
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY,
                         help=f'steps between last_model checkpoints '
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')

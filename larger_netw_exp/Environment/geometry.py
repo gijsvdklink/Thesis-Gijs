@@ -4,13 +4,16 @@ import math
 
 import numpy as np
 
-from bluesky.tools.aero import nm as _M_PER_NM     # 1852.0
-from bluesky.tools.geo import qdrpos
-from bluesky.tools.misc import degto180
-
 from .config import CONFIG, NO_CONFLICT_S
 
+_M_PER_NM  = 1852.0
 NMS_PER_MS = 1.0 / _M_PER_NM   # m/s -> NM/s
+
+
+def degto180(angle):
+    # Wrap to (-180, 180]. Was bluesky.tools.misc.degto180; works on scalars and arrays.
+    return (np.asarray(angle) + 180.0) % 360.0 - 180.0 if isinstance(angle, np.ndarray) \
+        else (angle + 180.0) % 360.0 - 180.0
 
 # Drift small enough to count as back on route, in the units heading_drift returns. Taken from
 # the on-route tolerance so the ranking and the on-route KPI agree on what "on route" means.
@@ -34,11 +37,6 @@ def nm_to_latlon(center_ll, east_nm, north_nm):
     ref_lat, ref_lon = center_ll
     return (ref_lat + north_nm / 60.0,
             ref_lon + east_nm / (60.0 * math.cos(math.radians(ref_lat))))
-
-
-def point_ahead(from_ll, heading_deg, distance_nm):
-    lat, lon = qdrpos(from_ll[0], from_ll[1], heading_deg, distance_nm)
-    return float(lat), float(lon)
 
 
 def heading_to_velocity(speed, heading_deg):

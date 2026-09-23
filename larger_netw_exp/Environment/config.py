@@ -1,8 +1,19 @@
 # -- Tunable settings ----------------------------------------------------------
 
+import math as _math
 from random import Random as _Random
 
-from bluesky.tools.aero import ft, kts, mach2tas
+# Unit constants and the ISA atmosphere, previously taken from bluesky.tools.aero. Kept here
+# so the environment has no BlueSky dependency at all; _speed_of_sound reproduces BlueSky's
+# mach2tas at FL350 to the last digit (576.419 kt per Mach).
+ft   = 0.3048
+kts  = 0.514444
+
+
+def _speed_of_sound(alt_m):
+    # ISA troposphere: 288.15 K at sea level, lapsing 6.5 K/km up to the tropopause at 11 km.
+    temp_k = 288.15 - 0.0065 * min(alt_m, 11000.0)
+    return _math.sqrt(1.4 * 287.05287 * temp_k)
 
 CONFIG = {
     # Aircraft & sector
@@ -91,7 +102,7 @@ NMS_TO_KT      = 3600.0                             # NM/s -> kt (observation re
 # TAS is linear in Mach at a fixed altitude, so one constant is exact: the ISA speed of
 # sound at cruise, straight from BlueSky's atmosphere model rather than an assumed ratio.
 CRUISE_ALT_M   = CONFIG['altitude'] * 100 * ft
-KT_PER_MACH    = mach2tas(1.0, CRUISE_ALT_M) / kts
+KT_PER_MACH    = _speed_of_sound(CRUISE_ALT_M) / kts
 
 # Sentinels in raw units: an empty intruder slot, and a pair that never intrudes or lies beyond the horizon.
 EMPTY_RANGE_NM = 1000.0
