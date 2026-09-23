@@ -1,0 +1,66 @@
+# EXPERIMENT GIJS: the new ATCO observation
+#
+# MAIN2 is MAIN with one change: the part of the observation that describes the ATCO.
+#     MAIN:  pending, wait_s, pend_hdg, pend_spd (offset from what the aircraft is told)
+#     MAIN2: advised_hdg, advised_spd (the target it will fly, in the frame of h_cmd and v_cmd),
+#            t_first (s since the first advice of this response),
+#            t_last  (s since the latest revision),
+#            n_rev   (advisories discarded so far in this response)
+# Nothing held: advised_hdg = h_cmd, advised_spd = v_cmd, clocks and n_rev 0. The observation is 30 long.
+#
+# The results are written to MAIN2/Experiment Gijs.
+
+# Run everything from the MAIN2 folder:
+#     cd <wherever MAIN2 is>
+# Check you are in the right place -- this must list Environment, Training, Validation:
+#     ls
+
+# terminal 1
+python -m Training.train --delay none --seed 1 --timesteps 300000000
+
+# terminal 2
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
+
+# terminal 3
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
+
+# tensorboard
+python -m tensorboard.main --logdir "Experiment Gijs" --port 6016
+
+
+================================================================================
+RESUMING AFTER A DISCONNECT
+================================================================================
+
+# Same commands, plus --resume. Each run continues from its own last checkpoint,
+# keeping the step count and the TensorBoard curves continuous. At most
+# --save-every steps (500,000) are lost per run.
+#
+# Do NOT delete "Experiment Gijs". Do NOT pass --overwrite; that starts from scratch.
+
+# terminal 1
+python -m Training.train --delay none --seed 1 --timesteps 300000000 --resume
+
+# terminal 2
+python -m Training.train --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+# terminal 3
+python -m Training.train --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+
+================================================================================
+SURVIVING A DISCONNECT NEXT TIME
+================================================================================
+
+# A terminal closed by a dropped SSH connection takes its training run with it.
+# Start each run inside tmux so it keeps going without the laptop attached:
+#
+#     tmux new -s t1                  # one session per run
+#     python -m Training.train --delay none --seed 1 --timesteps 300000000
+#     Ctrl-B then D                   # detach; training continues
+#
+#     tmux ls                         # list sessions
+#     tmux attach -t t1               # reattach later
+#
+# Or prefix a single command:
+#     nohup python -m Training.train --delay none --seed 1 --timesteps 300000000 > t1.log 2>&1 &
