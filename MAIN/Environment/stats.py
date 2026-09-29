@@ -71,11 +71,15 @@ def episode_summary(stats):
         # Every KPI appears twice: the raw episode count, and the same count per flight hour so
         # that scenarios of different size and length stay comparable.
 
-        # LoS and conflicts.
-        'ep_los_events':        s['los_events'],
-        'ep_los_events_per_fh': s['los_events'] / flight_hours,
-        'ep_conflicts':         s['conflicts'],
-        'ep_conflicts_per_fh':  s['conflicts'] / flight_hours,
+        # LoS and conflicts. The count says how OFTEN separation was lost; los_seconds says
+        # how LONG it stayed lost, which a count cannot distinguish -- one intrusion held for
+        # a minute and one recovered in five seconds are both a single event.
+        'ep_los_events':         s['los_events'],
+        'ep_los_events_per_fh':  s['los_events'] / flight_hours,
+        'ep_los_seconds':        s['los_seconds'],
+        'ep_los_seconds_per_fh': s['los_seconds'] / flight_hours,
+        'ep_conflicts':          s['conflicts'],
+        'ep_conflicts_per_fh':   s['conflicts'] / flight_hours,
 
         # Route efficiency: track flown over the straight route, and the share of aircraft that
         # left within the on-route heading tolerance of the heading they entered on. Both are
@@ -108,10 +112,14 @@ def episode_summary(stats):
         'ep_reward_total':  s['reward'],
         'ep_reward_per_fh': s['reward'] / flight_hours,
 
-        # The same reward split into its three terms, on the same per-flight-hour scale, so
-        # they add up to ep_reward_per_fh and can be read against each other.
+        # The same reward split into its three terms, raw and per flight hour. The raw three
+        # add up to ep_reward_total and the rates to ep_reward_per_fh, so either scale can be
+        # read on its own without multiplying back through ep_flight_hours.
+        'ep_reward_los':          s['reward_los'],
         'ep_reward_los_per_fh':   s['reward_los'] / flight_hours,
+        'ep_reward_drift':        s['reward_drift'],
         'ep_reward_drift_per_fh': s['reward_drift'] / flight_hours,
+        'ep_reward_work':         s['reward_work'],
         'ep_reward_work_per_fh':  s['reward_work'] / flight_hours,
 
         # Bookkeeping: the denominator behind every rate above, and the episode length.
@@ -126,8 +134,10 @@ def episode_summary(stats):
         'ep_repeats':      s['repeats'],
     }
 
-    # The specific advisory issued, per flight hour: which turn, and which way the speed went.
+    # The specific advisory issued: which turn, and which way the speed went. Raw beside the
+    # rate, so a breakdown can be summed across scenarios without re-weighting by flight hours.
     for index, label in ADVISORY_LABELS.items():
+        summary[f'ep_{label}']        = s['transmitted'][index]
         summary[f'ep_{label}_per_fh'] = s['transmitted'][index] / flight_hours
 
     return summary

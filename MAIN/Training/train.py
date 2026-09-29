@@ -4,7 +4,9 @@ os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 
 import argparse
+import json
 import sys
+import zipfile
 import time
 from collections import deque
 
@@ -162,12 +164,25 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
-        for name in ('final_model', 'last_model'):
-            if os.path.exists(os.path.join(run_dir, f'{name}.zip')):
-                checkpoint = name
-                break
-        else:
-            sys.exit(f'--resume: no checkpoint in {run_dir}')
+        # The checkpoint that is FURTHEST ALONG, not the first name that happens to exist.
+        # final_model is written when a run ends or is interrupted; last_model every
+        # save_every steps. A run killed without unwinding (no KeyboardInterrupt, so the
+        # finally block never ran) leaves final_model behind at an OLDER step count than
+        # last_model. Preferring it by name then silently discards the newer weights, and
+        # the next checkpoint overwrites them. Read the step count and take the larger.
+        checkpoint, best_steps = None, -1
+        for name in ('last_model', 'final_model'):
+            zip_path = os.path.join(run_dir, f'{name}.zip')
+            # A checkpoint without its VecNormalize statistics cannot be resumed from.
+            if not (os.path.exists(zip_path)
+                    and os.path.exists(os.path.join(run_dir, f'{name}_vecnorm.pkl'))):
+                continue
+            with zipfile.ZipFile(zip_path) as archive:
+                steps = json.loads(archive.read('data').decode()).get('num_timesteps', -1)
+            if steps > best_steps:
+                checkpoint, best_steps = name, steps
+        if checkpoint is None:
+            sys.exit(f'--resume: no checkpoint with its vecnorm in {run_dir}')
     elif os.path.exists(run_dir) and not overwrite:
         sys.exit(f'{run_dir} already exists. Delete it, move it aside, or pass --overwrite '
                  f'to train over it.')

@@ -29,6 +29,14 @@ LABELS  = {'none':              'No delay',
 
 SMOOTHING = 0.999   # on all ~9000 points per run; TensorBoard's 0.99 on its ~1000 samples
 
+# A resumed run can be missing whole stretches of logging: the event file of the session
+# that did the training was never written or never kept. Joining across such a stretch draws
+# a straight line through steps that were never measured, which reads as a long plateau.
+# A jump larger than this many steps is treated as a break: the line stops and restarts, and
+# the smoothing restarts with it so the first points after the break are not dragged by the
+# value from before it.
+GAP_STEPS = 2_000_000
+
 
 def read_run(run_dir):
     from tensorboard.backend.event_processing.event_file_loader import EventFileLoader
@@ -38,16 +46,24 @@ def read_run(run_dir):
                    key=lambda path: int(os.path.basename(path).split('.')[3]))
     points = {}
     for path in files:
-        first = None
+        session = {}
         for event in EventFileLoader(path).Load():
             for value in event.summary.value:
                 if value.tag != TAG:
                     continue
-                if first is None:
-                    first  = event.step
-                    points = {step: v for step, v in points.items() if step < first}
-                points[event.step] = (value.simple_value if value.HasField('simple_value')
-                                      else float(tensor_util.make_ndarray(value.tensor)))
+                session[event.step] = (value.simple_value if value.HasField('simple_value')
+                                       else float(tensor_util.make_ndarray(value.tensor)))
+        if not session:
+            continue
+        # A restart rewinds the step counter, so the newer session replaces the older curve
+        # -- but ONLY over the steps it actually reaches. A session resumed from a stale
+        # checkpoint and abandoned after a few rollouts would otherwise erase every later
+        # point of the branch the weights really followed, leaving a gap the width of the
+        # rewind. Supersede inside this session's own span and leave the rest standing.
+        low, high = min(session), max(session)
+        points = {step: value for step, value in points.items()
+                  if step < low or step > high}
+        points.update(session)
     return run_dir, points
 
 
@@ -77,14 +93,34 @@ def main():
 
     frame = load(args.runs, os.path.join(args.out, 'training_reward.csv'), args.reload)
 
+    # One segment per continuously logged stretch; see GAP_STEPS.
+    frame = frame.sort_values(['delay_type', 'seed', 'step'])
+    step_jump = frame.groupby(['delay_type', 'seed'])['step'].diff()
+    frame['segment'] = (step_jump > GAP_STEPS).groupby(
+        [frame['delay_type'], frame['seed']]).cumsum()
+
     # Only the smoothed curves: the raw values scatter too much to read seven seeds per type.
-    frame['smoothed'] = frame.groupby(['delay_type', 'seed'])['reward'].transform(
+    frame['smoothed'] = frame.groupby(['delay_type', 'seed', 'segment'])['reward'].transform(
         lambda reward: reward.ewm(alpha=1 - SMOOTHING).mean())
 
     figure, axis = plt.subplots(figsize=(10, 6))
+    labelled = set()
     for (delay_type, seed), run in frame.groupby(['delay_type', 'seed']):
-        axis.plot(run['step'] / 1e6, run['smoothed'], color=COLOURS[delay_type],
-                  linewidth=1.5, label=LABELS[delay_type] if seed == 1 else None)
+        segments = [part for _, part in run.groupby('segment')]
+
+        # Across a gap nothing was measured, so the join is drawn dashed and faint: the
+        # curve stays readable end to end without claiming the missing stretch was flat.
+        for before, after in zip(segments, segments[1:]):
+            axis.plot([before['step'].iloc[-1] / 1e6, after['step'].iloc[0] / 1e6],
+                      [before['smoothed'].iloc[-1], after['smoothed'].iloc[0]],
+                      color=COLOURS[delay_type], linewidth=1.0,
+                      linestyle=(0, (4, 4)), alpha=0.35, zorder=1)
+
+        for part in segments:
+            label = LABELS[delay_type] if delay_type not in labelled else None
+            labelled.add(delay_type)
+            axis.plot(part['step'] / 1e6, part['smoothed'], color=COLOURS[delay_type],
+                      linewidth=1.5, label=label, zorder=2)
 
     # The reward is never positive, and the first two million steps would squash the rest.
     axis.set_ylim(frame.loc[frame['step'] > 2e6, 'reward'].min(), 0)

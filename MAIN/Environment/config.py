@@ -67,7 +67,7 @@ CONFIG = {
 TRAINING_SEEDS  = (1, 2, 3, 4, 5, 6, 7)
 VALIDATION_SEED = 8
 
-VALIDATION_EPISODES = 300
+VALIDATION_EPISODES = 350
 TRAINING_SCENARIOS  = 1_000_000_000    # training draws a scenario seed below this, at random
 
 # The 100 held-out scenarios, drawn once from VALIDATION_SEED. Training skips any scenario in this set
