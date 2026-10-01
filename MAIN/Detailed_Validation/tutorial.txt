@@ -1,0 +1,36 @@
+# Detailed validation -- run from the MAIN folder:
+#     cd <wherever MAIN is>
+#     ls          # must list Environment, Training, Validation, Detailed_Validation
+#
+# The models are read from MAIN/Models (none/, deterministic_30s/, lognormal_30s/, each with
+# *_seed1..7), at their furthest checkpoint, exactly as in the normal test.
+#
+# SMALL FIRST ROUND: all 3 model types x 7 seeds, in the two key environments N0 (no delay) and
+# D30 (deterministic 30 s), on the first 5 test scenarios, at 30 aircraft and rho = 1/10000.
+# That is 42 runs of 5 scenarios, dealt out over 5 terminals: 8 or 9 runs, about 40-45 scenarios
+# per terminal. Results go to ../Detailed_results.
+#
+# A stopped terminal is resumed by giving the same command again: finished runs are skipped.
+# More data later: raise --episodes (e.g. 20) and/or add environments (--envs N0 D30 D60 L30).
+
+# terminal 1
+python Detailed_Validation/detailed_validation.py --terminal 1 --terminals 5 --envs N0 D30 --episodes 5 --n-ac 30 --density 0.0001
+
+# terminal 2
+python Detailed_Validation/detailed_validation.py --terminal 2 --terminals 5 --envs N0 D30 --episodes 5 --n-ac 30 --density 0.0001
+
+# terminal 3
+python Detailed_Validation/detailed_validation.py --terminal 3 --terminals 5 --envs N0 D30 --episodes 5 --n-ac 30 --density 0.0001
+
+# terminal 4
+python Detailed_Validation/detailed_validation.py --terminal 4 --terminals 5 --envs N0 D30 --episodes 5 --n-ac 30 --density 0.0001
+
+# terminal 5
+python Detailed_Validation/detailed_validation.py --terminal 5 --terminals 5 --envs N0 D30 --episodes 5 --n-ac 30 --density 0.0001
+
+# once all five are done: combine the runs into steps.csv, advisories.csv, conflicts.csv and
+# episodes.csv in ../Detailed_results
+python Detailed_Validation/detailed_validation.py --merge
+
+# A single run, e.g. to try it out first (one scenario, a few minutes):
+python Detailed_Validation/detailed_validation.py --run deterministic 1 deterministic 30 --episodes 1 --n-ac 30 --density 0.0001
