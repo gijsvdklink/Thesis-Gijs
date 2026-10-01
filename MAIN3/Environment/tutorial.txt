@@ -1,0 +1,157 @@
+# TRAINING: 21 runs on 21 terminals -- 3 delay types x 7 seeds
+#
+# Run everything from the MAIN3 folder:
+#     cd <wherever MAIN3 is>
+# Check you are in the right place -- this must list Environment, Training, Validation:
+#     ls
+#
+# Each run uses 4 parallel environments (4 x 1024 = the same 4096-transition rollout one
+# environment at 4096 collects), so it occupies about 4 cores. Twenty-one runs at once want
+# 84. Start as many as the machine has cores for and queue the rest; --n-envs lowers it, but
+# lower --n-steps to match or the update size changes with it.
+#
+# Results are written to MAIN3/Models/<delay type>/<delay type>_seed<N>.
+
+# ---- no delay ----------------------------------------------------------
+
+# terminal 1
+python Training/train.py --delay none --seed 1 --timesteps 300000000
+
+# terminal 2
+python Training/train.py --delay none --seed 2 --timesteps 300000000
+
+# terminal 3
+python Training/train.py --delay none --seed 3 --timesteps 300000000
+
+# terminal 4
+python Training/train.py --delay none --seed 4 --timesteps 300000000
+
+# terminal 5
+python Training/train.py --delay none --seed 5 --timesteps 300000000
+
+# terminal 6
+python Training/train.py --delay none --seed 6 --timesteps 300000000
+
+# terminal 7
+python Training/train.py --delay none --seed 7 --timesteps 300000000
+
+# ---- deterministic 30 s ------------------------------------------------
+
+# terminal 8
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
+
+# terminal 9
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
+
+# terminal 10
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
+
+# terminal 11
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
+
+# terminal 12
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
+
+# terminal 13
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000
+
+# terminal 14
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000
+
+# ---- lognormal 30 s ----------------------------------------------------
+
+# terminal 15
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
+
+# terminal 16
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
+
+# terminal 17
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
+
+# terminal 18
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
+
+# terminal 19
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
+
+# terminal 20
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000
+
+# terminal 21
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000
+
+
+# ---- watch them --------------------------------------------------------
+
+python -m tensorboard.main --logdir Models --port 6020
+
+
+# ---- resume ------------------------------------------------------------
+#
+# An interrupted run continues from its furthest checkpoint, which is read from the
+# step count rather than the file name -- a run killed outright leaves final_model
+# stale while last_model keeps advancing, and the older one must not win.
+
+# terminal 1
+python Training/train.py --delay none --seed 1 --timesteps 300000000 --resume
+
+# terminal 2
+python Training/train.py --delay none --seed 2 --timesteps 300000000 --resume
+
+# terminal 3
+python Training/train.py --delay none --seed 3 --timesteps 300000000 --resume
+
+# terminal 4
+python Training/train.py --delay none --seed 4 --timesteps 300000000 --resume
+
+# terminal 5
+python Training/train.py --delay none --seed 5 --timesteps 300000000 --resume
+
+# terminal 6
+python Training/train.py --delay none --seed 6 --timesteps 300000000 --resume
+
+# terminal 7
+python Training/train.py --delay none --seed 7 --timesteps 300000000 --resume
+
+# terminal 8
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+# terminal 9
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+
+# terminal 10
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+
+# terminal 11
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+
+# terminal 12
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+
+# terminal 13
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+
+# terminal 14
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000 --resume
+
+# terminal 15
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+
+# terminal 16
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+
+# terminal 17
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+
+# terminal 18
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+
+# terminal 19
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+
+# terminal 20
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+
+# terminal 21
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000 --resume
