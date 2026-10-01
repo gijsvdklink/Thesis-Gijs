@@ -32,7 +32,7 @@ import pandas as pd
 MAIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, MAIN_DIR)
 
-from Environment.config import HOLD_ACTION, TRAINING_SEEDS, VALIDATION_SEEDS
+from Environment.config import CONFIG, HOLD_ACTION, TRAINING_SEEDS, VALIDATION_SEEDS
 
 MODELS_DIR  = os.path.join(MAIN_DIR, 'Models')
 RESULTS_DIR = os.path.join(os.path.dirname(MAIN_DIR), 'Test_results')
@@ -195,7 +195,7 @@ def test_run(model_type, seed, law, mean, models, out, episodes):
     os.replace(path + '.part', path)
 
 
-def run_terminal(terminal, terminals, models, out, episodes):
+def run_terminal(terminal, terminals, models, out, episodes, airspace=()):
     """This terminal's runs one after another, each in its own process: BlueSky is a
     process-wide singleton, so every test environment gets a fresh one."""
     share = terminal_share(terminal, terminals)
@@ -203,7 +203,8 @@ def run_terminal(terminal, terminals, models, out, episodes):
     failed = []
     for model_type, seed, law, mean in share:
         command = [sys.executable, os.path.abspath(__file__), '--run', model_type, str(seed),
-                   law, str(mean), '--models', models, '--out', out, '--episodes', str(episodes)]
+                   law, str(mean), '--models', models, '--out', out, '--episodes', str(episodes),
+                   *airspace]
         if subprocess.run(command).returncode != 0:
             failed.append(os.path.basename(run_path(out, model_type, seed, law, mean)))
     print(f'terminal {terminal} finished' + (f'; failed: {", ".join(failed)}' if failed else ''))
@@ -234,8 +235,24 @@ def main():
     parser.add_argument('--out', default=RESULTS_DIR, help=f'default {RESULTS_DIR}')
     parser.add_argument('--episodes', type=int, default=len(VALIDATION_SEEDS),
                         help='test scenarios per run, from the start of the set')
+    parser.add_argument('--n-ac', type=int, default=None, metavar='N',
+                        help='hold the aircraft count at N instead of drawing it per episode')
+    parser.add_argument('--density', type=float, default=None, metavar='RHO',
+                        help='hold the traffic density at RHO ac/km^2 instead of drawing it')
     args = parser.parse_args()
     out, models = os.path.abspath(args.out), os.path.abspath(args.models)
+
+    # A FIXED airspace in place of the per-episode draw, so a sweep can hold traffic
+    # constant and the delay conditions are compared at one density rather than averaged
+    # over the range. Set before any environment is built; each --run is its own process,
+    # so the override has to be re-applied there -- hence airspace below.
+    airspace = []
+    if args.n_ac is not None:
+        CONFIG['n_aircraft'] = lambda rng: args.n_ac
+        airspace += ['--n-ac', str(args.n_ac)]
+    if args.density is not None:
+        CONFIG['rho'] = lambda rng: args.density
+        airspace += ['--density', repr(args.density)]
 
     if args.merge:
         merge(out)
@@ -243,7 +260,7 @@ def main():
         model_type, seed, law, mean = args.run
         test_run(model_type, int(seed), law, int(mean), models, out, args.episodes)
     elif args.terminal:
-        run_terminal(args.terminal, args.terminals, models, out, args.episodes)
+        run_terminal(args.terminal, args.terminals, models, out, args.episodes, airspace)
     else:
         parser.error('give --terminal, --run or --merge')
 

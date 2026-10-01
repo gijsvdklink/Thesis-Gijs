@@ -1,0 +1,94 @@
+# HIGH-DENSITY SWEEP: 30 aircraft at rho = 1/10000, 300 scenarios
+#
+# from the MAIN folder
+#
+# Normally n_aircraft is drawn per episode from randint(15, 30) and rho from
+# uniform(1/20000, 1/10000), so a result is averaged over the whole range. These flags
+# hold both fixed at the BUSIEST corner of it -- the most aircraft, at the highest
+# density -- so the delay conditions are compared at one traffic load rather than
+# across a mixture.
+#
+#     --n-ac 30        aircraft per scenario, instead of the draw
+#     --density 0.0001 ac/km^2 (= 1/10000), so the sector is 30 / 0.0001 = 300,000 km^2
+#
+# Results go to Test_results_30ac, NOT Test_results, so this sweep cannot overwrite the
+# baseline one. The models are read from MAIN/Models, each at its furthest checkpoint.
+#
+# 190 runs over 24 terminals: 22 terminals get 8 runs, 2 get 7. Use --terminals 19 for
+# exactly 10 runs each. A finished scenario file is skipped on restart, so interrupting
+# a terminal is safe.
+
+# terminal 1
+python Validation/run_test_scenarios.py --terminal 1 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 2
+python Validation/run_test_scenarios.py --terminal 2 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 3
+python Validation/run_test_scenarios.py --terminal 3 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 4
+python Validation/run_test_scenarios.py --terminal 4 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 5
+python Validation/run_test_scenarios.py --terminal 5 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 6
+python Validation/run_test_scenarios.py --terminal 6 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 7
+python Validation/run_test_scenarios.py --terminal 7 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 8
+python Validation/run_test_scenarios.py --terminal 8 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 9
+python Validation/run_test_scenarios.py --terminal 9 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 10
+python Validation/run_test_scenarios.py --terminal 10 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 11
+python Validation/run_test_scenarios.py --terminal 11 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 12
+python Validation/run_test_scenarios.py --terminal 12 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 13
+python Validation/run_test_scenarios.py --terminal 13 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 14
+python Validation/run_test_scenarios.py --terminal 14 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 15
+python Validation/run_test_scenarios.py --terminal 15 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 16
+python Validation/run_test_scenarios.py --terminal 16 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 17
+python Validation/run_test_scenarios.py --terminal 17 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 18
+python Validation/run_test_scenarios.py --terminal 18 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 19
+python Validation/run_test_scenarios.py --terminal 19 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 20
+python Validation/run_test_scenarios.py --terminal 20 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 21
+python Validation/run_test_scenarios.py --terminal 21 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 22
+python Validation/run_test_scenarios.py --terminal 22 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 23
+python Validation/run_test_scenarios.py --terminal 23 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# terminal 24
+python Validation/run_test_scenarios.py --terminal 24 --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_30ac
+
+# once every terminal is done
+python Validation/run_test_scenarios.py --merge --out ../Test_results_30ac
