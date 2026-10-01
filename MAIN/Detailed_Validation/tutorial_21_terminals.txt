@@ -1,0 +1,78 @@
+# Detailed validation, round 2 -- 21 terminals, run from the MAIN folder:
+#     cd <wherever MAIN is>
+#     git pull
+#
+# All 3 model types x 7 seeds in N0 (no delay), D30 and D60 (deterministic 30 s and 60 s), on the
+# first 20 test scenarios at 30 aircraft and rho = 1/10000: 63 runs of 20 scenarios.
+# Every terminal gets exactly 3 runs, one model in each of the three environments, so the
+# workload is equal: 60 scenarios x ~16 s, about 17-20 minutes per terminal.
+#
+# Results go to ../Detailed_results_20, so the first round (../Detailed_results) is kept.
+# A stopped terminal is resumed by giving the same command again: finished runs are skipped.
+# Copy the WHOLE Detailed_results_20 folder afterwards, including every steps.csv.
+
+# terminal 1
+python Detailed_Validation/detailed_validation.py --terminal 1 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 2
+python Detailed_Validation/detailed_validation.py --terminal 2 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 3
+python Detailed_Validation/detailed_validation.py --terminal 3 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 4
+python Detailed_Validation/detailed_validation.py --terminal 4 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 5
+python Detailed_Validation/detailed_validation.py --terminal 5 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 6
+python Detailed_Validation/detailed_validation.py --terminal 6 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 7
+python Detailed_Validation/detailed_validation.py --terminal 7 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 8
+python Detailed_Validation/detailed_validation.py --terminal 8 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 9
+python Detailed_Validation/detailed_validation.py --terminal 9 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 10
+python Detailed_Validation/detailed_validation.py --terminal 10 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 11
+python Detailed_Validation/detailed_validation.py --terminal 11 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 12
+python Detailed_Validation/detailed_validation.py --terminal 12 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 13
+python Detailed_Validation/detailed_validation.py --terminal 13 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 14
+python Detailed_Validation/detailed_validation.py --terminal 14 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 15
+python Detailed_Validation/detailed_validation.py --terminal 15 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 16
+python Detailed_Validation/detailed_validation.py --terminal 16 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 17
+python Detailed_Validation/detailed_validation.py --terminal 17 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 18
+python Detailed_Validation/detailed_validation.py --terminal 18 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 19
+python Detailed_Validation/detailed_validation.py --terminal 19 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 20
+python Detailed_Validation/detailed_validation.py --terminal 20 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# terminal 21
+python Detailed_Validation/detailed_validation.py --terminal 21 --terminals 21 --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001 --out ../Detailed_results_20
+
+# once all 21 are done: combine the runs into steps.csv, advisories.csv, conflicts.csv and episodes.csv
+python Detailed_Validation/detailed_validation.py --merge --out ../Detailed_results_20
