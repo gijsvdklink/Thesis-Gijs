@@ -1,0 +1,24 @@
+# HIGH-DENSITY SWEEP: 30 aircraft at rho = 1/10000, 300 scenarios
+#
+# from the MAIN_IMPROVED folder
+#
+# Normally n_aircraft is drawn per episode from randint(15, 30) and rho from
+# uniform(1/20000, 1/10000), so a result is averaged over the whole range. These flags
+# hold both fixed at the BUSIEST corner of it -- the most aircraft, at the highest
+# density -- so the delay conditions are compared at one traffic load rather than
+# across a mixture.
+#
+#     --n-ac 30        aircraft per scenario, instead of the draw
+#     --density 0.0001 ac/km^2 (= 1/10000), so the sector is 30 / 0.0001 = 300,000 km^2
+#
+# Results go to Test_results_improved_30ac, NOT Test_results_improved or MAIN's
+# Test_results_30ac, so this sweep can neither overwrite nor reuse another one. The models are
+# read from MAIN_IMPROVED/Models, each at its furthest checkpoint.
+#
+# All 190 runs in one command, four at a time; a finished run file is skipped on restart, so
+# interrupting is safe.
+
+python Validation/run_test_scenarios.py --episodes 300 --n-ac 30 --density 0.0001 --out ../Test_results_improved_30ac
+
+# once every run is done
+python Validation/run_test_scenarios.py --merge --out ../Test_results_improved_30ac
