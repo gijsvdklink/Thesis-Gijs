@@ -203,18 +203,13 @@ class AirspaceEnv(gym.Env):
         advisory = self._build_advisory(action_idx, self._aircraft[cs])
         kind     = 'target_mach' if 'target_mach' in advisory else 'target_hdg'
 
-        # Advice is judged against what the aircraft will fly NEXT. With nothing awaiting
-        # execution, that is the last executed instruction (h_target, v_target): advice that
-        # changes nothing is not an instruction, so nothing is transmitted. With an advisory
-        # awaiting, it is that advisory (h_awaiting, v_awaiting), and the ATCO decides below:
-        # the same instruction is a repeat, anything else a revision that replaces it.
-        # MAIN compared with the executed instruction even while another one awaited, so a
-        # return to the initial heading could not cancel a turn that had not been executed yet.
-        ac        = self._aircraft[cs]
-        commanded = ac.commanded_mach if kind == 'target_mach' else ac.commanded_hdg
-        if self.atco.pending_for(cs) is None and abs(advisory[kind] - commanded) < 1e-9:
-            self._ep_stats['repeats'] += 1
-            return
+        # The delay mechanism of the paper, and nothing else: with no advisory awaiting execution
+        # the advice is sent and a delay drawn; with one awaiting, the ATCO decides below whether
+        # it is the same instruction (a repeat, t_e kept) or a different one (a revision that
+        # replaces it). MAIN first compared the advice with the last EXECUTED instruction and
+        # dropped it when they matched, even while another advisory awaited, so a return to the
+        # initial heading could not cancel a turn that had not been executed yet.
+        ac = self._aircraft[cs]
 
         # The ATCO works one instruction at a time, so anything already in hand is dropped --
         # including an instruction for a DIFFERENT aircraft, which is then never flown.
