@@ -26,20 +26,20 @@ TEST_MEANS = [15, 30, 45, 60]
 
 
 def pmf(mean_s):
-    """P(round(tau) = k) for every whole second k, for the truncated law the ATCO draws."""
+    """P(round(tau) = k) for every whole second k, for the lognormal law the ATCO draws."""
     atco = ATCO('lognormal', np.random.default_rng(0), mean_s=mean_s)
-    mu, sigma, cap = atco._mu, CONFIG['delay_sigma'], atco._cap
+    mu, sigma = atco._mu, CONFIG['delay_sigma']
 
     def cdf(x):
         if x <= 0:
             return 0.0
         return 0.5 * (1.0 + math.erf((math.log(x) - mu) / (sigma * math.sqrt(2.0))))
 
-    # A draw above the bound is rejected and redrawn, so the mass is renormalised by F(cap)
-    # rather than piled onto the bound.
-    seconds = np.arange(0, round(cap) + 1)
-    probability = np.array([cdf(min(k + 0.5, cap)) - cdf(k - 0.5) for k in seconds]) / cdf(cap)
-    return seconds, probability, cap
+    # The law is not capped; the plot stops where 99.99 % of the draws lie below.
+    upper = round(math.exp(mu + 3.72 * sigma))
+    seconds = np.arange(0, upper + 1)
+    probability = np.array([cdf(k + 0.5) - cdf(k - 0.5) for k in seconds])
+    return seconds, probability
 
 
 def save(figure, out_dir, name):
@@ -52,7 +52,7 @@ def save(figure, out_dir, name):
 
 def figure_laws(out_dir):
     """The two response laws at the mean used in training."""
-    seconds, probability, cap = pmf(TRAIN_MEAN)
+    seconds, probability = pmf(TRAIN_MEAN)
 
     # Sized to sit beside the measured pilot data of Wuestenbecker et al., which is square.
     figure, axis = plt.subplots(figsize=(4.4, 3.7))
@@ -64,7 +64,7 @@ def figure_laws(out_dir):
 
     axis.set_xlabel('Action-response delay $\\tau$ [s]')
     axis.set_ylabel('Probability')
-    axis.set_xlim(0, cap + 4)
+    axis.set_xlim(0, seconds[-1])
     axis.legend(fontsize=8)
     axis.grid(alpha=0.3)
     axis.set_axisbelow(True)
@@ -76,13 +76,13 @@ def figure_levels(out_dir):
     figure, axis = plt.subplots(figsize=(6.5, 3.2))
 
     for mean_s in TEST_MEANS:
-        seconds, probability, _ = pmf(mean_s)
+        seconds, probability = pmf(mean_s)
         axis.bar(seconds, probability, width=1.0, alpha=0.6,
                  label=f'$\\bar\\tau$ = {mean_s:g} s')
 
     axis.set_xlabel('Action-response delay $\\tau$ [s]')
     axis.set_ylabel('Probability')
-    axis.set_xlim(0, 145)
+    axis.set_xlim(0, pmf(max(TEST_MEANS))[0][-1])
     axis.legend()
     axis.grid(alpha=0.3)
     axis.set_axisbelow(True)

@@ -54,7 +54,6 @@ CONFIG = {
     'delay_mode':            'none',        # default delay type; see atco.DELAY_MODES
     'delay_mean_s':          30.0,          # mean time for the controller to act, in seconds
     'delay_sigma':           0.4,           # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
-    'delay_max_s':           70.0,          # cap on a drawn response time; 1.0% of lognormal draws reach it           # lognormal shape; at mean 30 s, 80% of draws fall in 17-46 s
     'revision_kappa':        0.7,           # kappa: a revision is taken up in this fraction of a full response time
     # Observation
     'n_neighbours':          4,

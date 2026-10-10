@@ -16,7 +16,9 @@ class ATCO:
         self.rng        = rng
         self.mean_s     = float(mean_s if mean_s is not None else CONFIG['delay_mean_s'])
 
-        self._mu = self._mu_for_capped_mean() if delay_type == 'lognormal' else 0.0
+        # mu = ln(mean) - sigma^2/2 gives the lognormal a mean of exactly mean_s.
+        self._mu = (math.log(self.mean_s) - CONFIG['delay_sigma'] ** 2 / 2.0
+                    if delay_type == 'lognormal' else 0.0)
 
         self.cs       = None
         self.advisory = None
@@ -80,36 +82,11 @@ class ATCO:
         self.cs, self.advisory = None, None
         return ready
 
-    def _mu_for_capped_mean(self):
-        # The cap removes mass from the upper tail, so the plain mu = ln(mean) - sigma^2/2
-        # would leave the CAPPED mean below mean_s. Solve instead for the mu whose capped mean
-        # is exactly mean_s, by bisection on the closed form of E[min(X, cap)].
-        sigma, cap = CONFIG['delay_sigma'], CONFIG['delay_max_s']
-
-        def phi(z):
-            return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
-
-        def capped_mean(mu):
-            lnc = math.log(cap)
-            return (math.exp(mu + sigma ** 2 / 2.0) * phi((lnc - mu - sigma ** 2) / sigma)
-                    + cap * (1.0 - phi((lnc - mu) / sigma)))
-
-        lo, hi = math.log(self.mean_s) - 4 * sigma, math.log(self.mean_s) + 4 * sigma
-        for _ in range(200):
-            mid = 0.5 * (lo + hi)
-            if capped_mean(mid) < self.mean_s:
-                lo = mid
-            else:
-                hi = mid
-        return 0.5 * (lo + hi)
-
     def _draw_delay_s(self):
         # Both laws have a mean of mean_s, so they differ in spread alone.
         if self.delay_type == 'none':
             return 0.0
         if self.delay_type == 'deterministic':
             return self.mean_s
-        # Capped: a controller does not take minutes to act on a single conflict. mu is solved
-        # so that the mean AFTER capping is exactly mean_s, keeping the two laws comparable.
-        return float(min(self.rng.lognormal(self._mu, CONFIG['delay_sigma']),
-                         CONFIG['delay_max_s']))
+        # Not capped: with a fixed sigma, every mean has the same shape, scaled by mean_s.
+        return float(self.rng.lognormal(self._mu, CONFIG['delay_sigma']))
