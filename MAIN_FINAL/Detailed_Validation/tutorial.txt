@@ -1,0 +1,20 @@
+# Detailed validation -- run from the MAIN_FINAL folder:
+#     cd <wherever MAIN_FINAL is>
+#     ls          # must list Environment, Training, Validation, Detailed_Validation
+#
+# The models are read from MAIN_FINAL/Models (none/, deterministic_30s/, lognormal_30s/,
+# each with *_seed1..7), at their furthest checkpoint, exactly as in the normal test.
+#
+# All 3 model types x 7 seeds in the chosen environments, four runs at a time, each worker a
+# process with its own environment (no BlueSky). Results go to ../Detailed_results_improved_v3,
+# never to MAIN's Detailed_results. A stopped command is resumed by giving it again: finished
+# runs are skipped. More data: raise --episodes and/or add environments (--envs N0 D30 D60 L30).
+
+python Detailed_Validation/detailed_validation.py --envs N0 D30 D60 --episodes 20 --n-ac 30 --density 0.0001
+
+# once it is done: combine the runs into steps.csv, advisories.csv, conflicts.csv and
+# episodes.csv in ../Detailed_results_improved_v3
+python Detailed_Validation/detailed_validation.py --merge
+
+# A single run, e.g. to try it out first (one scenario):
+python Detailed_Validation/detailed_validation.py --run deterministic 1 deterministic 30 --episodes 1 --n-ac 30 --density 0.0001

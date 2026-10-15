@@ -1,0 +1,40 @@
+# PER-STEP LOGGING: the 7 no-delay models flown in deterministic 60 s, 20 episodes each
+#
+# from the MAIN3 folder
+#
+# The test harness records one row per EPISODE. This records one row per STEP: the action,
+# the reward, the three terms the reward is made of, and the aircraft it was charged to.
+#
+# Seven seeds over five terminals: two terminals take two seeds, three take one. Each seed
+# writes its own pair of files, so the terminals never collide, and a finished seed is
+# skipped on restart.
+#
+# Output -> Step_logs/steps_none_seed<N>.csv  and  episodes_none_seed<N>.csv
+
+# terminal 1
+python Validation/log_steps.py --seeds 1 2
+
+# terminal 2
+python Validation/log_steps.py --seeds 3 4
+
+# terminal 3
+python Validation/log_steps.py --seeds 5
+
+# terminal 4
+python Validation/log_steps.py --seeds 6
+
+# terminal 5
+python Validation/log_steps.py --seeds 7
+
+
+# ---- variations ----------------------------------------------------------
+#
+# a different delay condition, or none at all:
+#     python Validation/log_steps.py --seeds 1 --delay lognormal --delay-mean 30
+#     python Validation/log_steps.py --seeds 1 --delay none --delay-mean 0
+#
+# the deterministic- or lognormal-trained models instead of the no-delay ones:
+#     python Validation/log_steps.py --seeds 1 --model-type deterministic
+#
+# a fixed airspace rather than the per-episode draw:
+#     python Validation/log_steps.py --seeds 1 --n-ac 30 --density 0.0001
