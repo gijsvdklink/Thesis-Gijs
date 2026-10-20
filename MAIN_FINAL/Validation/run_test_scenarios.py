@@ -10,9 +10,12 @@ python Validation/run_test_scenarios.py --workers 8       more runs side by side
 python Validation/run_test_scenarios.py --terminal 1 --terminals 2   one share of the runs, e.g. per machine
 python Validation/run_test_scenarios.py --merge           every run in one CSV, once all runs are done
 
+The no-delay models never saw a pending advisory in training, so their four response-state inputs
+were always zero. In a delayed environment these inputs are set to zero again before the policy sees
+them, so the no-delay model is tested on the inputs it was trained on and only the delay differs.
+
 Finished runs are skipped, so a stopped command is resumed by giving it again. Each worker is a
-process with an environment of its own: without BlueSky nothing is process-wide, so a worker
-flies run after run instead of starting a fresh process per run.
+process with an environment of its own and flies run after run.
 """
 
 import os
@@ -36,12 +39,14 @@ import pandas as pd
 MAIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, MAIN_DIR)
 
-from Environment.config import CONFIG, HOLD_ACTION, TRAINING_SEEDS, VALIDATION_SEEDS
+from Environment.config import (CONFIG, HOLD_ACTION, OBS_OWNSHIP_LABELS, TRAINING_SEEDS,
+                                VALIDATION_SEEDS)
 
 MODELS_DIR  = os.path.join(MAIN_DIR, 'Models')
-# Not MAIN's Test_results: finished runs are skipped by file name, so sharing that folder would
-# silently keep the old results instead of testing these models.
-RESULTS_DIR = os.path.join(os.path.dirname(MAIN_DIR), 'Test_results_improved_v3')
+RESULTS_DIR = os.path.join(os.path.dirname(MAIN_DIR), 'Test_results_final')
+
+RESPONSE_STATE = [OBS_OWNSHIP_LABELS.index(name) for name in ('pending', 'wait_s', 'pend_hdg',
+                                                              'pend_spd')]
 
 MODEL_TYPES = {'none': 'none', 'deterministic': 'deterministic_30s', 'lognormal': 'lognormal_30s'}
 PREFIX      = {'none': 'N', 'deterministic': 'D', 'lognormal': 'L'}
@@ -122,9 +127,13 @@ def load_policy(path):
     return PPO.load(path, device='cpu'), mean, std, float(normaliser.clip_obs)
 
 
-def choose(policy, observation):
+def choose(policy, observation, blind=False):
+    """The action of the policy; blind=True hides the response state, as for a no-delay model."""
     if policy is None:
         return HOLD_ACTION
+    if blind:
+        observation = observation.copy()
+        observation[RESPONSE_STATE] = 0.0
     model, mean, std, clip = policy
     action, _ = model.predict(np.clip((observation - mean) / std, -clip, clip), deterministic=True)
     return int(np.asarray(action).flat[0])
@@ -146,12 +155,12 @@ def count_executed(atco):
     return executed
 
 
-def fly(env, policy, scenario_seed):
+def fly(env, policy, scenario_seed, blind=False):
     """One scenario, and every KPI of its episode, raw and per flight hour."""
     observation, _ = env.reset(options={'scenario_seed': scenario_seed})
     executed = count_executed(env.atco)
     while True:
-        observation, _, _, truncated, info = env.step(choose(policy, observation))
+        observation, _, _, truncated, info = env.step(choose(policy, observation, blind))
         if truncated:
             kpis = {key.removeprefix('ep_'): value for key, value in info.items()
                     if key.startswith('ep_')}
@@ -185,7 +194,7 @@ def test_run(model_type, seed, law, mean, models, out, episodes):
     with open(path + '.part', 'w', newline='') as handle:
         writer = None
         for scenario, scenario_seed in enumerate(scenarios):
-            kpis = fly(env, policy, scenario_seed)
+            kpis = fly(env, policy, scenario_seed, blind=model_type == 'none')
             row = {'model': model_name(model_type, seed), 'train_type': model_type, 'seed': seed,
                    'model_steps': steps, 'test_type': law, 'test_delay': mean,
                    'scenario': scenario, 'scenario_seed': scenario_seed,
@@ -197,7 +206,6 @@ def test_run(model_type, seed, law, mean, models, out, episodes):
             done = scenario + 1
             if done % PRINT_EVERY == 0 or done == len(scenarios):
                 rate = (time.time() - started) / done
-                # Four workers print side by side, so every line names its run.
                 print(f'  {os.path.basename(path)[:-4]:<28} {done:>3}/{len(scenarios)}  '
                       f'{rate:4.1f} s/scenario  {rate * (len(scenarios) - done) / 60:5.1f} min to go',
                       flush=True)
@@ -205,8 +213,6 @@ def test_run(model_type, seed, law, mean, models, out, episodes):
 
 
 def _init_worker(n_ac, density):
-    # A worker is a fresh process: the fixed airspace of a sweep is re-applied here, before it
-    # builds any environment, and torch is held to one thread so the workers share the cores.
     import torch
     torch.set_num_threads(1)
     if n_ac is not None:
@@ -216,18 +222,16 @@ def _init_worker(n_ac, density):
 
 
 def _test_run_safely(run, models, out, episodes):
-    # One failed run must not stop the others; it is reported at the end and redone next time.
     try:
         test_run(*run, models, out, episodes)
         return None
-    except (Exception, SystemExit) as error:   # find_model exits when a model is missing
+    except (Exception, SystemExit) as error:
         return f'{os.path.basename(run_path(out, *run))}: {error!r}'
 
 
 def run_pool(terminal, terminals, workers, models, out, episodes, n_ac, density):
     """This share of the runs, `workers` at a time. Each worker is a process with one environment
-    of its own and flies run after run; BlueSky, a process-wide singleton, used to force a fresh
-    process for every run."""
+    of its own and flies run after run."""
     share = [run for run in terminal_share(terminal, terminals)
              if not os.path.exists(run_path(out, *run))]
     print(f'share {terminal} of {terminals}: {len(share)} runs to do, {workers} at a time -> {out}',
@@ -277,10 +281,6 @@ def main():
     args = parser.parse_args()
     out, models = os.path.abspath(args.out), os.path.abspath(args.models)
 
-    # A FIXED airspace in place of the per-episode draw, so a sweep can hold traffic
-    # constant and the delay conditions are compared at one density rather than averaged
-    # over the range. Set before any environment is built; every worker is its own process,
-    # so _init_worker applies the same override there.
     if args.n_ac is not None:
         CONFIG['n_aircraft'] = lambda rng: args.n_ac
     if args.density is not None:

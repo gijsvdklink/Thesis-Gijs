@@ -6,69 +6,73 @@
 # Every run trains on four environments in subprocesses (--n-envs 4, the default), so one run
 # keeps about five cores busy: four workers and the learner. Start only as many of the
 # terminals below at once as the machine can carry.
+#
+# Each run stops after 60,000 finished episodes (--max-episodes 60000). An episode is about
+# 1,900 steps, so that is roughly 110M steps; --timesteps 300000000 is only a ceiling that
+# the episode cap reaches first. The running count is logged to TensorBoard as episode/count.
 
 # terminal 1
-python Training/train.py --delay none --seed 1 --timesteps 300000000
+python Training/train.py --delay none --seed 1 --timesteps 300000000 --max-episodes 60000
 
 # terminal 2
-python Training/train.py --delay none --seed 2 --timesteps 300000000
+python Training/train.py --delay none --seed 2 --timesteps 300000000 --max-episodes 60000
 
 # terminal 3
-python Training/train.py --delay none --seed 3 --timesteps 300000000
+python Training/train.py --delay none --seed 3 --timesteps 300000000 --max-episodes 60000
 
 # terminal 4
-python Training/train.py --delay none --seed 4 --timesteps 300000000
+python Training/train.py --delay none --seed 4 --timesteps 300000000 --max-episodes 60000
 
 # terminal 5
-python Training/train.py --delay none --seed 5 --timesteps 300000000
+python Training/train.py --delay none --seed 5 --timesteps 300000000 --max-episodes 60000
 
 # terminal 6
-python Training/train.py --delay none --seed 6 --timesteps 300000000
+python Training/train.py --delay none --seed 6 --timesteps 300000000 --max-episodes 60000
 
 # terminal 7
-python Training/train.py --delay none --seed 7 --timesteps 300000000
+python Training/train.py --delay none --seed 7 --timesteps 300000000 --max-episodes 60000
 
 # terminal 8
-python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --max-episodes 60000
 
 # terminal 9
-python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000 --max-episodes 60000
 
 # terminal 10
-python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000 --max-episodes 60000
 
 # terminal 11
-python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000 --max-episodes 60000
 
 # terminal 12
-python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000 --max-episodes 60000
 
 # terminal 13
-python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000 --max-episodes 60000
 
 # terminal 14
-python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000 --max-episodes 60000
 
 # terminal 15
-python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --max-episodes 60000
 
 # terminal 16
-python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000 --max-episodes 60000
 
 # terminal 17
-python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000 --max-episodes 60000
 
 # terminal 18
-python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000 --max-episodes 60000
 
 # terminal 19
-python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000 --max-episodes 60000
 
 # terminal 20
-python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000 --max-episodes 60000
 
 # terminal 21
-python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000 --max-episodes 60000
 
 # tensorboard -- Models is created beside MAIN, not inside it
 python -m tensorboard.main --logdir ../Models --port 6016
@@ -83,69 +87,73 @@ RESUMING AFTER A DISCONNECT
 # --save-every steps (500,000) are lost per run.
 #
 # Do NOT delete ../Models. Do NOT pass --overwrite; that starts from scratch.
+#
+# The episode counter is NOT stored in the checkpoint: it restarts at zero, so a resumed run
+# would train another 60,000 episodes. Read episode/count for that run in TensorBoard and
+# pass what is left instead, e.g. 60000 - 41000 = 19000 -> --max-episodes 19000.
 
 # terminal 1
-python Training/train.py --delay none --seed 1 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 1 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 2
-python Training/train.py --delay none --seed 2 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 2 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 3
-python Training/train.py --delay none --seed 3 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 3 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 4
-python Training/train.py --delay none --seed 4 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 4 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 5
-python Training/train.py --delay none --seed 5 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 5 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 6
-python Training/train.py --delay none --seed 6 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 6 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 7
-python Training/train.py --delay none --seed 7 --timesteps 300000000 --resume
+python Training/train.py --delay none --seed 7 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 8
-python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 9
-python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 10
-python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 11
-python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 12
-python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 13
-python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 14
-python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000 --resume
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 15
-python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 16
-python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 17
-python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 18
-python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 19
-python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 20
-python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --timesteps 300000000 --max-episodes 60000 --resume
 
 # terminal 21
-python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000 --resume
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --timesteps 300000000 --max-episodes 60000 --resume
 
 
 ================================================================================
@@ -156,11 +164,11 @@ SURVIVING A DISCONNECT NEXT TIME
 # Start each run inside tmux so it keeps going without the laptop attached:
 #
 #     tmux new -s t1                  # one session per run
-#     python Training/train.py --delay none --seed 1 --timesteps 300000000
+#     python Training/train.py --delay none --seed 1 --timesteps 300000000 --max-episodes 60000
 #     Ctrl-B then D                   # detach; training continues
 #
 #     tmux ls                         # list sessions
 #     tmux attach -t t1               # reattach later
 #
 # Or prefix a single command:
-#     nohup python Training/train.py --delay none --seed 1 --timesteps 300000000 > t1.log 2>&1 &
+#     nohup python Training/train.py --delay none --seed 1 --timesteps 300000000 --max-episodes 60000 > t1.log 2>&1 &

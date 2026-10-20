@@ -52,7 +52,6 @@ def bluesky_track():
             kind, value = SCRIPT[t]
             bs.stack.stack(f'HDG AC0 {value:.1f}' if kind == 'hdg' else f'SPD AC0 {value:.3f}')
         bs.sim.step()
-        # centre_ll is (0, 0), so the env's flat frame is simply 60 NM per degree
         rows.append((bs.traf.lon[0] * 60.0, bs.traf.lat[0] * 60.0, bs.traf.hdg[0], bs.traf.tas[0] / KTS))
     return np.array(rows)
 

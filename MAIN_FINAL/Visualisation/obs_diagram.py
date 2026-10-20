@@ -1,6 +1,6 @@
 """Draw the observation space the way the policy receives it, to check it against a figure.
 
-Everything on the radar is reconstructed from the 27-number observation vector alone -- the
+Everything on the radar is reconstructed from the 29-number observation vector alone -- the
 env's internal positions are never read -- so whatever lines up is a real confirmation and not
 a redraw of the same state twice.
 
@@ -27,27 +27,24 @@ import pygame
 
 from Environment import (AirspaceEnv, CONFIG, OBS_OWNSHIP_LABELS, OBS_INTRUDER_LABELS)
 from Environment.config import (N_NEIGHBOURS, EMPTY_RANGE_NM, NO_CONFLICT_S,
-                                      KT_PER_MACH)
+                                      KT_PER_MACH, OBS_DIM)
 
 WIN_W, WIN_H = 1500, 980
-CX, CY       = 470, 500          # radar centre
+CX, CY       = 470, 500
 PANEL_X      = 960
 
 BG      = (250, 249, 246)
 INK     = (26, 26, 26)
 GREY    = (150, 150, 150)
 LGREY   = (205, 205, 205)
-BLUE    = (74, 144, 226)         # the reference arrow / ownship
+BLUE    = (74, 144, 226)
 OWN_FILL = (150, 200, 240)
-ORANGE  = (240, 168, 60)         # intruder with a predicted LoS
-GREEN   = (124, 190, 120)        # intruder clear of the horizon
+ORANGE  = (240, 168, 60)
+GREEN   = (124, 190, 120)
 EMPTY   = (200, 200, 200)
 PANEL_BG = (243, 242, 238)
 
-TWO_PI = 2.0 * math.pi
 
-
-# -- geometry helpers ----------------------------------------------------------
 
 def to_screen(bearing_rad, dist_nm, scale):
     """Ego frame: bearing measured clockwise from straight up."""
@@ -119,13 +116,11 @@ def label(surf, font, text, pos, colour=INK, centre=True, bg=None):
     else:
         rect.topleft = pos
     if bg is not None:
-        pad = surf.subsurface(rect.inflate(6, 2).clip(surf.get_rect())) if False else None
         pygame.draw.rect(surf, bg, rect.inflate(7, 3))
     surf.blit(img, rect)
     return rect
 
 
-# -- the diagram ---------------------------------------------------------------
 
 def unpack(obs):
     """The observation vector, split exactly as the env packs it."""
@@ -146,7 +141,6 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
     radar_r = min(CX, CY) - 78
     scale = radar_r / max(span, 12.0)
 
-    # -- range rings, only out to the furthest intruder
     ring_step = 10 if span <= 55 else (20 if span <= 110 else 25)
     r_nm = ring_step
     while r_nm <= span:
@@ -155,11 +149,9 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
               bearing_point(CX, CY, math.radians(215), r_nm * scale), LGREY)
         r_nm += ring_step
 
-    # -- ownship heading: straight up by construction, this is the frame's axis
     up = 0.0
     dashed(screen, LGREY, (CX, CY), bearing_point(CX, CY, up, min(CX, CY) - 55), 6, 6, 1)
 
-    # -- the route ("destination"): initial heading sits at -dpsi in the ego frame
     dpsi = own['dpsi']
     b_route = -dpsi
     route_end = bearing_point(CX, CY, b_route, min(CX, CY) - 62)
@@ -167,7 +159,6 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
     label(screen, small, 'Destination (initial hdg)',
           bearing_point(CX, CY, b_route, min(CX, CY) - 30), GREY)
 
-    # -- the commanded heading: h_cmd is measured from the initial heading
     b_cmd = own['h_cmd'] - dpsi
     if abs(own['h_cmd']) > 1e-6:
         cmd_end = bearing_point(CX, CY, b_cmd, 132)
@@ -175,13 +166,11 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         label(screen, tiny, 'h_cmd (commanded hdg)',
               bearing_point(CX, CY, b_cmd, 150), (170, 90, 175))
 
-    # -- delta-psi: from the current heading round to the route
     if abs(dpsi) > 0.02:
         draw_arc(screen, (120, 120, 120), CX, CY, 74, up, b_route, 2)
         mid = bearing_point(CX, CY, (up + b_route) / 2, 88)
         label(screen, font, f'Δψ = {math.degrees(dpsi):+.0f}°', mid, (90, 90, 90))
 
-    # -- intruders
     for k, d in enumerate(intruders):
         empty = d['dist'] >= EMPTY_RANGE_NM - 1.0
         if empty:
@@ -191,7 +180,6 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         colour = ORANGE if conflicted else GREEN
         ix, iy = to_screen(theta, d['dist'], scale)
 
-        # range line, with d_k set off perpendicular to it so the two never collide
         dashed(screen, INK, (CX, CY), (ix, iy), 8, 6, 1)
         lx, ly = to_screen(theta, d['dist'] * 0.62, scale)
         off = bearing_point(lx, ly, theta + math.pi / 2, 17)
@@ -199,21 +187,16 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         label(screen, tiny, f'{d["dist"]:.1f} NM',
               bearing_point(lx, ly, theta + math.pi / 2, 33), (120, 120, 120))
 
-        # the protected zone: 5 NM diameter, so 2.5 NM radius
         pz = max(11, int(0.5 * CONFIG['sep_nm'] * scale))
         pygame.draw.circle(screen, colour, (int(ix), int(iy)), pz)
 
-        # theta_k: bearing arc from the ownship heading round to this intruder, each arc
-        # riding its own range line so four of them can be told apart
         r_arc = min(max(d['dist'] * scale * 0.34, 46), 165)
         draw_arc(screen, INK, CX, CY, r_arc, up, theta, 2)
         label(screen, font, f'θ{k + 1}',
               bearing_point(CX, CY, (up + theta) / 2, r_arc + 17), INK)
 
-        # the reference arrow: parallel to the OWNSHIP heading, which is what psi is measured from
         arrow(screen, BLUE, (ix, iy), up, 44, 3, 9)
 
-        # the intruder's own velocity, psi from that reference
         psi = d['psi']
         aircraft_glyph(screen, INK, ix, iy, psi, 15)
         v_len = 38 + 20 * (d['vint'] / max(KT_PER_MACH, 1.0))
@@ -221,12 +204,10 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         label(screen, font, f'v{k + 1}',
               bearing_point(v_tip[0], v_tip[1], psi, 15), INK)
 
-        # psi_k arc, between the blue reference and the velocity
         draw_arc(screen, INK, ix, iy, 28, up, psi, 2)
         label(screen, font, f'ψ{k + 1}',
               bearing_point(ix, iy, (up + psi) / 2, 39), INK)
 
-        # the name tag goes on the side away from both the velocity arrow and the range line
         cs = intruder_cs[k] if k < len(intruder_cs) else None
         tag = f'Aircraft {k + 1}' + (f'  [{cs}]' if cs else '')
         tag_bearing = psi + math.pi
@@ -235,17 +216,15 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         if conflicted:
             label(screen, tiny, f't_los = {d["tlos"]:.0f} s', (tx, ty + 15), (190, 110, 20))
 
-    # -- the focus ship, drawn last so it sits on top
     pz_own = max(10, int(0.5 * CONFIG['sep_nm'] * scale))
     pygame.draw.circle(screen, OWN_FILL, (CX, CY), pz_own)
     arrow(screen, BLUE, (CX, CY), up, 62, 4, 11)
     label(screen, font, 'v_own', (CX - 34, CY - 44), BLUE)
     label(screen, tiny, f'{own["v_own"]:.0f} kt', (CX - 34, CY - 29), BLUE)
     aircraft_glyph(screen, INK, CX, CY, up, 15)
-    label(screen, small, f'Focus ship' + (f'  [{focus_cs}]' if focus_cs else ''),
+    label(screen, small, 'Focus ship' + (f'  [{focus_cs}]' if focus_cs else ''),
           (CX, CY + pz_own + 18), INK)
 
-    # -- flags that have no geometry
     y = CY + 190
     flags = [('retn_conf', own['retn_conf'], 'returning to initial heading is BLOCKED'),
              ('pending',   own['pending'],   'an advisory is with the ATCO'),
@@ -259,7 +238,6 @@ def draw_diagram(screen, fonts, obs, intruder_cs, focus_cs):
         label(screen, small, f'{txt:<16} {meaning if on else ""}', (60, y), col, False)
         y += 18
 
-    # empty slots
     n_empty = sum(1 for d in intruders if d['dist'] >= EMPTY_RANGE_NM - 1.0)
     if n_empty:
         label(screen, small,
@@ -274,7 +252,7 @@ def draw_panel(screen, fonts, obs, intruder_cs, focus_cs, step_n, n_ac):
     pygame.draw.line(screen, LGREY, (PANEL_X, 0), (PANEL_X, WIN_H), 1)
     x, y = PANEL_X + 22, 22
     label(screen, big, 'OBSERVATION VECTOR', (x, y), INK, False); y += 30
-    label(screen, small, f'27 raw values  |  step {step_n}  |  {n_ac} aircraft airborne',
+    label(screen, small, f'{OBS_DIM} raw values  |  step {step_n}  |  {n_ac} aircraft airborne',
           (x, y), (120, 120, 120), False); y += 30
 
     own, intruders = unpack(obs)
@@ -326,7 +304,6 @@ def render(screen, fonts, obs, intruder_cs, focus_cs, step_n, n_ac):
     draw_panel(screen, fonts, obs, intruder_cs, focus_cs, step_n, n_ac)
 
 
-# -- driving the environment ---------------------------------------------------
 
 def interesting(env, obs, want_intruders=4, want_conflict=True):
     """A frame that exercises every annotation: full slots, a predicted LoS, and some drift
@@ -339,7 +316,6 @@ def interesting(env, obs, want_intruders=4, want_conflict=True):
         return False
     if abs(own['dpsi']) < math.radians(8):
         return False
-    # keep the four spread out, so the theta arcs do not sit on top of one another
     bearings = sorted(d['theta'] for d in live)
     if any(abs(b - a) < math.radians(22) for a, b in zip(bearings, bearings[1:])):
         return False

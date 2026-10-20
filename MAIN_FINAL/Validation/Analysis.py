@@ -1,19 +1,17 @@
-"""Analyse the test results of run_test_scenarios.py: the number of scenarios, the figures and the tests.
+"""Analyse the test results of run_test_scenarios.py: the number of scenarios and the figures.
 
 python Validation/Analysis.py
 
-Reads Test_results_improved_v3/test_results.csv and writes to Test_results_improved_v3/analysis:
+Reads Test_results_final/test_results.csv and writes to Test_results_final/analysis:
 
   kpis_per_model.csv     every KPI averaged over the test scenarios, a row per model and environment
   kpi_medians.csv        the median of the seven models of each type
   cv_stabilisation.csv   per KPI and model type: the c_v over all scenarios and n*, the number of
                          scenarios from which the running c_v stays within 2% of it
-  statistics.csv         the hypothesis tests of experiments 1 to 4, Holm-corrected
   figures/               cv_stabilisation, test_performance and test_strategy, as PDF and PNG
 
 A model's value is its mean over the test scenarios, and the seven models of a type are the
-replicates. With seven values per type normality cannot be assumed, so all tests are
-non-parametric and two-sided, at alpha = 0.05.
+replicates.
 """
 
 import argparse
@@ -27,12 +25,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
-from scipy.stats import friedmanchisquare, mannwhitneyu, wilcoxon
-from statsmodels.stats.descriptivestats import sign_test
-from statsmodels.stats.multitest import multipletests
 
 ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-RESULTS_DIR = os.path.join(ROOT, 'Test_results_improved_v3')
+RESULTS_DIR = os.path.join(ROOT, 'Test_results_final')
 
 KEYS        = ['model', 'train_type', 'seed', 'test_type', 'test_delay']
 NOT_KPIS    = KEYS + ['model_steps', 'scenario', 'scenario_seed', 'n_aircraft', 'rho']
@@ -64,7 +59,6 @@ KPIS = {
     'reward_per_fh':        'Reward / flight hour',
 }
 
-ALPHA          = 0.05
 TOLERANCE      = 0.02
 RESAMPLES      = 1000
 OWN_ENVIRONMENT = {'none': ('none', 0), 'deterministic': ('deterministic', 30),
@@ -80,7 +74,6 @@ plt.rcParams.update({'font.size': 9.5, 'axes.titlesize': 9.5, 'lines.linewidth':
 WIDTH_IN = 7.0
 
 
-# -- Data ----------------------------------------------------------------------
 
 def load(results):
     path = os.path.join(results, 'test_results.csv')
@@ -118,7 +111,6 @@ def environment(frame, train_type, test_type, test_delay):
                  & (frame['test_delay'] == test_delay)]
 
 
-# -- Number of scenarios: the running coefficient of variation -----------------
 
 def running_cv(values, rng):
     """The mean c_v of RESAMPLES draws of n scenarios, with replacement, for n = 2 to N. A draw
@@ -198,7 +190,6 @@ def cv_figure(curves, total):
     return figure
 
 
-# -- Figures: the median of the seven models against the mean test delay -------
 
 def plot_kpi(axis, models, kpi, label):
     for train_type in ('none', 'deterministic', 'lognormal'):
@@ -324,92 +315,6 @@ def save(figure, folder, name):
     plt.close(figure)
 
 
-# -- Hypothesis tests ----------------------------------------------------------
-
-DELAYED        = ['deterministic', 'lognormal']
-NO_DELAY       = ('none', 0)
-TRAINING_DELAY = {'none': NO_DELAY, 'deterministic': ('deterministic', 30),
-                  'lognormal': ('lognormal', 30)}
-TEST_MEANS     = [15, 30, 45, 60]
-PERFORMANCE    = ['los_events_per_fh', 'conflicts_per_fh', 'reward_total']
-STRATEGY       = ['turns_per_fh', 'speed_changes_per_fh']
-
-
-def values(models, train_type, test, kpi):
-    return environment(models, train_type, *test).set_index('seed')[kpi].sort_index()
-
-
-def name(test):
-    law, mean = test
-    return 'no delay' if law == 'none' else f'{law} {mean} s'
-
-
-def result(test, compared, tests, a, b, statistic, p):
-    return {'test': test, 'compared': compared, 'test_environment': tests,
-            'median_a': a.median(), 'median_b': b.median(), 'statistic': statistic, 'p': p}
-
-
-def friedman(models, kpi, train_type, tests):
-    groups = [values(models, train_type, test, kpi) for test in tests]
-    statistic, p = friedmanchisquare(*groups)
-    return result('Friedman', train_type, f'{name(tests[0])} to {name(tests[-1])}',
-                  groups[0], groups[-1], statistic, p)
-
-
-def mann_whitney(models, kpi, type_a, type_b, test):
-    a, b = values(models, type_a, test, kpi), values(models, type_b, test, kpi)
-    statistic, p = mannwhitneyu(a, b)
-    return result('Mann-Whitney U', f'{type_a} vs {type_b}', name(test), a, b, statistic, p)
-
-
-def signed_rank(models, kpi, train_type, test_a, test_b):
-    a, b = values(models, train_type, test_a, kpi), values(models, train_type, test_b, kpi)
-    statistic, p = wilcoxon(a, b)
-    return result('Wilcoxon signed-rank', train_type, f'{name(test_a)} vs {name(test_b)}',
-                  a, b, statistic, p)
-
-
-def against_no_cr(models, kpi, train_type, test):
-    a, reference = values(models, train_type, test, kpi), no_cr_value(models, kpi)
-    statistic, p = sign_test(a.to_numpy(), reference)
-    return result('Sign test', f'{train_type} vs no CR', name(test), a,
-                  pd.Series([reference]), statistic, p)
-
-
-def families(models):
-    """Every test, grouped as (experiment, KPI, tests); Holm corrects within each group."""
-    for kpi in PERFORMANCE:
-        yield 1, kpi, [friedman(models, kpi, 'none', [NO_DELAY] + [(law, mean) for mean in TEST_MEANS])
-                       for law in DELAYED]
-        yield 2, kpi, [mann_whitney(models, kpi, train_type, 'none', test)
-                       for train_type in DELAYED for test in (NO_DELAY, TRAINING_DELAY[train_type])]
-        yield 2, kpi, [against_no_cr(models, kpi, train_type, test)
-                       for train_type, test in TRAINING_DELAY.items()]
-        yield 4, kpi, ([friedman(models, kpi, train_type, [(train_type, mean) for mean in TEST_MEANS])
-                        for train_type in DELAYED]
-                       + [signed_rank(models, kpi, train_type, ('deterministic', 30), ('lognormal', 30))
-                          for train_type in DELAYED]
-                       + [mann_whitney(models, kpi, 'deterministic', 'lognormal', test)
-                          for test in (('deterministic', 30), ('lognormal', 30))])
-    for kpi in STRATEGY:
-        yield 3, kpi, [mann_whitney(models, kpi, train_type, 'none', test)
-                       for train_type in DELAYED for test in (NO_DELAY, TRAINING_DELAY[train_type])]
-
-
-def hypothesis_tests(models):
-    rows = []
-    for experiment, kpi, tests in families(models):
-        significant, p_holm, _, _ = multipletests([test['p'] for test in tests], alpha=ALPHA,
-                                                  method='holm')
-        rows += [{'experiment': experiment, 'kpi': kpi, **test, 'p_holm': adjusted,
-                  'significant': reject}
-                 for test, adjusted, reject in zip(tests, p_holm, significant)]
-    table = pd.DataFrame(rows).sort_values(['experiment', 'kpi'], kind='stable')
-    print(f'{table["significant"].sum()} of {len(table)} tests significant after Holm')
-    return table
-
-
-# -- Main ----------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
@@ -432,7 +337,6 @@ def main():
     save(performance_figure(models), figures, 'test_performance')
     save(strategy_figure(models), figures, 'test_strategy')
 
-    hypothesis_tests(models).to_csv(os.path.join(out, 'statistics.csv'), index=False)
     print(f'written to {out}')
 
 

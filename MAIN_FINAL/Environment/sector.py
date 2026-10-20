@@ -1,4 +1,3 @@
-# Sector generation and entry routing, in the flat NM frame.
 
 import math
 import random
@@ -44,7 +43,7 @@ def exit_point(polygon, start_nm, heading_deg):
     h = math.radians(heading_deg)
 
     minx, miny, maxx, maxy = polygon.bounds
-    reach = 2.0 * math.hypot(maxx - minx, maxy - miny)   # past any point of the sector
+    reach = 2.0 * math.hypot(maxx - minx, maxy - miny)
     ray   = LineString([(east, north),
                         (east + reach * math.sin(h), north + reach * math.cos(h))])
 

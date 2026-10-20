@@ -20,7 +20,6 @@ import pandas as pd
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-# The panels, in reading order: total, LoS, action, drift.
 PANELS = [('episode/reward_per_flight_hour', 'Total reward'),
           ('reward/los_per_flight_hour',     'LoS penalty'),
           ('reward/work_per_flight_hour',    'Action penalty'),
@@ -34,7 +33,7 @@ LABELS  = {'none':              'No delay',
            'deterministic_30s': 'Deterministic delay, 30 s',
            'lognormal_30s':     'Lognormal delay, 30 s'}
 
-SMOOTHING = 0.999   # on all points of a run, as in training_curves.py
+SMOOTHING = 0.999
 
 
 def read_run(run_dir):
@@ -50,7 +49,7 @@ def read_run(run_dir):
             for value in event.summary.value:
                 if value.tag not in points:
                     continue
-                if first is None:   # a resumed run overwrites what the earlier file logged
+                if first is None:
                     first = event.step
                     for tag in TAGS:
                         points[tag] = {step: v for step, v in points[tag].items() if step < first}
@@ -98,7 +97,6 @@ def main():
             axis.plot(steps, run['value'], color=colour, alpha=0.15, linewidth=0.8)
             axis.plot(steps, run['value'].ewm(alpha=1 - SMOOTHING).mean(), color=colour,
                       linewidth=1.5, label=LABELS[delay_type] if seed == 1 else None)
-        # The reward is never positive, and the first two million steps would squash the rest.
         axis.set_ylim(panel.loc[panel['step'] > 2e6, 'value'].min(), 0)
         axis.set_xlim(0, panel['step'].max() / 1e6)
         axis.set_title(title)

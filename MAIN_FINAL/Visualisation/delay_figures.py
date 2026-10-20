@@ -35,7 +35,6 @@ def pmf(mean_s):
             return 0.0
         return 0.5 * (1.0 + math.erf((math.log(x) - mu) / (sigma * math.sqrt(2.0))))
 
-    # The law is not capped; the plot stops where 99.99 % of the draws lie below.
     upper = round(math.exp(mu + 3.72 * sigma))
     seconds = np.arange(0, upper + 1)
     probability = np.array([cdf(k + 0.5) - cdf(k - 0.5) for k in seconds])
@@ -54,11 +53,9 @@ def figure_laws(out_dir):
     """The two response laws at the mean used in training."""
     seconds, probability = pmf(TRAIN_MEAN)
 
-    # Sized to sit beside the measured pilot data of Wuestenbecker et al., which is square.
     figure, axis = plt.subplots(figsize=(4.4, 3.7))
     axis.bar(seconds, probability, width=1.0,
              label=f'Lognormal, $\\bar\\tau$ = {TRAIN_MEAN:g} s')
-    # A point mass of probability 1, so it is marked by its position, not by a bar.
     axis.axvline(TRAIN_MEAN, color='C1', linewidth=2,
                  label=f'Deterministic, $\\tau$ = {TRAIN_MEAN:g} s')
 

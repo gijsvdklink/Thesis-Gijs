@@ -5,17 +5,19 @@
 # Each model is tested at its FURTHEST checkpoint, chosen by step count.
 #
 # All 190 runs in one command, four at a time: each worker is a process with its own
-# environment (no BlueSky), so it flies run after run. Raise --workers on a machine with
-# more cores. Results go to ../Test_results_improved_v3, never to MAIN's Test_results.
+# environment and its own BlueSky instance, so it flies run after run. A scenario takes about
+# 11 s, so the full sweep is roughly 75 h on four workers; raise --workers on a machine with
+# more cores. Results go to ../Test_results_final. The no-delay models are flown with their
+# response-state inputs set to zero, as in their training.
 #
 # Interrupted runs are safe to restart: a finished run file is skipped and a partial one is
 # written as .part, so nothing half-written is ever read back.
 
-python Validation/run_test_scenarios.py --episodes 350
+python Validation/run_test_scenarios.py
 
 # to split the runs over two machines instead, give each machine its share:
-#     python Validation/run_test_scenarios.py --episodes 350 --terminal 1 --terminals 2
-#     python Validation/run_test_scenarios.py --episodes 350 --terminal 2 --terminals 2
+#     python Validation/run_test_scenarios.py --terminal 1 --terminals 2
+#     python Validation/run_test_scenarios.py --terminal 2 --terminals 2
 
-# once every run is done, combine the per-run CSVs into Test_results_improved_v3/test_results.csv
+# once every run is done, combine the per-run CSVs into Test_results_final/test_results.csv
 python Validation/run_test_scenarios.py --merge

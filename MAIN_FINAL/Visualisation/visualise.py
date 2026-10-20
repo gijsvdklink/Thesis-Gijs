@@ -5,10 +5,8 @@ from collections import deque
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-# Repo root too, so Environment.* resolves however the script is launched.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# -- NumPy unpickle shim so SB3 checkpoints load across numpy versions ------------
 class _NumpyShim(pickle.Unpickler):
     def find_class(self, module, name):
         if module.startswith('numpy._core'):
@@ -38,11 +36,11 @@ import pygame
 from pygame import gfxdraw
 from stable_baselines3 import PPO
 
-from Environment.atco import DELAY_MODES   # for the --delay choices
+from Environment.atco import DELAY_MODES
 
-WIN_W, WIN_H = 1920, 1080         # 16:9 full-HD landscape
-CX, CY = 540, 540                 # radar centred in the left 1080x1080 square region
-PANEL_X = 1100                    # observation panel starts here (right of the radar square)
+WIN_W, WIN_H = 1920, 1080
+CX, CY = 540, 540
+PANEL_X = 1100
 MARGIN = 80
 DIAG   = math.hypot(WIN_W, WIN_H)
 BG     = (6, 14, 10)
@@ -50,14 +48,12 @@ GREEN  = (60, 220, 120)
 DIM    = (28, 90, 55)
 ORANGE = (255, 140, 0)
 RED    = (255, 60, 55)
-BLUE   = (140, 205, 255)        # light blue -- ownship ring
+BLUE   = (140, 205, 255)
 CYAN   = (90, 220, 255)
 WP     = (40, 120, 70)
-KT     = 1.94384
 
 ACTION_LABELS = ['L60', 'L45', 'L30', 'HOLD', 'R30', 'R45', 'R60', 'DIR', 'SPD+', 'SPD-']
 
-# Env hooks, bound in main() once the --env module is known.
 CONFIG = None
 latlon_to_nm = None
 OBS_OWNSHIP_LABELS = []
@@ -110,7 +106,6 @@ def fresh_stats():
     return {'cum_r': 0.0, 'last_r': 0.0, 'step_n': 0, 'los': 0,
             'last_action': 3, 'acting_cs': None,
             'counts': [0] * 10, 'recent': deque(maxlen=14),
-            # Instruction timeline for the delay panel, read from the env rather than predicted here.
             'pending_seen': {}, 'executed': []}
 
 
@@ -119,7 +114,7 @@ def reset_episode(env, scenario_seed):
     poly = list(env.polygon) if env.polygon is not None else []
     rng = max(35.0, 1.1 * max((math.hypot(v[0], v[1]) for v in poly), default=60.0))
     scale = (min(CX, CY) - MARGIN) / rng
-    prot_px = 0.5 * CONFIG['sep_nm'] * scale         # 2.5 NM protected-zone radius
+    prot_px = 0.5 * CONFIG['sep_nm'] * scale
     return obs, poly, scale, prot_px
 
 
@@ -131,7 +126,6 @@ def track_advisories(env, st):
     for cs, advisory in st['pending_seen'].items():
         if cs in pending:
             continue
-        # The execution time was fixed at issue, so it is exact -- unlike the frame clock's 5 s samples.
         executed_at_s = advisory['execute_at_s']
         st['executed'].append({'cs': cs, 'action': advisory['action'],
                                'issued_at_s': advisory['issued_at_s'],
@@ -147,12 +141,11 @@ def policy_step(env, model, obs, deterministic, norm, st, fixed_seq=None, seq_on
         n = st['step_n']
         a = 3 if (seq_once and n >= len(fixed_seq)) else fixed_seq[n % len(fixed_seq)]
     elif model is None:
-        a = 3   # HOLD-only: do-nothing baseline
+        a = 3
     else:
         o = obs if norm is None else np.clip((obs - norm[0]) / norm[1], -10, 10)
         action, _ = model.predict(o, deterministic=deterministic)
         a = int(action)
-    # Read before the step: the env issues the advisory against this same traffic picture.
     obs, r, _, trunc, _ = env.step(a)
     st['last_r'] = float(r); st['cum_r'] += st['last_r']; st['step_n'] += 1
     st['last_action'] = a; st['acting_cs'] = acting_cs
@@ -243,7 +236,6 @@ def draw_delay_panel(screen, fonts, env, st, x, y):
             y += 20
             screen.blit(font_hud.render(f'EXECUTES IN {left:5.0f} s', True, ORANGE),
                         (x, y)); y += 26
-            # Drain bar: full at issue, empty when the pilot acts.
             total = max(advisory['execute_at_s'] - advisory['issued_at_s'], 1e-9)
             w, h = 320, 14
             pygame.draw.rect(screen, DIM, (x, y, w, h), 1)
@@ -270,32 +262,30 @@ def draw_frame(screen, fonts, env, scale, poly, prot_px, st, paused, mode, obs):
     urg = urgency(env)
     init_hdg_map = {cs: ac.initial_hdg for cs, ac in env._aircraft.items()}
     for cs in env._aircraft:
-        idx = env.traf.id2idx(cs)
+        idx = bs.traf.id2idx(cs)
         if idx < 0:
             continue
-        pos = env.traf.pos[idx]                            # east/north NM, as the env reasons
+        pos = latlon_to_nm(CONFIG['center_ll'], bs.traf.lat[idx], bs.traf.lon[idx])
         px, py = to_screen(pos[0], pos[1], scale)
         u = urg.get(cs, 0.0)
         col = RED if u > 1.0 else ORANGE if u > 0.0 else GREEN
-        hdg_deg = float(env.traf.hdg[idx])
-        gs_kt = float(env.traf.tas[idx]) * 3600.0          # the traffic model keeps NM/s
+        hdg_deg = float(bs.traf.hdg[idx])
+        gs_kt = float(bs.traf.tas[idx]) / 1852.0 * 3600.0
 
-        # Dashed ray along the INITIAL heading: the line it would have flown had it never turned.
         init_hdg = init_hdg_map.get(cs)
         if init_hdg is not None:
             h0 = math.radians(init_hdg)
             dashed_line(screen, WP, (px, py),
                         (px + math.sin(h0) * DIAG, py - math.cos(h0) * DIAG))
 
-        # 2.5 NM protected-zone ring (two overlapping == LoS); the ownship ring is blue.
         aa_ring(screen, px, py, prot_px, BLUE if cs == env.focus_cs else col)
 
-        h = math.radians(hdg_deg)                          # current-heading leader
-        lead = float(env.traf.tas[idx]) * 60.0 * scale     # one minute ahead, in NM
+        h = math.radians(hdg_deg)
+        lead = float(bs.traf.tas[idx]) / 1852.0 * 60.0 * scale
         pygame.draw.line(screen, col, (px, py),
                          (px + math.sin(h) * lead, py - math.cos(h) * lead), 2)
 
-        pygame.draw.circle(screen, col, (int(px), int(py)), 2)   # radar blip (no square)
+        pygame.draw.circle(screen, col, (int(px), int(py)), 2)
         screen.blit(font.render(f'{cs} {hdg_deg:03.0f}', True, col), (px + 10, py - 18))
         screen.blit(font.render(f'{gs_kt:3.0f}kt', True, col), (px + 10, py - 5))
 
@@ -354,8 +344,7 @@ def main():
                     help='action-response delay condition to fly under. Match the delay type the '
                          'model was trained on, or set it deliberately to see how the '
                          'policy copes with pilots it never met.')
-    # --delay-first is the old spelling, kept so existing commands still work.
-    ap.add_argument('--delay-mean', '--delay-first', dest='delay_mean',
+    ap.add_argument('--delay-mean', dest='delay_mean',
                     type=float, default=None, metavar='S',
                     help='delay magnitude: the MEAN pilot response time in seconds. Match '
                          'the magnitude the model was trained at; default is the env '
@@ -402,7 +391,6 @@ def main():
     OBS_INTRUDER_LABELS = getattr(envmod, 'OBS_INTRUDER_LABELS',
                                   ['rho', 'theta', 'psi', 'vint', 'tau'])
 
-    # The samplers take the env's scenario generator; these overrides pin the values.
     CONFIG['n_aircraft'] = lambda rng: args.n_ac
     CONFIG['rho']        = lambda rng: args.density
 
@@ -414,7 +402,7 @@ def main():
         fixed_seq = [args.fixed_action]
 
     if fixed_seq:
-        model, norm = None, None      # fixed policy: no model, no obs normalisation
+        model, norm = None, None
         env = AirspaceEnv(delay_mode=args.delay, delay_mean_s=args.delay_mean)
         labels = ' -> '.join(ACTION_LABELS[a] for a in fixed_seq)
         if args.seq_once:
@@ -425,7 +413,7 @@ def main():
                     if len(fixed_seq) == 1 else f'FIXED cycle: {labels}')
             print(f'fixed policy: cycling {labels}', flush=True)
     elif args.hold:
-        model, norm = None, None      # do-nothing policy: no model, no obs normalisation
+        model, norm = None, None
         env = AirspaceEnv(delay_mode=args.delay, delay_mean_s=args.delay_mean)
         mode = 'HOLD-only (do-nothing)'
         print('do-nothing policy: HOLD selected every step', flush=True)
@@ -447,8 +435,6 @@ def main():
         os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
     pygame.init()
-    # Drawn at full size on an off-screen surface, then scaled onto a window of whatever size
-    # was asked for: the layout never has to know about the window.
     win = (max(1, round(WIN_W * args.scale)), max(1, round(WIN_H * args.scale)))
     display = pygame.display.set_mode(win)
     screen = pygame.Surface((WIN_W, WIN_H)) if win != (WIN_W, WIN_H) else display

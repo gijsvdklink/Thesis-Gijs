@@ -30,20 +30,9 @@ STATS_WINDOW = 100
 
 TOTAL_TIMESTEPS = 300_000_000
 
-# Four environments, and PPO is Stable-Baselines3's default except for the rollout length, the
-# batch size and the number of epochs: gamma 0.99, ent_coef 0.0, learning rate 3e-4,
-# gae_lambda 0.95 and clip 0.2.
-# 512 steps per environment instead of 2048, so the rollout is 4 x 512 = 2048 transitions per
-# update and the policy is updated four times as often. 512 steps is still well beyond the
-# ~100-step horizon of gamma 0.99, so cutting the segments there costs little.
 N_ENVS  = 4
 N_STEPS = 512
 
-# No minibatches: every epoch is ONE gradient step over the whole rollout, so the batch size
-# is the rollout size (n_envs x N_STEPS, 2048 with four environments).
-# 30 epochs instead of the default 10, so 30 gradient steps per update, about 4.4M over 300M
-# steps. Watch train/approx_kl and train/clip_fraction: if they keep rising, the policy moves
-# too far per update.
 N_EPOCHS = 30
 
 SAVE_EVERY     = 500_000
@@ -121,6 +110,31 @@ class LogEpisodes(BaseCallback):
         return True
 
 
+class StopAfterEpisodes(BaseCallback):
+    """Stop the run once `limit` training episodes have finished.
+
+    An episode is counted when an environment reports its summary, so the count is the same
+    whatever n_envs is. Episodes vary in length, so this is a different stopping rule from
+    --timesteps: whichever limit is reached first ends the run.
+    """
+
+    def __init__(self, limit):
+        super().__init__()
+        self.limit = int(limit)
+        self.episodes = 0
+
+    def _on_step(self):
+        for info in self.locals.get('infos', []):
+            if 'ep_reward_total' in info:
+                self.episodes += 1
+        self.logger.record('episode/count', self.episodes)
+        if self.episodes >= self.limit:
+            print(f'reached {self.episodes:,} episodes at {self.num_timesteps:,} steps; '
+                  f'stopping', flush=True)
+            return False
+        return True
+
+
 class Checkpoint(BaseCallback):
     """Write last_model every `every` steps, so a crash does not cost the whole run."""
 
@@ -171,20 +185,13 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT, overwrite=False, resume=False):
+          runs_root=RUNS_ROOT, overwrite=False, resume=False, max_episodes=None):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
-        # The checkpoint that is FURTHEST ALONG, not the first name that happens to exist.
-        # final_model is written when a run ends or is interrupted; last_model every
-        # save_every steps. A run killed without unwinding (no KeyboardInterrupt, so the
-        # finally block never ran) leaves final_model behind at an OLDER step count than
-        # last_model. Preferring it by name then silently discards the newer weights, and
-        # the next checkpoint overwrites them. Read the step count and take the larger.
         checkpoint, best_steps = None, -1
         for name in ('last_model', 'final_model'):
             zip_path = os.path.join(run_dir, f'{name}.zip')
-            # A checkpoint without its VecNormalize statistics cannot be resumed from.
             if not (os.path.exists(zip_path)
                     and os.path.exists(os.path.join(run_dir, f'{name}_vecnorm.pkl'))):
                 continue
@@ -199,10 +206,6 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
                  f'to train over it.')
     os.makedirs(run_dir, exist_ok=True)
 
-    # Every worker needs its OWN scenario stream. Constructed from the run seed alone, all
-    # n_envs workers would draw the same episodes and the rollout would be n_envs copies of
-    # one trajectory. The streams are drawn in order from the run seed, so worker k always
-    # gets the same stream whatever n_envs is, and --seed still fixes the whole run.
     stream       = Random(seed)
     worker_seeds = [stream.randrange(2 ** 63) for _ in range(n_envs)]
 
@@ -214,8 +217,6 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
 
     factories = [make_worker(ws) for ws in worker_seeds]
 
-    # Subprocesses only pay for themselves once there is more than one environment; a single
-    # worker stays in-process and skips the pickling and IPC altogether.
     venv = DummyVecEnv(factories) if n_envs == 1 else SubprocVecEnv(factories)
     if resume:
         env = VecNormalize.load(os.path.join(run_dir, f'{checkpoint}_vecnorm.pkl'),
@@ -233,7 +234,10 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
         model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
                     n_steps=N_STEPS, batch_size=n_envs * N_STEPS, n_epochs=N_EPOCHS)
 
-    callbacks = CallbackList([Progress(), LogEpisodes(), Checkpoint(run_dir, save_every)])
+    callbacks = [Progress(), LogEpisodes(), Checkpoint(run_dir, save_every)]
+    if max_episodes:
+        callbacks.append(StopAfterEpisodes(max_episodes))
+    callbacks = CallbackList(callbacks)
 
     print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
@@ -268,6 +272,8 @@ def main():
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY,
                         help=f'steps between last_model checkpoints '
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')
+    parser.add_argument('--max-episodes', type=int, default=None,
+                        help='stop once this many training episodes have finished')
     parser.add_argument('--overwrite', action='store_true',
                         help='train into an existing run directory instead of refusing')
     parser.add_argument('--resume', action='store_true',
@@ -285,7 +291,8 @@ def main():
     args = parser.parse_args()
 
     train(args.delay, args.seed, args.timesteps, args.n_envs,
-          args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume)
+          args.save_every, args.delay_mean, args.runs_root, args.overwrite, args.resume,
+          max_episodes=args.max_episodes)
 
 
 if __name__ == '__main__':
