@@ -24,52 +24,80 @@ PPO ──action──▶ AirspaceEnv ──advisory──▶ ATCO (delay τ) �
 
 ---
 
-## 1. Lifecycle: what happens when
+## 1. Execution model
 
-**Phase 0 — process start, once.** `AirspaceEnv(delay_mode=..., seed=...)` declares the two
-spaces, stores the delay law, seeds `_seed_stream`, and calls `start_bluesky()`:
-`bs.init(mode='sim', detached=True)` loads the navigation cache and performance models (the
-lines printed at startup, a few seconds), installs a dummy screen, and pushes `DT 1;FF`.
-`_reset_episode_state()` then prepares empty containers. **No sector and no aircraft exist
-yet** — `step()` before `reset()` would fail on missing scenario state; SB3 always resets first.
+**Phase 0 · process start.** `AirspaceEnv.__init__` (`env.py:51`) declares
+`Box(-inf, inf, (29,), float32)` and `Discrete(10)`, seeds `_seed_stream = Random(seed)`, and
+calls `start_bluesky()` (`traffic.py:21`): `bs.init(mode='sim', detached=True)` instantiates the
+module-level singletons `bs.traf`, `bs.sim`, `bs.stack` and loads the navdata cache and OpenAP
+tables (a few seconds, once per process). `bs.scr` is replaced by a `ScreenIO` subclass whose
+`echo` is a no-op, so stack output is discarded. `DT 1;FF` sets the integration step to 1 s and
+puts the simulation in fast-forward, i.e. unpaced by wall clock. Scenario attributes
+(`_polygon_shape`, `n_aircraft`, `_slots`, `_max_exits`, `_max_steps`) are created in
+`_build_sector`, not here, so `step()` before `reset()` raises `AttributeError`.
 
-**Phase 1 — training start, once.** `train.py` builds `DummyVecEnv([make_env])` (which runs
-phase 0), `VecMonitor` around it to record episode length and reward, and `VecNormalize` around
-that for the running observation and return statistics. `PPO('MlpPolicy', ...)` builds the 2 × 64
-tanh actor and critic, and `learn()` calls `env.reset()` once to obtain `_last_obs`.
+**Phase 1 · training setup.** `train()` (`train.py:190`) derives one worker seed per env from
+`Random(seed)`, then stacks `DummyVecEnv` (in-process, no IPC; `SubprocVecEnv` above one env) →
+`VecMonitor` (injects `info['episode']` with length and undiscounted return) → `VecNormalize`
+(`obs_rms`: `RunningMeanStd` over the 29 dimensions; `ret_rms`: scalar over discounted returns;
+`clip_obs = clip_reward = 10`, γ 0.99). `MlpPolicy` builds two separate trunks,
+29 → 64 → 64 → 10 logits and 29 → 64 → 64 → 1 value, tanh. `learn()` → `_setup_learn` performs
+the one initial `env.reset()` and stores `_last_obs` (`base_class.py:423`).
 
-**Phase 2 — episode reset, every episode** (`env.py:69`). In order: draw the next scenario seed,
-skipping the held-out set → derive `scenario_rng`, `traffic_rng`, `delay_rng` → construct a fresh
-`ATCO` → clear BlueSky's command stack, `bs.traf.reset()`, re-push `DT 1;FF` → `_build_sector`
-(n_ac, ρ, polygon, `_max_exits`, `_max_steps`) → `_spawn_initial_traffic` (n_ac aircraft, each
-re-drawn until separated) → `_refresh_traffic_view` → `_select_focus` → first observation. The
-scenario is new every episode; BlueSky's process state is reused, only its traffic is wiped.
+**Phase 2 · episode reset** (`env.py:69`).
 
-**Phase 3 — rollout, 2048 steps.** Per step: normalise the observation with the current running
-statistics → policy forward → action → `env.step` (the sequence in *One step, in order*) →
-`VecNormalize` updates its statistics and normalises the reward → both go in the buffer. A
-rollout spans ~1.4 episodes, so episode boundaries fall inside it.
+1. `_new_episode_rngs` (`env.py:485`): rejection-sample a scenario seed from `range(10**9)` until
+   it is not in `HELD_OUT`, then `master = Random(seed)` yields three children by
+   `getrandbits(64)` — `scenario_rng`, `traffic_rng` (both `random.Random`) and `delay_rng`
+   (`np.random.default_rng`, needed for `lognormal`). A fresh `ATCO` is constructed, so the τ
+   sequence is a pure function of the scenario seed.
+2. `_BsStack.cmdstack.clear()` — commands queued but not yet executed would otherwise fire into
+   the new episode — then `bs.traf.reset()` (zeroes the traffic arrays and `ntraf`), then
+   `DT 1;FF` re-pushed, since the reset drops it.
+3. `_build_sector` (`env.py:520`): `n_ac ~ U{15,30}`, `ρ ~ U(1/20000, 1/10000)` km⁻²,
+   `area = n_ac/ρ`; polygon by rejection until circularity `4πA/P² ≥ 0.7`; `shapely.prepare`
+   builds the point-in-polygon index used for exit tests; `_max_exits = round(4·n_ac)`;
+   `_max_steps = max(50, round(8 · d_bbox/450 kt · 3600 / 5 s))`.
+4. `_spawn_initial_traffic`: per slot, up to 50 placement attempts, each requiring a ≥ 15 NM
+   chord and passing `_spawn_is_safe` — a vectorised CPA of the candidate against all airborne
+   aircraft, rejecting any `d < 15 NM` or `t_los < 360 s`. A slot that fails all attempts is
+   deferred 5 steps.
+5. `_refresh_traffic_view` reads BlueSky once and builds `_row_of`, `_pos`, `_vel`, `_hdg`,
+   `urgency`, `t_los`, `_return_blocked`; `_select_focus` then sets `focus_cs`.
 
-**Phase 4 — episode end.** On `truncated` the env puts the whole `episode_summary` in `info`.
-`DummyVecEnv` stores the final observation as `info['terminal_observation']` and immediately
-calls `reset()` (phase 2), so the agent sees no gap; `TimeLimit.truncated` tells PPO to
-bootstrap the value of that final state rather than treat it as zero. `LogEpisodes` averages the
-summary over the last 100 episodes into TensorBoard and `StopAfterEpisodes` counts it.
+**Phase 3 · rollout, 2048 steps.** Per step: `normalize_obs` applies
+`clip((o − μ)/√(σ² + 1e-8), ±10)` with the *current* statistics, which are updated every step
+while `training=True`; the policy samples from the categorical over the 10 logits (`ent_coef`
+is 0, so exploration comes only from that sampling, not from an entropy bonus); `env.step`
+returns the raw reward; `ret_rms` is updated and the reward divided by `√(var + 1e-8)` and
+clipped to ±10. The buffer holds `(2048, 1, 29)` observations plus actions, log-probs, values,
+rewards and dones.
 
-**Phase 5 — update, every 2048 steps.** GAE (γ = 0.99, λ = 0.95) over the buffer with the
-`dones` flags cutting advantages at episode boundaries, then 30 epochs, each a single gradient
-step on the full 2048-sample batch. The environment is idle meanwhile — about 16 % of wall clock.
+**Phase 4 · episode boundary.** The env sets `truncated=True` and puts the ~70-key
+`episode_summary` in `info`. `DummyVecEnv.step_wait` writes `info['terminal_observation']`, calls
+`reset()` inline and returns the *new* episode's first observation, so the rollout has no gap;
+`VecNormalize` normalises the stored terminal observation too (`vec_normalize.py:203`). Because
+`TimeLimit.truncated` is set and `terminated` is `False`, PPO adds `γ · V(s_terminal)` to that
+step's reward (`on_policy_algorithm.py:240`) — the time limit is treated as a cut, not a failure.
 
-**Phase 6 — housekeeping.** Every 500 000 steps `Checkpoint` writes `last_model.zip` plus
-`last_model_vecnorm.pkl`. At 60 000 episodes `StopAfterEpisodes` returns `False`, `learn()`
-returns, and `final_model.*` is written in the `finally` block — so an interrupt also saves.
+**Phase 5 · update, every 2048 steps.** GAE with γ 0.99, λ 0.95:
+`δ_t = r_t + γV(s_{t+1})(1−d_t) − V(s_t)`, `A_t = δ_t + γλ(1−d_t)A_{t+1}`, with `d_t` ending the
+recursion at episode boundaries. Advantages are standardised over the minibatch, which here is
+the whole rollout. 30 epochs × 1 gradient step = 30 Adam steps per rollout, against SB3's
+default 320 (10 × 32); the clipped surrogate plus `0.5 · L_VF`, gradients clipped at norm 0.5.
 
-**Phase 7 — testing, a separate process** (`Validation/run_test_scenarios.py`). The checkpoint
-is loaded together with its `vecnorm.pkl`, from which the **frozen** mean, variance and clip are
-taken and applied by hand; no `VecNormalize` wrapper and no reward normalisation are used, and
-actions are `deterministic=True`. Each of the 500 held-out scenarios is flown with
-`reset(options={'scenario_seed': s})` to its natural end, `atco.act_if_ready` is wrapped to
-count the instructions actually executed, and one CSV row per scenario is written.
+**Phase 6 · housekeeping.** `Checkpoint` writes `last_model.zip` and `last_model_vecnorm.pkl`
+every 500 000 steps; `StopAfterEpisodes` returns `False` at 60 000 episodes, which ends
+`learn()`; `final_model.*` is written in the `finally` block, so `KeyboardInterrupt` also saves.
+
+**Phase 7 · testing, separate process** (`Validation/run_test_scenarios.py`). The checkpoint's
+`vecnorm.pkl` is unpickled through a shim for the renamed numpy modules, and only
+`obs_rms.mean`, `obs_rms.var` and `clip_obs` are taken: normalisation is applied by hand and
+**frozen**, with no `VecNormalize` wrapper and no reward normalisation. Actions are
+`deterministic=True` (argmax, not sampled). `blind=True` zeroes the four response-state indices
+before the policy sees them. `atco.act_if_ready` is monkey-patched to count the instructions
+that actually execute, which the env itself does not track, and each of the 500 held-out
+scenarios runs via `reset(options={'scenario_seed': s})` to its own truncation.
 
 ---
 
