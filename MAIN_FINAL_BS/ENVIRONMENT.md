@@ -24,7 +24,56 @@ PPO ──action──▶ AirspaceEnv ──advisory──▶ ATCO (delay τ) �
 
 ---
 
-## 1. The Gymnasium contract
+## 1. Lifecycle: what happens when
+
+**Phase 0 — process start, once.** `AirspaceEnv(delay_mode=..., seed=...)` declares the two
+spaces, stores the delay law, seeds `_seed_stream`, and calls `start_bluesky()`:
+`bs.init(mode='sim', detached=True)` loads the navigation cache and performance models (the
+lines printed at startup, a few seconds), installs a dummy screen, and pushes `DT 1;FF`.
+`_reset_episode_state()` then prepares empty containers. **No sector and no aircraft exist
+yet** — `step()` before `reset()` would fail on missing scenario state; SB3 always resets first.
+
+**Phase 1 — training start, once.** `train.py` builds `DummyVecEnv([make_env])` (which runs
+phase 0), `VecMonitor` around it to record episode length and reward, and `VecNormalize` around
+that for the running observation and return statistics. `PPO('MlpPolicy', ...)` builds the 2 × 64
+tanh actor and critic, and `learn()` calls `env.reset()` once to obtain `_last_obs`.
+
+**Phase 2 — episode reset, every episode** (`env.py:69`). In order: draw the next scenario seed,
+skipping the held-out set → derive `scenario_rng`, `traffic_rng`, `delay_rng` → construct a fresh
+`ATCO` → clear BlueSky's command stack, `bs.traf.reset()`, re-push `DT 1;FF` → `_build_sector`
+(n_ac, ρ, polygon, `_max_exits`, `_max_steps`) → `_spawn_initial_traffic` (n_ac aircraft, each
+re-drawn until separated) → `_refresh_traffic_view` → `_select_focus` → first observation. The
+scenario is new every episode; BlueSky's process state is reused, only its traffic is wiped.
+
+**Phase 3 — rollout, 2048 steps.** Per step: normalise the observation with the current running
+statistics → policy forward → action → `env.step` (the sequence in *One step, in order*) →
+`VecNormalize` updates its statistics and normalises the reward → both go in the buffer. A
+rollout spans ~1.4 episodes, so episode boundaries fall inside it.
+
+**Phase 4 — episode end.** On `truncated` the env puts the whole `episode_summary` in `info`.
+`DummyVecEnv` stores the final observation as `info['terminal_observation']` and immediately
+calls `reset()` (phase 2), so the agent sees no gap; `TimeLimit.truncated` tells PPO to
+bootstrap the value of that final state rather than treat it as zero. `LogEpisodes` averages the
+summary over the last 100 episodes into TensorBoard and `StopAfterEpisodes` counts it.
+
+**Phase 5 — update, every 2048 steps.** GAE (γ = 0.99, λ = 0.95) over the buffer with the
+`dones` flags cutting advantages at episode boundaries, then 30 epochs, each a single gradient
+step on the full 2048-sample batch. The environment is idle meanwhile — about 16 % of wall clock.
+
+**Phase 6 — housekeeping.** Every 500 000 steps `Checkpoint` writes `last_model.zip` plus
+`last_model_vecnorm.pkl`. At 60 000 episodes `StopAfterEpisodes` returns `False`, `learn()`
+returns, and `final_model.*` is written in the `finally` block — so an interrupt also saves.
+
+**Phase 7 — testing, a separate process** (`Validation/run_test_scenarios.py`). The checkpoint
+is loaded together with its `vecnorm.pkl`, from which the **frozen** mean, variance and clip are
+taken and applied by hand; no `VecNormalize` wrapper and no reward normalisation are used, and
+actions are `deterministic=True`. Each of the 500 held-out scenarios is flown with
+`reset(options={'scenario_seed': s})` to its natural end, `atco.act_if_ready` is wrapped to
+count the instructions actually executed, and one CSV row per scenario is written.
+
+---
+
+## 2. The Gymnasium contract
 
 Two spaces and two methods, nothing more:
 
@@ -43,7 +92,7 @@ the value of a truncated final state instead of treating it as worth zero.
 
 ---
 
-## 2. Three clocks
+## 3. Three clocks
 
 | clock | value | from |
 |---|---|---|
@@ -61,7 +110,7 @@ simulated time.
 
 ---
 
-## 3. One scenario
+## 4. One scenario
 
 `n_ac ∈ [15, 30]`, density `ρ ∈ [1/20000, 1/10000]` per km², `area = n_ac / ρ`. The sector is a
 random convex polygon, 6–12 vertices, rejected unless circularity ≥ 0.7 (`sector.py:27`).
@@ -82,7 +131,7 @@ reproduces a scenario exactly.
 
 ---
 
-## 4. The BlueSky boundary
+## 5. The BlueSky boundary
 
 BlueSky is a process-wide singleton (`bs.traf`, `bs.sim`, the stack), so **one environment per
 process**. `start_bluesky()` calls `bs.init(mode='sim', detached=True)` once, swaps in a dummy
@@ -105,7 +154,7 @@ BlueSky re-indexes its rows on every create and delete, so `_refresh_traffic_vie
 
 ---
 
-## 5. Urgency, and picking the focus ship
+## 6. Urgency, and picking the focus ship
 
 `urgency_matrix` (`geometry.py:73`) is n × n over airborne pairs, from the constant-velocity CPA:
 
@@ -129,7 +178,7 @@ Switching focus **discards** any advisory still pending for the old focus ship
 
 ---
 
-## 6. The observation (29 values)
+## 7. The observation (29 values)
 
 Built only from the focus ship's view (`env.py:220`); a neutral vector if there is none. Angles
 in radians, speeds in knots, distances in NM.
@@ -152,7 +201,7 @@ aircraft — the reason this is a POMDP and the returns are noisy.
 
 ---
 
-## 7. Ten actions
+## 8. Ten actions
 
 | idx | advisory | cost |
 |---|---|---|
@@ -179,7 +228,7 @@ A repeat of the pending advisory transmits nothing and does not reset the ATCO's
 
 ---
 
-## 8. The delay mechanism
+## 9. The delay mechanism
 
 `ATCO` (`atco.py`) holds at most one advisory, for one callsign.
 
@@ -198,7 +247,7 @@ so `h_cmd`/`v_cmd` describe what the aircraft is doing, `pend_*` what is still q
 
 ---
 
-## 9. The reward
+## 10. The reward
 
 ```
 r = −10.0 · los_seconds   −0.10 · drift_sum   −1.00 · cost(action)
@@ -219,23 +268,22 @@ density comparable.
 
 ---
 
-## 10. How PPO drives it
+## 11. The PPO settings
 
-`train.py` wraps **one** environment in `VecNormalize(VecMonitor(DummyVecEnv([...])))` and runs
-SB3 PPO on CPU with the reported settings: `n_steps = 2048`, `batch_size = 2048` (the full
-rollout, one gradient step per epoch), `n_epochs = 30`, Adam 3e-4 constant, γ 0.99, clip 0.2,
-2 × 64 tanh actor and critic. `VecNormalize` standardises observations and rewards with running
-statistics clipped to [−10, 10], which is why `*_vecnorm.pkl` must travel with every
-checkpoint — a model loaded without it sees garbage.
+One environment, SB3 PPO on CPU, the settings as reported: `n_steps = 2048`,
+`batch_size = 2048` (the full rollout, so one gradient step per epoch), `n_epochs = 30`, Adam
+3e-4 constant, γ 0.99, λ 0.95, clip 0.2, `vf_coef` 0.5, max grad norm 0.5, 2 × 64 tanh actor and
+critic. `--n-envs > 1` makes the rollout `n_envs × 2048` and no longer matches this.
 
-The loop: collect 2048 steps (≈ 1.4 episodes) → 30 full-batch epochs → repeat.
-`StopAfterEpisodes` counts finished episodes from the `info` dicts and ends the run at
-**60 000 episodes** (~8.5 × 10⁷ steps); `Checkpoint` writes `last_model` every 500 000 steps.
-About 117 steps/s on one core, so 8–9 days per run.
+`VecNormalize` standardises observations and rewards with running statistics clipped to
+[−10, 10]. Those statistics are part of the model: `*_vecnorm.pkl` must travel with every
+checkpoint, or the policy sees inputs on the wrong scale.
+
+Runs end at **60 000 episodes** (~8.5 × 10⁷ steps), about 117 steps/s on one core, so 8–9 days.
 
 ---
 
-## 11. One step, in order
+## 12. One step, in order
 
 1. `_spawn_due_aircraft` — fill any empty slot whose timer expired, if a safe entry exists.
 2. `_issue_advisory(focus, action)` → ATCO, unless hold, repeat or no focus ship.
@@ -252,7 +300,7 @@ end of step *t−1*, and the reward at *t* is attributed to that same aircraft.
 
 ---
 
-## 12. Things that will catch you out
+## 13. Things that will catch you out
 
 - **BlueSky is global.** Two envs in one process share `bs.traf`; parallelism means separate
   processes (`SubprocVecEnv`, or the validation worker pool).
