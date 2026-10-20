@@ -1,289 +1,265 @@
-# The Gymnasium environment, end to end
+# AirspaceEnv — the Gymnasium environment
 
-How `AirspaceEnv` works: what Gymnasium requires of it, what it takes from BlueSky, how the
-focus ship is chosen, which clocks run at which rate, and where PPO fits. Written against the
-code in `Environment/`, `Training/train.py` and `Validation/run_test_scenarios.py`.
-
----
-
-## 1. The shape of the thing
-
-One reinforcement learning agent plays the role of a conflict detection and resolution tool
-that advises a single air traffic controller. Every RL step it looks at one aircraft, the
-**focus ship**, and issues at most one advisory for it. The advisory does not reach the
-aircraft directly: it goes to a modelled controller who needs time to act. BlueSky flies the
-aircraft.
+One PPO agent acts as a CD&R advisory tool. Each RL step it looks at **one** aircraft, the
+*focus ship*, and may issue **one** advisory. The advisory does not reach the aircraft: it goes
+to a modelled ATCO who executes it after a delay τ. BlueSky flies the traffic.
 
 ```
-            ┌──────────── one RL step = 5 simulated seconds ────────────┐
- PPO ──action──▶ AirspaceEnv ──advisory──▶ ATCO (delay τ) ──instruction──▶ BlueSky
-  ▲                   │                                                      │
-  └── observation, reward ◀──── traffic state (lat, lon, hdg, tas) ◀─────────┘
+          ┌──────────── one RL step = 5 simulated seconds ────────────┐
+PPO ──action──▶ AirspaceEnv ──advisory──▶ ATCO (delay τ) ──HDG/SPD──▶ BlueSky
+ ▲                   │                                                   │
+ └── observation, reward ◀──── lat, lon, hdg, tas ◀──────────────────────┘
 ```
 
----
-
-## 2. What Gymnasium requires, and what we return
-
-Gymnasium is only a contract. It asks for two spaces and two methods, and it fixes what `step`
-returns. It does not simulate anything.
-
-| Required | Ours |
+| file | owns |
 |---|---|
-| `observation_space` | `Box(-inf, inf, shape=(29,), float32)` |
-| `action_space` | `Discrete(10)` |
-| `reset(seed, options)` → `(obs, info)` | `options={'scenario_seed': n}` picks the scenario |
-| `step(action)` → `(obs, reward, terminated, truncated, info)` | `terminated` is **always False**; episodes end by `truncated` |
-
-`terminated` would mean the task reached a terminal state, such as a crash. A loss of
-separation is penalised, not terminal, so the episode runs to its natural length and only
-`truncated` is ever set. On the truncating step `info` carries the whole episode summary
-(`ep_los_events`, `ep_conflicts`, `ep_advisories`, `ep_flight_hours`, …) which the evaluation
-reads straight into its CSV.
-
-The observation is a flat 29-vector rather than a dict, so a plain `MlpPolicy` fits with no
-feature extractor.
+| `Environment/config.py` | every constant: `CONFIG`, action costs, observation labels |
+| `Environment/env.py` | the Gymnasium class: step, reset, focus choice, observation, reward |
+| `Environment/traffic.py` | the BlueSky bridge: start it, read positions and velocities |
+| `Environment/atco.py` | the delay mechanism: one pending advisory, τ, revisions |
+| `Environment/geometry.py` | CPA, time-to-LoS, urgency, lat/lon ↔ NM, heading drift |
+| `Environment/sector.py` | the random convex sector, entry routes, exit points |
+| `Environment/stats.py` | per-episode counters and the end-of-episode summary |
+| `Training/train.py` | PPO, `VecNormalize`, checkpoints, the 60 000-episode stop |
 
 ---
 
-## 3. Which file owns what
+## 1. The Gymnasium contract
 
-| File | Owns |
+Two spaces and two methods, nothing more:
+
+- `observation_space = Box(shape=(29,))`, `action_space = Discrete(10)` (`env.py:57`).
+  29 = 9 ownship + 4 neighbours × 5.
+- `reset(seed, options) -> obs, info`; `options={'scenario_seed': n}` replays an exact
+  scenario, which is how validation flies the held-out set (`env.py:69`).
+- `step(action) -> obs, reward, terminated, truncated, info` (`env.py:87`).
+
+**`terminated` is always `False`.** An LoS is punished, not fatal, so episodes only run out:
+`truncated=True` at the episode end (`env.py:104`). This matters numerically — SB3 bootstraps
+the value of a truncated final state instead of treating it as worth zero.
+
+`info` carries `los_seconds`, `focus_cs`, `n_aircraft`, and on the last step the whole
+`episode_summary` dict (`stats.py:45`): what the callbacks log and the test runs write to CSV.
+
+---
+
+## 2. Three clocks
+
+| clock | value | from |
+|---|---|---|
+| BlueSky integration step | 1 s | `sim_dt`, pushed as `DT 1;FF` |
+| RL decision step | 5 s | `action_freq` = 5 sub-steps |
+| conflict look-ahead | 360 s | `t_warn` |
+
+One `step()` runs the inner loop five times: execute anything due → `bs.sim.step()` → advance
+`_sim_time_s` → scan separation (`env.py:359`). Delays are compared against `_sim_time_s`, so a
+30 s mean delay is 6 RL steps of waiting.
+
+An episode ends when `exits >= 4 × n_ac`, or on the safety net
+`steps >= max(50, 8 × crossing_time / 5 s)` (`env.py:520`). That is ~1 400–1 600 steps, ~2 h of
+simulated time.
+
+---
+
+## 3. One scenario
+
+`n_ac ∈ [15, 30]`, density `ρ ∈ [1/20000, 1/10000]` per km², `area = n_ac / ρ`. The sector is a
+random convex polygon, 6–12 vertices, rejected unless circularity ≥ 0.7 (`sector.py:27`).
+
+Aircraft are A320s at FL350, Mach 0.78 (0.76–0.80, step 0.02), flying straight lines with no
+flight plan: a *route* is just the entry point, the initial heading and the exit the aircraft
+would reach if never turned. Traffic is slot-based — `n_ac` slots, one aircraft each. A spawn
+needs a chord of ≥ 15 NM through the sector, ≥ 15 NM clearance (5 + 10 buffer) from every
+aircraft, and no predicted LoS within 360 s (`env.py:417`). On leaving the polygon an aircraft
+is scored, deleted from BlueSky, and its slot re-queued for the next step (`env.py:457`), so the
+count stays roughly constant.
+
+**Seeding** (`env.py:485`). The env seed feeds a stream that draws one scenario seed per episode
+out of 10⁹, skipping the 500 held-out validation seeds (`config.py:57`). That scenario seed
+spawns three independent streams: `scenario_rng` (sector, initial placement), `traffic_rng`
+(later entries), `delay_rng` (τ). Training can never see a test scenario, and one seed
+reproduces a scenario exactly.
+
+---
+
+## 4. The BlueSky boundary
+
+BlueSky is a process-wide singleton (`bs.traf`, `bs.sim`, the stack), so **one environment per
+process**. `start_bluesky()` calls `bs.init(mode='sim', detached=True)` once, swaps in a dummy
+screen, and pushes `DT 1;FF` (`traffic.py:21`).
+
+| written | when |
 |---|---|
-| `env.py` | the Gymnasium API, the step cycle, focus selection, observation, reward |
-| `traffic.py` | **the only BlueSky bridge**: starts it, converts its state into our frame |
-| `atco.py` | the response delay: holding one advisory, revisions, when it fires |
-| `geometry.py` | CPA, time to loss of separation, the urgency matrix, lat/lon ↔ NM |
-| `sector.py` | the random convex polygon and the entry routes |
-| `stats.py` | per-episode counters and the summary dict |
-| `config.py` | every tunable number, and the derived constants |
+| `cmdstack.clear()`, `bs.traf.reset()`, `DT 1;FF` | reset |
+| `bs.traf.cre(cs, A320, lat, lon, hdg, mach, FL350)` + `SPD`, `ALT` | spawn |
+| `HDG <cs> <deg>` or `SPD <cs> <mach>` | an advisory executes |
+| `bs.traf.delete(idx)` | exit |
+| `bs.sim.step()` | every sub-step |
+
+Read back: only `lat`, `lon` (→ NM, flat-Earth about `center_ll`), `tas` (→ NM/s), `hdg`, plus
+`id`/`id2idx` to map callsigns to rows (`traffic.py:30`). Urgency, time-to-LoS, drift and
+conflicts are computed here, not asked of BlueSky. No altitude changes, no wind.
+
+BlueSky re-indexes its rows on every create and delete, so `_refresh_traffic_view` rebuilds
+`_row_of` (callsign → row, callsigns sorted) each step; all matrices use that ordering.
 
 ---
 
-## 4. The three clocks
+## 5. Urgency, and picking the focus ship
 
-| Clock | Value | Set by |
+`urgency_matrix` (`geometry.py:73`) is n × n over airborne pairs, from the constant-velocity CPA:
+
+- `t_los > 360 s` → 0
+- `0 ≤ t_los ≤ 360 s` → `(360 − t_los)/360`, reaching 1.0 at the LoS
+- closer than 5 NM → `1 + 9(1 − d/5)`, so 1 → 10 as they converge
+
+Urgency > 0 is a *conflict*; new pairs are counted once (`env.py:595`).
+`worst = urgency.max(axis=1)` is each aircraft's worst threat, and `_select_focus`
+(`env.py:116`) picks in order:
+
+1. **Keep the incumbent** if its last conflict was fewer than 5 steps ago and nothing exceeds
+   urgency 0.67 — hysteresis, so the agent can finish what it started. New aircraft start at the
+   limit, so they are never sticky.
+2. Else, if any conflict exists: the highest `worst`, tie-broken on the row sum.
+3. Else, if an aircraft has drifted more than 5° off its initial heading: the most drifted one.
+4. Else keep what is there.
+
+Switching focus **discards** any advisory still pending for the old focus ship
+(`atco.release`). The ATCO is a single server: one outstanding instruction at a time.
+
+---
+
+## 6. The observation (29 values)
+
+Built only from the focus ship's view (`env.py:220`); a neutral vector if there is none. Angles
+in radians, speeds in knots, distances in NM.
+
+**Ownship (9).** `dpsi` actual − initial heading · `v_own` true airspeed · `h_cmd` commanded −
+initial heading · `v_cmd` commanded Mach in kt · `retn_conf` 1 if resuming the initial heading
+would conflict within 360 s · `pending` 1 if an advisory awaits execution · `wait_s` how long it
+has waited · `pend_hdg`, `pend_spd` what it would change.
+
+The last four are the **response state**, the only channel through which the agent can know the
+delay exists. A no-delay model never saw them non-zero, so testing it in a delayed environment
+zeroes them to keep its training distribution.
+
+**Per neighbour (4 × 5).** `dist` · `theta` bearing in the ownship frame · `psi` relative
+heading · `vint` its speed · `tlos` time to LoS, 0 if already inside 5 NM, clipped to 360.
+
+Slots are filled by urgency descending, then by distance ascending, duplicates removed
+(`env.py:292`); unused slots get `[1000, 0, 0, 0, 360]`. The agent thus sees 4 of up to 30
+aircraft — the reason this is a POMDP and the returns are noisy.
+
+---
+
+## 7. Ten actions
+
+| idx | advisory | cost |
 |---|---|---|
-| BlueSky integration step | **1 s** | `CONFIG['sim_dt']`, pushed to BlueSky as `DT 1;FF` |
-| RL step | **5 s** = `action_freq × sim_dt` | `CONFIG['action_freq'] = 5` |
-| Conflict horizon | **360 s** (6 min) | `CONFIG['t_warn']` |
-| Response delay τ | mean **30 s** by default | `CONFIG['delay_mean_s']`, law per run |
+| 0, 6 | turn −60° / +60° relative to the *route* heading | 0.75 |
+| 1, 5 | turn −45° / +45° | 0.625 |
+| 2, 4 | turn −30° / +30° | 0.5 |
+| 3 | hold, transmit nothing | 0 |
+| 7 | return to initial heading | 0.125 |
+| 8, 9 | Mach +0.02 / −0.02, clipped to [0.76, 0.80] | 0.25 |
 
-So the policy acts once every 5 simulated seconds, and BlueSky advances five times between two
-actions. Losses of separation and route drift are scanned **every simulated second**, not once
-per RL step, so a two-second intrusion between actions is still counted.
+Turns are relative to the **initial** heading: the target is
+`initial + (commanded − initial) + delta` (`env.py:158`), so turns accumulate against the route
+and action 7 undoes them in one go.
 
-An episode ends when `exits_per_episode × n_aircraft` aircraft have left the sector — 4 per
-slot, so 48 exits for 12 aircraft. `max_crossings = 8` sector traversals is a safety cap for
-traffic that somehow never leaves. A 12-aircraft episode runs about 1000 RL steps, roughly 16
-flight hours.
+Three advisory counts exist, and mixing them up is the easiest way to misread the results
+(`env.py:175`, `stats.py:45`):
 
----
+- `ep_advisories_sent` — everything transmitted to the ATCO.
+- `ep_advisories` — only those that changed what that aircraft was last told.
+- `delay_acted` — actually executed, reported through `ep_delay_mean_s`.
 
-## 5. What we take from BlueSky, and what we send it
-
-Everything crosses in `traffic.py` and in a handful of calls in `env.py`.
-
-**Read** (per RL step, for the aircraft in the sector):
-
-| BlueSky | Units | Becomes |
-|---|---|---|
-| `bs.traf.lat`, `bs.traf.lon` | degrees | position in east/north **NM** about `center_ll` |
-| `bs.traf.hdg` | degrees | heading, used as is |
-| `bs.traf.tas` | m/s | speed in **NM/s**, and the velocity vector with the heading |
-| `bs.traf.id` | callsigns | the row order everything else indexes by |
-
-`traffic_states(indices)` returns `(pos, vel)` and is the single read path. Nothing else in the
-environment knows BlueSky exists.
-
-**Send**:
-
-| Call | When |
-|---|---|
-| `bs.traf.cre(cs, actype, aclat, aclon, achdg, acspd, acalt)` | an aircraft enters |
-| `SPD <cs> <mach>` / `ALT <cs> FL350` | right after creation, so the autopilot holds cruise |
-| `HDG <cs> <deg>` / `SPD <cs> <mach>` | an instruction is **executed**, after the delay |
-| `bs.traf.delete(idx)` | an aircraft leaves the sector |
-| `bs.sim.step()` | once per simulated second |
-| `DT 1;FF`, `ASAS OFF` | at reset: our timestep, and BlueSky must not resolve conflicts itself |
-
-`ASAS OFF` matters: BlueSky ships its own conflict resolution, and leaving it on would mean
-measuring BlueSky's skill instead of the policy's.
-
-**BlueSky is a process-wide singleton.** `bs.traf` is module state, so a process flies one
-environment at a time. Vectorised training works only through `SubprocVecEnv`, where each
-worker is a separate process; `DummyVecEnv` with more than one environment would have them
-all fighting over the same `bs.traf`.
+A repeat of the pending advisory transmits nothing and does not reset the ATCO's timer
+(`repeats`); a different one replaces it (`discarded`).
 
 ---
 
-## 6. From traffic state to the focus ship
+## 8. The delay mechanism
 
-This happens once per RL step, in `_refresh_traffic_view()` then `_select_focus()`.
+`ATCO` (`atco.py`) holds at most one advisory, for one callsign.
 
-**Step 1 — pairwise geometry.** With positions and velocities for all *n* aircraft,
-`pairwise()` gives every pair's relative position and velocity, from which `cpa()` gives the
-time and distance of closest approach, and `time_to_los()` the time until the 5 NM separation
-minimum would be broken (capped at the 360 s horizon).
+- `receive` draws τ: `none` → 0, `deterministic` → the mean, `lognormal` → σ = 0.4 in log space
+  with μ = `log(mean) − σ²/2`, so the configured value is the **mean**, not the median.
+- `execute_at = now + round(τ)`.
+- A **revision** (a different advisory while one is pending) draws τ′ = 0.7 τ
+  (`revision_kappa`) and takes `execute_at = max(old execute_at, now + τ′)`: a revision can
+  never make the ATCO act sooner than the instruction it replaces, and the measured response
+  time keeps running from the first advisory.
+- `act_if_ready` fires once `now ≥ execute_at` and drops the advisory if the aircraft has left.
+  It is called in the 1 s inner loop, so execution resolves at 1 s granularity.
 
-**Step 2 — the urgency matrix.** `urgency_matrix()` turns that into an *n × n* matrix:
+Only on execution does `HDG`/`SPD` reach BlueSky and `commanded_hdg`/`commanded_mach` change —
+so `h_cmd`/`v_cmd` describe what the aircraft is doing, `pend_*` what is still queued.
+
+---
+
+## 9. The reward
 
 ```
-urgency = 0                                   no conflict within 360 s
-        = (t_warn − t_los) / t_warn ∈ (0, 1]  a conflict is coming; 1 at the moment of intrusion
-        = 1 + 9 · (1 − d / 5 NM)   ∈ (1, 10]  separation already lost, growing as they close
+r = −10.0 · los_seconds   −0.10 · drift_sum   −1.00 · cost(action)
+      w_los                 w_drift             w_work
 ```
 
-Symmetric, zero on the diagonal.
+- `los_seconds` ∈ {0…5}: of the five sub-steps, how many had the **focus ship** within 5 NM of
+  anyone.
+- `drift_sum`: `1 − cos(actual − initial heading)` over the five sub-steps, for the **acting
+  aircraft only** — ~0 for small deviations, 2 for a reversal.
+- `cost`: the table above, charged when an advisory is issued; 0 for hold and when there is no
+  focus ship.
 
-**Step 3 — pick one aircraft.** Each aircraft's `worst` is its row maximum. Then, in order:
-
-1. **Hold the incumbent** if it has been conflict-free for fewer than `focus_clear_steps = 5`
-   steps *and* nothing anywhere exceeds `focus_emergency_u = 0.67` (about two minutes to
-   intrusion). This stops the focus flickering between aircraft.
-2. Otherwise, **if anything is in conflict**, take the highest `worst`; ties — and the worst
-   pair always ties, since urgency is symmetric — break on the **row sum**, so the aircraft
-   caught in more conflicts wins.
-3. Otherwise, **the most drifted** aircraft, if its drift exceeds the on-route tolerance of 5°.
-4. Otherwise keep the incumbent: a quiet sector still needs someone in the slot.
-
-When the focus moves, any half-formed instruction for the aircraft being released is dropped —
-the controller's attention moves with it.
+Safety and efficiency are therefore both scored on the focus ship, not the sector. The summary
+reports the three terms separately per flight hour, where flight hours accumulate as
+`n_airborne × 5 s` per step — the normalisation that makes scenarios of different size and
+density comparable.
 
 ---
 
-## 7. The observation (29 values)
+## 10. How PPO drives it
 
-Built for the focus ship only. If there is no controllable aircraft, a neutral vector goes out
-instead.
+`train.py` wraps **one** environment in `VecNormalize(VecMonitor(DummyVecEnv([...])))` and runs
+SB3 PPO on CPU with the reported settings: `n_steps = 2048`, `batch_size = 2048` (the full
+rollout, one gradient step per epoch), `n_epochs = 30`, Adam 3e-4 constant, γ 0.99, clip 0.2,
+2 × 64 tanh actor and critic. `VecNormalize` standardises observations and rewards with running
+statistics clipped to [−10, 10], which is why `*_vecnorm.pkl` must travel with every
+checkpoint — a model loaded without it sees garbage.
 
-**Ownship, 9 values** (`OBS_OWNSHIP_LABELS`):
-
-| # | Name | Meaning | Unit |
-|---|---|---|---|
-| 0 | `dpsi` | drift: current heading − initial heading | rad |
-| 1 | `v_own` | current speed | kt |
-| 2 | `h_cmd` | commanded heading, as offset from initial | rad |
-| 3 | `v_cmd` | commanded speed | kt |
-| 4 | `retn_conf` | 1 if returning to the initial heading is blocked by a conflict | flag |
-| 5 | `pending` | 1 if the controller is holding an advisory | flag |
-| 6 | `wait_s` | time since that advisory was issued | s |
-| 7 | `pend_hdg` | held heading instruction, as offset from what is flown | rad |
-| 8 | `pend_spd` | held speed instruction, as offset | kt |
-
-Fields 5–8 are the **response state**. They are identically zero when `delay_mode='none'`, and
-the no-delay models are evaluated with them forced to zero (`--blind`), so a delay-free policy
-can never read a signal it was not trained on.
-
-**Intruders, 4 × 5 values**, nearest by urgency then distance (`OBS_INTRUDER_LABELS`):
-`dist` [NM], `theta` (relative bearing) [rad], `psi` (relative heading) [rad], `vint` [kt],
-`tlos` [s]. Empty slots get a sentinel 1000 NM at 360 s, so the vector is always 29 long.
+The loop: collect 2048 steps (≈ 1.4 episodes) → 30 full-batch epochs → repeat.
+`StopAfterEpisodes` counts finished episodes from the `info` dicts and ends the run at
+**60 000 episodes** (~8.5 × 10⁷ steps); `Checkpoint` writes `last_model` every 500 000 steps.
+About 117 steps/s on one core, so 8–9 days per run.
 
 ---
 
-## 8. The action space (10 discrete)
+## 11. One step, in order
 
-| Index | Action | Cost |
-|---|---|---|
-| 0–2 | turn −60°, −45°, −30° | 0.75, 0.625, 0.5 |
-| 3 | **hold** — nothing is transmitted at all | 0 |
-| 4–6 | turn +30°, +45°, +60° | 0.5, 0.625, 0.75 |
-| 7 | return to the initial heading | 0.125 |
-| 8–9 | speed ±0.02 Mach | 0.25 |
+1. `_spawn_due_aircraft` — fill any empty slot whose timer expired, if a safe entry exists.
+2. `_issue_advisory(focus, action)` → ATCO, unless hold, repeat or no focus ship.
+3. `_advance_simulation` ×5 — execute due advisories, `bs.sim.step()`, accumulate the focus
+   ship's drift, scan for pairs under 5 NM, count new LoS events.
+4. `_remove_exited_aircraft` — score, delete, re-queue the slot.
+5. `_refresh_traffic_view` — re-read BlueSky, rebuild `_row_of`, urgency, `t_los`,
+   `return_blocked`; count new conflicts.
+6. `_select_focus` — hysteresis, urgency, drift; release any discarded advisory.
+7. `_compute_reward`, `_record_step_stats`, check the episode end, build the new observation.
 
-Turns accumulate on the last **executed** heading, not on the current one, so re-selecting the
-same turn while one is already pending reproduces the identical target and is recognised as a
-repeat rather than a revision. The costs are sub-additive in the turn: two 30° turns cost more
-than one 60°, so splitting a manoeuvre is never cheaper.
-
----
-
-## 9. The response delay
-
-`atco.py` holds **one** advisory at a time.
-
-- **New advisory**: draw τ from the law (`none` → 0, `deterministic` → the mean,
-  `lognormal` → mean with `delay_sigma = 0.4`), execute at `now + τ`.
-- **Repeat** of the instruction already held: ignored, the standing time keeps running.
-- **Revision**: τ is drawn afresh and shortened to `κ = 0.7` of it, because the controller is
-  already engaged — but `execute_at = max(standing, now + κτ)`, so a revision can only ever
-  *postpone* execution. Without that clamp, changing one's mind would buy an earlier action and
-  the policy would learn to churn.
-- Polled **every simulated second**. If the aircraft has left the sector the instruction is
-  deleted, never flown and never counted as a response served.
+Consequence of that order: the action at step *t* is chosen for the focus ship selected at the
+end of step *t−1*, and the reward at *t* is attributed to that same aircraft.
 
 ---
 
-## 10. The reward
+## 12. Things that will catch you out
 
-Charged to the aircraft that held the focus when the action was chosen:
-
-```
-R = −w_los · (seconds in loss of separation)     w_los   = 10     per second, scanned each second
-    −w_drift · Σ (1 − cos Δψ)                    w_drift = 0.1    per second at that drift
-    −w_work · ACT_COST[action]                   w_work  = 1      per selected action
-```
-
-Two things to note. The workload term is charged on the **action selected**, whether or not it
-ever reaches an aircraft — a repeat costs the same as a revision. And the LoS term is summed
-over the five seconds of the step, so a long intrusion costs more than a brief one.
-
----
-
-## 11. Where PPO fits
-
-`Training/train.py`, Stable-Baselines3:
-
-| Setting | Value | Why |
-|---|---|---|
-| policy | `MlpPolicy` | the observation is a flat 29-vector |
-| `n_envs` | 4, via `SubprocVecEnv` | separate processes, so separate BlueSky singletons |
-| `n_steps` | 512 per env | rollout = 4 × 512 = 2048 transitions |
-| `batch_size` | 2048 | one gradient step per epoch over the whole rollout |
-| `n_epochs` | 30 | 30 gradient steps per update |
-| everything else | SB3 defaults | γ 0.99, lr 3e-4, GAE λ 0.95, clip 0.2, ent_coef 0 |
-| wrappers | `VecMonitor` → `VecNormalize` | observations normalised; **the statistics are part of the model** |
-
-`VecNormalize` is the part that bites. The running mean and variance of the observation live
-outside the network, so a checkpoint is useless without its `<name>_vecnorm.pkl`. Evaluation
-reproduces the normalisation by hand:
-
-```python
-action, _ = model.predict(np.clip((obs - mean) / std, -clip, clip), deterministic=True)
-```
-
-`deterministic=True` at evaluation, sampled during training. Episodes are drawn from a seeded
-stream; the 500 held-out scenarios (`VALIDATION_SEED = 8`) are excluded from training, so no
-model can have met a test scenario however long it trains.
-
----
-
-## 12. One RL step, in order
-
-```
-step(action)
- ├─ _spawn_due_aircraft()            an exited slot refills: bs.traf.cre + SPD + ALT
- ├─ _issue_advisory(focus, action)   action → target heading/Mach → atco.receive()
- ├─ _advance_simulation()            5 × { atco.act_if_ready → HDG/SPD stack commands
- │                                         bs.sim.step()                 ← 1 s of flying
- │                                         scan LoS seconds, scan drift }
- ├─ _remove_exited_aircraft()        score the exit, bs.traf.delete()
- ├─ _refresh_traffic_view()          traffic_states() → pos, vel → urgency matrix
- ├─ _select_focus()                  the rules of §6
- ├─ _compute_reward()                the three terms of §10
- └─ _build_observation()             the 29-vector of §7
-```
-
----
-
-## 13. Things that will catch you out
-
-- **`terminated` is always False.** Filter episodes on `truncated`.
-- **A checkpoint without its `_vecnorm.pkl` is unusable**, and silently so: it will run and
-  produce nonsense.
-- **BlueSky is a singleton.** One environment per process, `SubprocVecEnv` only.
-- **`ASAS OFF`** must stay off, or BlueSky resolves the conflicts for you.
-- **Advisories issued ≠ advisories executed.** Under delay most issued advisories are replaced
-  before they ever reach an aircraft; count the right one for the question you are asking.
-- **The workload cost is charged on selection**, not on transmission, so the reward does not
-  price the controller's attention.
+- **BlueSky is global.** Two envs in one process share `bs.traf`; parallelism means separate
+  processes (`SubprocVecEnv`, or the validation worker pool).
+- **`--n-envs 4` changes the hyperparameters** — the rollout becomes `n_envs × 2048`. Only
+  `--n-envs 1` matches the reported setup.
+- **The episode counter is not in the checkpoint.** `--resume` restarts it at zero.
+- **Turns are relative to the route**, so action 2 twice is −60° from the route.
+- **`t_los` is constant-velocity**, recomputed every step: a look-ahead, not a prediction of
+  what the agent will do.
+- **The no-delay model's response-state inputs are zeroed at test time**, deliberately.
