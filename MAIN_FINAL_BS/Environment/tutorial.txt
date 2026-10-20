@@ -3,10 +3,9 @@
 # Check you are in the right place -- this must list Environment, Training, Validation:
 #     ls
 #
-# Every run trains on ONE environment (--n-envs 1, the default), as reported: a rollout of
-# 2048 decision steps, updated as one batch of 2048 for 30 epochs. Torch runs single-threaded,
-# so one run keeps about one core busy and the 21 terminals below need 21 cores. Raising
-# --n-envs makes the rollout n_envs x 2048 and no longer matches the reported settings.
+# Every run trains on one environment, as reported: a rollout of 2048 decision steps, updated
+# as one batch of 2048 for 30 epochs. Torch runs single-threaded, so one run keeps about one
+# core busy and the 21 terminals below need 21 cores.
 #
 # Every run stops after 60,000 finished episodes, about 8.5e7 decision steps. That is the
 # default, so no step count has to be given: --max-episodes 60000 is only needed to train a

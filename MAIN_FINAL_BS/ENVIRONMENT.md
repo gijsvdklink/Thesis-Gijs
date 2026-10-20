@@ -37,7 +37,7 @@ puts the simulation in fast-forward, i.e. unpaced by wall clock. Scenario attrib
 `_build_sector`, not here, so `step()` before `reset()` raises `AttributeError`.
 
 **Phase 1 · training setup.** `train()` (`train.py:190`) derives one worker seed per env from
-`Random(seed)`, then stacks `DummyVecEnv` (in-process, no IPC; `SubprocVecEnv` above one env) →
+`Random(seed)`, then stacks `DummyVecEnv` (one env, in-process, no IPC) →
 `VecMonitor` (injects `info['episode']` with length and undiscounted return) → `VecNormalize`
 (`obs_rms`: `RunningMeanStd` over the 29 dimensions; `ret_rms`: scalar over discounted returns;
 `clip_obs = clip_reward = 10`, γ 0.99). `MlpPolicy` builds two separate trunks,
@@ -301,7 +301,8 @@ density comparable.
 One environment, SB3 PPO on CPU, the settings as reported: `n_steps = 2048`,
 `batch_size = 2048` (the full rollout, so one gradient step per epoch), `n_epochs = 30`, Adam
 3e-4 constant, γ 0.99, λ 0.95, clip 0.2, `vf_coef` 0.5, max grad norm 0.5, 2 × 64 tanh actor and
-critic. `--n-envs > 1` makes the rollout `n_envs × 2048` and no longer matches this.
+critic. There is no option for parallel environments: the rollout is one environment's 2048
+steps, which is what the reported batch size assumes.
 
 `VecNormalize` standardises observations and rewards with running statistics clipped to
 [−10, 10]. Those statistics are part of the model: `*_vecnorm.pkl` must travel with every
@@ -331,9 +332,7 @@ end of step *t−1*, and the reward at *t* is attributed to that same aircraft.
 ## 13. Things that will catch you out
 
 - **BlueSky is global.** Two envs in one process share `bs.traf`; parallelism means separate
-  processes (`SubprocVecEnv`, or the validation worker pool).
-- **`--n-envs 4` changes the hyperparameters** — the rollout becomes `n_envs × 2048`. Only
-  `--n-envs 1` matches the reported setup.
+  processes, which is what the validation worker pool does. Training deliberately runs one.
 - **The episode counter is not in the checkpoint.** `--resume` restarts it at zero.
 - **Turns are relative to the route**, so action 2 twice is −60° from the route.
 - **`t_los` is constant-velocity**, recomputed every step: a look-ahead, not a prediction of
