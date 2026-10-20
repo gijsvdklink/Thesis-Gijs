@@ -13,8 +13,10 @@
 # different length. The count is logged to TensorBoard as episode/count, and each run prints
 # its progress in episodes.
 #
-# BlueSky flies about 140 decision steps/s per run, so 60,000 episodes take roughly a week
-# per run. Check the steps/s and eta that each run prints on your own machine.
+# Measured on a laptop core: the whole loop (BlueSky, the policy and the 30 update epochs)
+# runs at about 117 decision steps/s. An episode is roughly 1,400 to 1,600 steps, that is
+# 2 h of simulated time, so about 12 to 14 s of wall clock. 60,000 episodes is therefore
+# 8 to 9 days per run. Check the steps/s and eta that each run prints on your own machine.
 
 # terminal 1
 python Training/train.py --delay none --seed 1
