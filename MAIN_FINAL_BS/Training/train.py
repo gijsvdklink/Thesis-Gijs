@@ -28,10 +28,12 @@ TREND_WINDOW = 200
 STATS_WINDOW = 100
 
 
-TOTAL_TIMESTEPS = 300_000_000
+MAX_EPISODES = 60_000
 
-N_ENVS  = 4
-N_STEPS = 512
+STEP_CEILING = 300_000_000
+
+N_ENVS  = 1
+N_STEPS = 2048
 
 N_EPOCHS = 30
 
@@ -157,13 +159,22 @@ class Checkpoint(BaseCallback):
 
 
 class Progress(BaseCallback):
-    """One line every PROGRESS_EVERY steps: how far along, how fast, how much longer."""
+    """One line every PROGRESS_EVERY steps: how far along, how fast, how much longer.
+
+    A run normally ends at an episode count, not a step count, so the progress is measured in
+    episodes whenever `stop` counts them. Without one it falls back to the step ceiling.
+    """
+
+    def __init__(self, stop=None):
+        super().__init__()
+        self.stop = stop
 
     def _on_training_start(self):
         self.t0 = time.time()
         self.last = self.num_timesteps
         self.start_steps = self.num_timesteps
-        self.total = self.start_steps + self.locals.get('total_timesteps', TOTAL_TIMESTEPS)
+        self.total = self.start_steps + self.locals.get('total_timesteps', STEP_CEILING)
+        self.start_episodes = self.stop.episodes if self.stop else 0
 
     def _on_step(self):
         if self.num_timesteps - self.last < PROGRESS_EVERY:
@@ -171,11 +182,19 @@ class Progress(BaseCallback):
         self.last = self.num_timesteps
         elapsed = time.time() - self.t0
         rate    = (self.num_timesteps - self.start_steps) / max(elapsed, 1e-9)
-        eta_h   = (self.total - self.num_timesteps) / max(rate, 1e-9) / 3600
-        print(f'{self.num_timesteps:>10,} / {self.total:,} '
-              f'({100 * self.num_timesteps / self.total:5.1f}%)   '
-              f'{rate:6.1f} steps/s   elapsed {elapsed / 3600:5.2f} h   '
-              f'eta {eta_h:5.1f} h', flush=True)
+        if self.stop:
+            done  = self.stop.episodes
+            share = done / self.stop.limit
+            eta_h = (self.stop.limit - done) / max((done - self.start_episodes) / elapsed, 1e-9) / 3600
+            print(f'{done:>7,} / {self.stop.limit:,} episodes ({100 * share:5.1f}%)   '
+                  f'{self.num_timesteps:>11,} steps   {rate:6.1f} steps/s   '
+                  f'elapsed {elapsed / 3600:5.2f} h   eta {eta_h:5.1f} h', flush=True)
+        else:
+            eta_h = (self.total - self.num_timesteps) / max(rate, 1e-9) / 3600
+            print(f'{self.num_timesteps:>10,} / {self.total:,} '
+                  f'({100 * self.num_timesteps / self.total:5.1f}%)   '
+                  f'{rate:6.1f} steps/s   elapsed {elapsed / 3600:5.2f} h   '
+                  f'eta {eta_h:5.1f} h', flush=True)
         return True
 
 
@@ -185,7 +204,7 @@ def delay_type_name(delay_mode, delay_mean_s):
 
 
 def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
-          runs_root=RUNS_ROOT, overwrite=False, resume=False, max_episodes=None):
+          runs_root=RUNS_ROOT, overwrite=False, resume=False, max_episodes=MAX_EPISODES):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     run_dir = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
     if resume:
@@ -234,12 +253,13 @@ def train(delay_mode, seed, total_timesteps, n_envs, save_every, delay_mean_s,
         model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
                     n_steps=N_STEPS, batch_size=n_envs * N_STEPS, n_epochs=N_EPOCHS)
 
-    callbacks = [Progress(), LogEpisodes(), Checkpoint(run_dir, save_every)]
-    if max_episodes:
-        callbacks.append(StopAfterEpisodes(max_episodes))
+    stop = StopAfterEpisodes(max_episodes) if max_episodes else None
+    callbacks = [stop] if stop else []
+    callbacks += [Progress(stop), LogEpisodes(), Checkpoint(run_dir, save_every)]
     callbacks = CallbackList(callbacks)
 
-    print(f'{delay_type}  seed {seed}  {total_timesteps:,} steps  {n_envs} envs  '
+    ends = f'{max_episodes:,} episodes' if max_episodes else f'{total_timesteps:,} steps'
+    print(f'{delay_type}  seed {seed}  {n_envs} envs  until {ends}  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
     try:
         remaining = total_timesteps - model.num_timesteps if resume else total_timesteps
@@ -263,17 +283,20 @@ def main():
     parser.add_argument('--seed', type=int, default=TRAINING_SEEDS[0], choices=TRAINING_SEEDS,
                         help=f'which training run: one of {list(TRAINING_SEEDS)}. All delay '
                              f'types at the same seed share weights and scenarios.')
-    parser.add_argument('--timesteps', type=int, default=TOTAL_TIMESTEPS,
-                        help=f'training steps (default {TOTAL_TIMESTEPS:,})')
+    parser.add_argument('--timesteps', type=int, default=STEP_CEILING,
+                        help=f'ceiling on training steps (default {STEP_CEILING:,}); the run '
+                             f'normally ends at --max-episodes long before this')
     parser.add_argument('--n-envs', type=int, default=N_ENVS,
                         help=f'parallel environments (default {N_ENVS}); above 1 each runs '
-                             f'in its own subprocess. The rollout is n_envs x {N_STEPS}, and '
-                             f'the batch is always the whole rollout.')
+                             f'in its own subprocess, which changes the rollout to '
+                             f'n_envs x {N_STEPS} steps and departs from the reported '
+                             f'settings. The batch is always the whole rollout.')
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY,
                         help=f'steps between last_model checkpoints '
                              f'(default {SAVE_EVERY:,}); 0 saves only at the end')
-    parser.add_argument('--max-episodes', type=int, default=None,
-                        help='stop once this many training episodes have finished')
+    parser.add_argument('--max-episodes', type=int, default=MAX_EPISODES,
+                        help=f'stop once this many training episodes have finished '
+                             f'(default {MAX_EPISODES:,}); 0 trains to --timesteps instead')
     parser.add_argument('--overwrite', action='store_true',
                         help='train into an existing run directory instead of refusing')
     parser.add_argument('--resume', action='store_true',

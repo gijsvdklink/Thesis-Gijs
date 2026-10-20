@@ -1,6 +1,6 @@
-# from the MAIN_FINAL folder
+# from the MAIN_FINAL_BS folder
 #
-# The models are read from MAIN_FINAL/Models: put the run directories there
+# The models are read from MAIN_FINAL_BS/Models: put the run directories there
 # (none/, deterministic_30s/, lognormal_30s/, each with *_seed1..7).
 # Each model is tested at its FURTHEST checkpoint, chosen by step count.
 #
