@@ -1,0 +1,187 @@
+# Run everything from the MAIN_FINAL_NO_BS folder:
+#     cd <wherever MAIN_FINAL_NO_BS is>
+# Check you are in the right place -- this must list Environment, Training, Validation:
+#     ls
+#
+# Every run trains on one environment, as reported: a rollout of 2048 decision steps, updated
+# as one batch of 2048 for 30 epochs. Torch runs single-threaded, so one run keeps about one
+# core busy and the 21 terminals below need 21 cores.
+#
+# Every run stops after 60,000 finished episodes, about 8.5e7 decision steps. That is the
+# default, so no step count has to be given: --max-episodes 60000 is only needed to train a
+# different length. The count is logged to TensorBoard as episode/count, and each run prints
+# its progress in episodes.
+#
+# This folder flies the kinematic traffic model of Environment/traffic.py instead of BlueSky,
+# which is the only difference from MAIN_FINAL_BS. The model was measured against BlueSky's
+# A320 at FL350 and agrees to 0.016 NM over 200 s; Validation/validate_kinematics.py repeats
+# that check. Train here, then test the checkpoints in MAIN_FINAL_BS if the results are to be
+# reported against BlueSky.
+#
+# Measured back to back on one laptop core: the whole loop (traffic, the policy and the 30
+# update epochs) runs at 415 decision steps/s here against 101 with BlueSky, so 4.1x faster.
+# An episode is roughly 1,400 to 1,600 steps, that is 2 h of simulated time and about 3.5 s of
+# wall clock, so 60,000 episodes take about 2.5 days per run instead of 9 to 10. Check the
+# steps/s and eta that each run prints.
+
+# terminal 1
+python Training/train.py --delay none --seed 1
+
+# terminal 2
+python Training/train.py --delay none --seed 2
+
+# terminal 3
+python Training/train.py --delay none --seed 3
+
+# terminal 4
+python Training/train.py --delay none --seed 4
+
+# terminal 5
+python Training/train.py --delay none --seed 5
+
+# terminal 6
+python Training/train.py --delay none --seed 6
+
+# terminal 7
+python Training/train.py --delay none --seed 7
+
+# terminal 8
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1
+
+# terminal 9
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2
+
+# terminal 10
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3
+
+# terminal 11
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4
+
+# terminal 12
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5
+
+# terminal 13
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6
+
+# terminal 14
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7
+
+# terminal 15
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1
+
+# terminal 16
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2
+
+# terminal 17
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3
+
+# terminal 18
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4
+
+# terminal 19
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5
+
+# terminal 20
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6
+
+# terminal 21
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7
+
+# tensorboard -- Models is created beside MAIN, not inside it
+python -m tensorboard.main --logdir ../Models --port 6016
+
+
+================================================================================
+RESUMING AFTER A DISCONNECT
+================================================================================
+
+# Same commands, plus --resume. Each run continues from its own last checkpoint,
+# keeping the step count and the TensorBoard curves continuous. At most
+# --save-every steps (500,000) are lost per run.
+#
+# Do NOT delete ../Models. Do NOT pass --overwrite; that starts from scratch.
+#
+# The episode counter is NOT stored in the checkpoint: it restarts at zero, so a resumed run
+# would train another 60,000 episodes. Read episode/count for that run in TensorBoard and
+# pass what is left, e.g. 60000 - 41000 = 19000 -> --resume --max-episodes 19000.
+
+# terminal 1
+python Training/train.py --delay none --seed 1 --resume
+
+# terminal 2
+python Training/train.py --delay none --seed 2 --resume
+
+# terminal 3
+python Training/train.py --delay none --seed 3 --resume
+
+# terminal 4
+python Training/train.py --delay none --seed 4 --resume
+
+# terminal 5
+python Training/train.py --delay none --seed 5 --resume
+
+# terminal 6
+python Training/train.py --delay none --seed 6 --resume
+
+# terminal 7
+python Training/train.py --delay none --seed 7 --resume
+
+# terminal 8
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --resume
+
+# terminal 9
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --resume
+
+# terminal 10
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --resume
+
+# terminal 11
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --resume
+
+# terminal 12
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --resume
+
+# terminal 13
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --resume
+
+# terminal 14
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --resume
+
+# terminal 15
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --resume
+
+# terminal 16
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --resume
+
+# terminal 17
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --resume
+
+# terminal 18
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --resume
+
+# terminal 19
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --resume
+
+# terminal 20
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --resume
+
+# terminal 21
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --resume
+
+
+================================================================================
+SURVIVING A DISCONNECT NEXT TIME
+================================================================================
+
+# A terminal closed by a dropped SSH connection takes its training run with it.
+# Start each run inside tmux so it keeps going without the laptop attached:
+#
+#     tmux new -s t1                  # one session per run
+#     python Training/train.py --delay none --seed 1
+#     Ctrl-B then D                   # detach; training continues
+#
+#     tmux ls                         # list sessions
+#     tmux attach -t t1               # reattach later
+#
+# Or prefix a single command:
+#     nohup python Training/train.py --delay none --seed 1 > t1.log 2>&1 &

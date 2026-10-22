@@ -13,7 +13,7 @@
 # its progress in episodes.
 #
 # Measured on a laptop core: the whole loop (BlueSky, the policy and the 30 update epochs)
-# runs at about 117 decision steps/s. An episode is roughly 1,400 to 1,600 steps, that is
+# runs at about 100 to 120 decision steps/s. An episode is roughly 1,400 to 1,600 steps, that is
 # 2 h of simulated time, so about 12 to 14 s of wall clock. 60,000 episodes is therefore
 # 8 to 9 days per run. Check the steps/s and eta that each run prints on your own machine.
 
