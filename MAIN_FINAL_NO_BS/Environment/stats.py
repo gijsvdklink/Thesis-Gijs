@@ -39,6 +39,18 @@ def new_ep_stats():
         'turns_distinct': 0,
         'speeds_distinct': 0,
         'transmitted': [0] * N_ACTIONS,
+        # test KPIs (E8): bookkeeping only
+        'los_pair_seconds': 0,
+        'secondary_conflicts': 0,
+        'flown_cut_nm': 0.0,
+        'flown_cut_manoeuvred_nm': 0.0,
+        'route_manoeuvred_nm': 0.0,
+        'straight_manoeuvred_nm': 0.0,
+        'exits_manoeuvred': 0,
+        'tlos_issue_sum': 0.0,
+        'tlos_issue_n': 0,
+        'tlos_exec_sum': 0.0,
+        'tlos_exec_n': 0,
     }
 
 
@@ -103,5 +115,30 @@ def episode_summary(stats):
     for index, label in ADVISORY_LABELS.items():
         summary[f'ep_{label}']        = s['transmitted'][index]
         summary[f'ep_{label}_per_fh'] = s['transmitted'][index] / flight_hours
+
+    # test KPIs (E8). The sums are kept so that ratios and means can be pooled over scenarios.
+    nan = float('nan')
+    summary.update({
+        'ep_los_seconds_all':            s['los_pair_seconds'],
+        'ep_los_seconds_all_per_fh':     s['los_pair_seconds'] / flight_hours,
+        'ep_secondary_conflicts':        s['secondary_conflicts'],
+        'ep_secondary_conflicts_per_fh': s['secondary_conflicts'] / flight_hours,
+        'ep_flown_cut_nm':               s['flown_cut_nm'],
+        'ep_path_ratio_cut':             s['flown_cut_nm'] / s['route_nm'] if s['route_nm'] else 1.0,
+        'ep_flown_cut_manoeuvred_nm':    s['flown_cut_manoeuvred_nm'],
+        'ep_route_manoeuvred_nm':        s['route_manoeuvred_nm'],
+        'ep_exits_manoeuvred':           s['exits_manoeuvred'],
+        'ep_path_ratio_manoeuvred':      (s['flown_cut_manoeuvred_nm'] / s['route_manoeuvred_nm']
+                                          if s['route_manoeuvred_nm'] else nan),
+        'ep_straight_manoeuvred_nm':     s['straight_manoeuvred_nm'],
+        'ep_detour_ratio_manoeuvred':    (s['flown_cut_manoeuvred_nm'] / s['straight_manoeuvred_nm']
+                                          if s['straight_manoeuvred_nm'] else nan),
+        'ep_tlos_issue_sum_s':           s['tlos_issue_sum'],
+        'ep_issued_in_conflict':         s['tlos_issue_n'],
+        'ep_tlos_issue_mean_s':          s['tlos_issue_sum'] / s['tlos_issue_n'] if s['tlos_issue_n'] else nan,
+        'ep_tlos_exec_sum_s':            s['tlos_exec_sum'],
+        'ep_executed_in_conflict':       s['tlos_exec_n'],
+        'ep_tlos_exec_mean_s':           s['tlos_exec_sum'] / s['tlos_exec_n'] if s['tlos_exec_n'] else nan,
+    })
 
     return summary

@@ -1,0 +1,105 @@
+# 60K TEST ROUND: the retrained models (exactly 60 000 episodes), 30 aircraft at rho = 1/10000,
+# 500 scenarios, 24 terminals. Written 23 Oct for the round of the final report.
+#
+# run from the MAIN_FINAL_NO_BS folder, AFTER training has finished:
+#     cd <wherever MAIN_FINAL_NO_BS is>
+#     git pull
+#
+# The models are read from MAIN_FINAL_NO_BS/Models: put the run directories there
+# (none/, deterministic_30s/, lognormal_30s/, each with *_seed1..7).
+#
+# Notes:
+#   - a NEW output folder, ../Test_results_60k. Finished runs are skipped, so an existing folder of an
+#     earlier round would silently be reused. Do not copy any earlier runs into it.
+#   - this version logs the extra test KPIs (E8): path_ratio_cut, path_ratio_manoeuvred,
+#     detour_ratio_manoeuvred, secondary_conflicts, tlos_issue/exec_mean_s, los_seconds_all and the
+#     executed advisories per type (<type>_executed). The existing KPIs are unchanged.
+#   - the models are read from MAIN_FINAL_NO_BS/Models, each at its furthest checkpoint (final_model or
+#     last_model). Training stops at exactly 60 000 episodes, so that is the 60k checkpoint; the
+#     model_steps column of the results shows it.
+#   - the no-delay models (N1-N7) are flown with their four response-state inputs set to zero, as in
+#     their training.
+#
+# 1. SMOKE TEST first (a few minutes): one model in one environment, 2 scenarios, into a throw-away folder.
+#    Check that it runs and that the csv has columns such as path_ratio_cut and turn_p30_executed.
+python Validation/run_test_scenarios.py --run deterministic 1 deterministic 30 --episodes 2 --n-ac 30 --density 0.0001 --out ../Test_results_smoke
+#
+# 2. The 190 runs (3 model types x 7 seeds x 9 test environments, plus no CR), dealt out over 24
+#    terminals; --workers 1: one process per terminal. A stopped terminal is resumed by giving the same
+#    command again.
+
+# terminal 1
+python Validation/run_test_scenarios.py --terminal 1 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 2
+python Validation/run_test_scenarios.py --terminal 2 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 3
+python Validation/run_test_scenarios.py --terminal 3 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 4
+python Validation/run_test_scenarios.py --terminal 4 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 5
+python Validation/run_test_scenarios.py --terminal 5 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 6
+python Validation/run_test_scenarios.py --terminal 6 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 7
+python Validation/run_test_scenarios.py --terminal 7 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 8
+python Validation/run_test_scenarios.py --terminal 8 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 9
+python Validation/run_test_scenarios.py --terminal 9 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 10
+python Validation/run_test_scenarios.py --terminal 10 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 11
+python Validation/run_test_scenarios.py --terminal 11 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 12
+python Validation/run_test_scenarios.py --terminal 12 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 13
+python Validation/run_test_scenarios.py --terminal 13 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 14
+python Validation/run_test_scenarios.py --terminal 14 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 15
+python Validation/run_test_scenarios.py --terminal 15 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 16
+python Validation/run_test_scenarios.py --terminal 16 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 17
+python Validation/run_test_scenarios.py --terminal 17 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 18
+python Validation/run_test_scenarios.py --terminal 18 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 19
+python Validation/run_test_scenarios.py --terminal 19 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 20
+python Validation/run_test_scenarios.py --terminal 20 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 21
+python Validation/run_test_scenarios.py --terminal 21 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 22
+python Validation/run_test_scenarios.py --terminal 22 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 23
+python Validation/run_test_scenarios.py --terminal 23 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# terminal 24
+python Validation/run_test_scenarios.py --terminal 24 --terminals 24 --workers 1 --episodes 500 --n-ac 30 --density 0.0001 --out ../Test_results_60k
+
+# 3. Once all 24 terminals are done, in any one of them: combine the 190 runs into
+#    Test_results_60k/test_results.csv
+python Validation/run_test_scenarios.py --merge --out ../Test_results_60k

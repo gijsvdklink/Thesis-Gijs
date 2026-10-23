@@ -37,6 +37,8 @@ class Aircraft:
         self.steps_since_conflict = steps_since_conflict
         self.flown_nm            = 0.0
         self.last_advisory_action = None
+        self.initial_mach        = commanded_mach
+        self.manoeuvred          = False
 
 
 class AirspaceEnv(gym.Env):
@@ -184,10 +186,21 @@ class AirspaceEnv(gym.Env):
 
         self._ep_stats['speeds' if kind == 'target_mach' else 'turns'] += 1
         self._ep_stats['transmitted'][action_idx] += 1
+        self._record_tlos(cs, 'issue')
 
         if ac.last_advisory_action != action_idx:
             self._ep_stats['speeds_distinct' if kind == 'target_mach' else 'turns_distinct'] += 1
         ac.last_advisory_action = action_idx
+
+    def _record_tlos(self, cs, moment):
+        """Test KPI: predicted time to LoS of the most urgent conflict of cs, from the last traffic view."""
+        row = self._row_of.get(cs)
+        if row is None or len(self.t_los) < 2:
+            return
+        t = float(np.delete(self.t_los[row], row).min())
+        if t < CONFIG['t_warn']:
+            self._ep_stats[f'tlos_{moment}_sum'] += t
+            self._ep_stats[f'tlos_{moment}_n'] += 1
 
     def _still_flying(self, cs):
         return cs in self._aircraft and self.traf.id2idx(cs) >= 0
@@ -202,6 +215,8 @@ class AirspaceEnv(gym.Env):
         self._ep_stats['delay_acted'] += 1
 
         ac = self._aircraft[cs]
+        ac.manoeuvred = True
+        self._record_tlos(cs, 'exec')
 
         if 'target_mach' in advisory:
             ac.commanded_mach = advisory['target_mach']
@@ -373,6 +388,7 @@ class AirspaceEnv(gym.Env):
                 self._los_seconds_this_step += any(acting_cs in pair for pair in pairs)
 
             self._ep_stats['los_events'] += len(pairs - self._prev_los_pairs)
+            self._ep_stats['los_pair_seconds'] += len(pairs)
             self._prev_los_pairs = pairs
 
     def _scan_separation(self, index_of=None):
@@ -583,22 +599,65 @@ class AirspaceEnv(gym.Env):
     def _count_conflicts(self, flying):
         rows, cols = np.where(self.urgency > 0)
         pairs = {(flying[i], flying[j]) for i, j in zip(rows, cols) if i < j}
-        self._ep_stats['conflicts'] += len(pairs - self._prev_conflict_pairs)
+        new = pairs - self._prev_conflict_pairs
+        self._ep_stats['conflicts'] += len(new)
+        self._ep_stats['secondary_conflicts'] += sum(self._is_secondary(a, b) for a, b in new)
         self._prev_conflict_pairs = pairs
+
+    def _is_secondary(self, a, b):
+        """Test KPI: a new conflict is secondary when an aircraft of the pair deviates from its initial
+        heading or Mach, and no conflict is predicted with the deviating aircraft back on both."""
+        rows = [self._row_of[a], self._row_of[b]]
+        vel = self._vel[rows].copy()
+        deviating = False
+        for k, cs in enumerate((a, b)):
+            ac = self._aircraft[cs]
+            if self._drift(cs) > ON_ROUTE_DRIFT or abs(ac.commanded_mach - ac.initial_mach) > 1e-9:
+                deviating = True
+                speed = math.hypot(vel[k, 0], vel[k, 1]) * ac.initial_mach / ac.commanded_mach
+                h = math.radians(ac.initial_hdg)
+                vel[k] = (speed * math.sin(h), speed * math.cos(h))
+        if not deviating:
+            return False
+        dist_sq, t_los = pairwise(self._pos[rows], vel)
+        return not (dist_sq[0, 1] < CONFIG['sep_nm'] ** 2 or t_los[0, 1] <= CONFIG['t_warn'])
+
+    def _exit_crossing(self, prev, pos):
+        """Test KPI: the part of the last track segment beyond the sector boundary (an aircraft is only
+        removed at the end of a decision step), and the point where it crossed the boundary."""
+        pos = (float(pos[0]), float(pos[1]))
+        if prev is None:
+            return 0.0, pos
+        crossing = shapely.LineString([prev, pos]).intersection(self._polygon_shape.boundary)
+        points = [g for g in getattr(crossing, 'geoms', [crossing]) if g.geom_type == 'Point']
+        if not points:
+            return 0.0, pos
+        first = min(points, key=lambda p: math.hypot(p.x - prev[0], p.y - prev[1]))
+        return math.hypot(pos[0] - first.x, pos[1] - first.y), (first.x, first.y)
 
     def _score_exit(self, cs, idx):
         self._ep_stats['exits'] += 1
         pos = self.traf.pos[idx].copy()
 
-        self._advance_track(cs, pos)
         ac = self._aircraft.get(cs)
+        prev = ac.prev_pos_nm if ac is not None else None
+        self._advance_track(cs, pos)
         if ac is None:
             return
 
         spawn, exit_ref = ac.spawn_pos_nm, ac.no_turn_exit_nm
+        route = math.hypot(exit_ref[0] - spawn[0], exit_ref[1] - spawn[1])
         self._ep_stats['flown_nm'] += ac.flown_nm
-        self._ep_stats['route_nm'] += math.hypot(exit_ref[0] - spawn[0],
-                                                 exit_ref[1] - spawn[1])
+        self._ep_stats['route_nm'] += route
+
+        overshoot, exit_at = self._exit_crossing(prev, pos)
+        flown_cut = ac.flown_nm - overshoot
+        self._ep_stats['flown_cut_nm'] += flown_cut
+        if ac.manoeuvred:
+            self._ep_stats['flown_cut_manoeuvred_nm'] += flown_cut
+            self._ep_stats['route_manoeuvred_nm'] += route
+            self._ep_stats['straight_manoeuvred_nm'] += math.hypot(exit_at[0] - spawn[0], exit_at[1] - spawn[1])
+            self._ep_stats['exits_manoeuvred'] += 1
 
         self._ep_stats['deviation_nm'] += math.hypot(pos[0] - exit_ref[0],
                                                      pos[1] - exit_ref[1])

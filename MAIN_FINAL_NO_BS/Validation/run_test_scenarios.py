@@ -141,14 +141,17 @@ def choose(policy, observation, blind=False):
 
 def count_executed(atco):
     """Counts the instructions the ATCO actually passes on. The environment counts the advisories
-    sent to the ATCO, but a revision replaces the one being evaluated, so not all are flown."""
-    executed = {'turns': 0, 'speed_changes': 0}
+    sent to the ATCO, but a revision replaces the one being evaluated, so not all are flown. They are
+    also counted per advisory type (turn_m60 ... speed_down), like the sent ones of the environment."""
+    from Environment.stats import ADVISORY_LABELS
+    executed = {'turns': 0, 'speed_changes': 0, **{label: 0 for label in ADVISORY_LABELS.values()}}
     act_if_ready = atco.act_if_ready
 
     def counted(*args):
         ready = act_if_ready(*args)
         if ready is not None:
             executed['speed_changes' if 'target_mach' in ready[1] else 'turns'] += 1
+            executed[ADVISORY_LABELS[ready[1]['action']]] += 1
         return ready
 
     atco.act_if_ready = counted
