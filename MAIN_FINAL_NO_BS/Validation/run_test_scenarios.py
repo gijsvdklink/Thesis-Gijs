@@ -43,7 +43,7 @@ from Environment.config import (CONFIG, HOLD_ACTION, OBS_OWNSHIP_LABELS, TRAININ
                                 VALIDATION_SEEDS)
 
 MODELS_DIR  = os.path.join(MAIN_DIR, 'Models')
-RESULTS_DIR = os.path.join(os.path.dirname(MAIN_DIR), 'Test_results_nobs')
+RESULTS_DIR = os.path.join(MAIN_DIR, 'Test_results')
 
 RESPONSE_STATE = [OBS_OWNSHIP_LABELS.index(name) for name in ('pending', 'wait_s', 'pend_hdg',
                                                               'pend_spd')]

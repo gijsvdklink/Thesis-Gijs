@@ -185,3 +185,88 @@ SURVIVING A DISCONNECT NEXT TIME
 #
 # Or prefix a single command:
 #     nohup python Training/train.py --delay none --seed 1 > t1.log 2>&1 &
+
+
+================================================================================
+SB3 DEFAULT PPO (comparison runs)
+================================================================================
+
+# The same 21 runs, but PPO with Stable-Baselines3's own defaults: nothing is set except the
+# seed, the TensorBoard log and the CPU. That is n_steps 2048, batch_size 64, n_epochs 10,
+# learning rate 3e-4, gamma 0.99, gae_lambda 0.95, clip 0.2, ent_coef 0, and the default
+# 64x64 MlpPolicy. The environment, VecNormalize and the 60,000-episode stop are unchanged,
+# so --max-episodes is not needed.
+#
+# Results go to SB3_default_models inside MAIN_FINAL_NO_BS, kept apart from Models. With
+# batch_size 64 there are 32 minibatches per epoch instead of 1, so one update is cheaper than
+# the 30-epoch full batch of the reported settings; check the steps/s each run prints.
+
+# terminal 1
+python Training/train.py --delay none --seed 1 --sb3-default --runs-root SB3_default_models
+
+# terminal 2
+python Training/train.py --delay none --seed 2 --sb3-default --runs-root SB3_default_models
+
+# terminal 3
+python Training/train.py --delay none --seed 3 --sb3-default --runs-root SB3_default_models
+
+# terminal 4
+python Training/train.py --delay none --seed 4 --sb3-default --runs-root SB3_default_models
+
+# terminal 5
+python Training/train.py --delay none --seed 5 --sb3-default --runs-root SB3_default_models
+
+# terminal 6
+python Training/train.py --delay none --seed 6 --sb3-default --runs-root SB3_default_models
+
+# terminal 7
+python Training/train.py --delay none --seed 7 --sb3-default --runs-root SB3_default_models
+
+# terminal 8
+python Training/train.py --delay lognormal --delay-mean 30 --seed 1 --sb3-default --runs-root SB3_default_models
+
+# terminal 9
+python Training/train.py --delay lognormal --delay-mean 30 --seed 2 --sb3-default --runs-root SB3_default_models
+
+# terminal 10
+python Training/train.py --delay lognormal --delay-mean 30 --seed 3 --sb3-default --runs-root SB3_default_models
+
+# terminal 11
+python Training/train.py --delay lognormal --delay-mean 30 --seed 4 --sb3-default --runs-root SB3_default_models
+
+# terminal 12
+python Training/train.py --delay lognormal --delay-mean 30 --seed 5 --sb3-default --runs-root SB3_default_models
+
+# terminal 13
+python Training/train.py --delay lognormal --delay-mean 30 --seed 6 --sb3-default --runs-root SB3_default_models
+
+# terminal 14
+python Training/train.py --delay lognormal --delay-mean 30 --seed 7 --sb3-default --runs-root SB3_default_models
+
+# terminal 15
+python Training/train.py --delay deterministic --delay-mean 30 --seed 1 --sb3-default --runs-root SB3_default_models
+
+# terminal 16
+python Training/train.py --delay deterministic --delay-mean 30 --seed 2 --sb3-default --runs-root SB3_default_models
+
+# terminal 17
+python Training/train.py --delay deterministic --delay-mean 30 --seed 3 --sb3-default --runs-root SB3_default_models
+
+# terminal 18
+python Training/train.py --delay deterministic --delay-mean 30 --seed 4 --sb3-default --runs-root SB3_default_models
+
+# terminal 19
+python Training/train.py --delay deterministic --delay-mean 30 --seed 5 --sb3-default --runs-root SB3_default_models
+
+# terminal 20
+python Training/train.py --delay deterministic --delay-mean 30 --seed 6 --sb3-default --runs-root SB3_default_models
+
+# terminal 21
+python Training/train.py --delay deterministic --delay-mean 30 --seed 7 --sb3-default --runs-root SB3_default_models
+
+# tensorboard
+python -m tensorboard.main --logdir SB3_default_models --port 6017
+
+# Resuming: the same command plus --resume (the saved model keeps the SB3 default settings),
+# and pass the episodes still to go, as described under RESUMING AFTER A DISCONNECT, e.g.
+#     python Training/train.py --delay none --seed 1 --sb3-default --runs-root SB3_default_models --resume --max-episodes 19000

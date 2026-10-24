@@ -3,6 +3,11 @@
     python Training/train.py --delay none --seed 1
     python Training/train.py --delay lognormal --delay-mean 30 --seed 3
     python Training/train.py --delay none --seed 1 --resume --max-episodes 19000
+    python Training/train.py --delay none --seed 1 --sb3-default --runs-root SB3_default_models
+
+--sb3-default builds PPO with SB3's own defaults (n_steps 2048, batch_size 64, n_epochs 10,
+learning rate 3e-4, ...) instead of the reported settings. The environment, VecNormalize and
+the stopping rule are the same.
 
 A run writes to Models/<delay type>/<delay type>_seed<seed>/: the TensorBoard log, last_model
 every 500,000 steps, final_model at the end, and beside each a <name>_vecnorm.pkl holding the
@@ -186,7 +191,7 @@ def latest_checkpoint(run_dir):
 
 
 def train(delay_mode, seed, delay_mean_s, save_every=SAVE_EVERY, runs_root=RUNS_ROOT,
-          overwrite=False, resume=False, max_episodes=MAX_EPISODES):
+          overwrite=False, resume=False, max_episodes=MAX_EPISODES, sb3_default=False):
     delay_type = delay_type_name(delay_mode, delay_mean_s)
     run_dir    = os.path.join(runs_root, delay_type, f'{delay_type}_seed{seed}')
 
@@ -210,14 +215,21 @@ def train(delay_mode, seed, delay_mean_s, save_every=SAVE_EVERY, runs_root=RUNS_
                          tensorboard_log=run_dir, device='cpu')
         print(f'resumed from {checkpoint} at {model.num_timesteps:,} steps', flush=True)
     else:
-        env   = VecNormalize(VecMonitor(venv))
-        model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
-                    device='cpu', n_steps=N_STEPS, batch_size=N_STEPS, n_epochs=N_EPOCHS)
+        env = VecNormalize(VecMonitor(venv))
+        if sb3_default:
+            # Nothing set but what every run needs: the seed, the log and the CPU.
+            model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
+                        device='cpu')
+        else:
+            model = PPO('MlpPolicy', env, seed=seed, verbose=0, tensorboard_log=run_dir,
+                        device='cpu', n_steps=N_STEPS, batch_size=N_STEPS, n_epochs=N_EPOCHS)
 
     callbacks = CallbackList([RunUntil(max_episodes), LogEpisodes(),
                               Checkpoint(run_dir, save_every)])
 
-    print(f'{delay_type}  seed {seed}  until {max_episodes:,} episodes  '
+    print(f'{delay_type}  seed {seed}  '
+          f'n_steps {model.n_steps}  batch {model.batch_size}  epochs {model.n_epochs}  '
+          f'until {max_episodes:,} episodes  '
           f'save every {save_every:,}  -> {run_dir}', flush=True)
     try:
         model.learn(STEP_CEILING - model.num_timesteps, callback=callbacks,
@@ -252,6 +264,9 @@ def main():
                              'the step count and the TensorBoard curves continuous')
     parser.add_argument('--overwrite', action='store_true',
                         help='train into an existing run directory instead of refusing')
+    parser.add_argument('--sb3-default', action='store_true',
+                        help='PPO with SB3 defaults instead of the reported settings; '
+                             'ignored with --resume, which keeps the saved settings')
     parser.add_argument('--runs-root', default=RUNS_ROOT,
                         help=f'where the run directory is created (default {RUNS_ROOT})')
     args = parser.parse_args()
@@ -260,7 +275,7 @@ def main():
 
     train(args.delay, args.seed, args.delay_mean, save_every=args.save_every,
           runs_root=args.runs_root, overwrite=args.overwrite, resume=args.resume,
-          max_episodes=args.max_episodes)
+          max_episodes=args.max_episodes, sb3_default=args.sb3_default)
 
 
 if __name__ == '__main__':

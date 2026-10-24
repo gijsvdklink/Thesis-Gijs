@@ -2,7 +2,7 @@
 
 python Validation/Analysis.py
 
-Reads Test_results_final/test_results.csv and writes to Test_results_final/analysis:
+Reads MAIN_FINAL_NO_BS/Test_results_60k/test_results.csv and writes to its analysis folder:
 
   kpis_per_model.csv     every KPI averaged over the test scenarios, a row per model and environment
   kpi_medians.csv        the median of the seven models of each type
@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 ROOT        = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-RESULTS_DIR = os.path.join(ROOT, 'Test_results_final')
+RESULTS_DIR = os.path.join(ROOT, 'MAIN_FINAL_NO_BS', 'Test_results_60k')
 
 KEYS        = ['model', 'train_type', 'seed', 'test_type', 'test_delay']
 NOT_KPIS    = KEYS + ['model_steps', 'scenario', 'scenario_seed', 'n_aircraft', 'rho']
